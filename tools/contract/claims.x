@@ -14,6 +14,14 @@
 ; Rows appear here as the engine earns them.
 
 (def %claims (lit (
+  ; What this engine is called.  x-lang's generator used to take the name from
+  ; the DIRECTORY it found an engine in, which is where an engine happens to sit
+  ; rather than who it is: a checkout sits in `x-engine-rust` and an unpacked
+  ; release sits in `x-engine-rust-<release>-<os>-<arch>`, and a project whose
+  ; pin.xon says (engine "x-engine-rust") would have been refused for the shape
+  ; of a path.  Asserted here for the same reason the binary's name is.
+  (name "x-engine-rust")
+
   ; The binary this engine builds.  x.sh reads this row to learn what to run, so
   ; an engine that does not produce a file called x-bin still installs and starts.
   (binary "x-engine")

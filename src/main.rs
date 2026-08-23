@@ -21,16 +21,17 @@ fn main() {
         report(&engine, &diag::Cond::NoProgram);
     }
 
-    // EVERY argv element, argv[0] included. x-lang's contract says "every argv
-    // element is bound as the `args` list", and the reference binds all of them
-    // -- its loop runs `for (i = argc - 1; i >= 0; i--)`.
+    // EVERY argv element, argv[0] included. `.skip(1)` was the obvious reading of
+    // "the arguments" and it is the wrong one: x-lang's own library documents
+    // `args` as carrying the engine path first and drops it itself --
+    // lib/x/tool/contract.x, "`args` minus the engine path and the engine flags
+    // x.sh -f prepends", implemented as `(rest args)`. Skipping here meant that
+    // `rest` ate a real flag, and every tool run through this engine parsed its
+    // arguments one position out.
     //
-    // Skipping the program name looked tidier and made `args` NIL whenever the
-    // engine was invoked without arguments, which is how every harness invokes
-    // it. x-lang's compliance suite counts a bare name that evaluates to nil as
-    // MISSING, so the engine declared invoke/argv and failed it -- and the
-    // library's own `--batch` and `--quiet` scans never noticed, because a
-    // program name matches neither.
+    // Found by x-lang's compliance suite once `args` became a declared row of
+    // invoke/argv rather than a value nothing named: this engine bound it to nil
+    // where the reference binds a one-element list.
     let argv: Vec<String> = std::env::args().collect();
     engine.bind_args(&argv);
     engine.set_input(&src);
