@@ -49,6 +49,20 @@ impl Engine {
         self.eval_depth += 1;
         let r = self.eval_pending(form, env);
         self.eval_depth -= 1;
+        // THE RESULT IS ROOTED until the enclosing evaluation moves on.
+        //
+        // A value that has just been computed is reachable from nothing: it sits
+        // in a Rust local while its caller goes on to evaluate the NEXT thing,
+        // and that evaluation can collect. `apply` was caught doing exactly
+        // this — holding the callee while it evaluated the argument list — and
+        // every operative that evaluates more than once has the same shape.
+        //
+        // Rooting here rather than at each of those sites makes it a property of
+        // evaluation instead of a rule to remember. The trampoline drops these
+        // between steps, so a tail loop does not accumulate them.
+        if let Ok(v) = r {
+            self.root_push(v);
+        }
         r
     }
 
@@ -139,6 +153,10 @@ impl Engine {
                 Some((f, e)) => {
                     form = f;
                     env = e;
+                    // A new trampoline step: the previous step's intermediate
+                    // results are done with, and a long tail loop must not
+                    // accumulate one root per iteration.
+                    self.root_truncate(slot + 1);
                     self.roots[slot] = form;
                 }
                 None => break Ok(answer),
@@ -275,8 +293,21 @@ impl Engine {
 
     /// Call a combiner with values already computed.
     pub fn call_with_values(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        // ROOTED while the spine is BUILT. `quote_values` allocates a cell per
+        // value, so a collection partway through would be free to take the
+        // values still waiting in the caller's slice — and callers hand this a
+        // plain Rust slice from anywhere: `apply`, the class dispatcher, every
+        // reader handler.
+        let mark = self.root_mark();
+        self.root_push(callee);
+        for v in vals {
+            self.root_push(*v);
+        }
         let spine = self.quote_values(vals);
-        self.eval_call(callee, spine, env)
+        self.root_push(spine);
+        let out = self.eval_call(callee, spine, env);
+        self.root_truncate(mark);
+        out
     }
 
     /// THE ARGUMENT BOUNDARY. Arity is checked and arguments are evaluated here,
@@ -301,17 +332,9 @@ impl Engine {
                 return Err(c);
             }
         };
-        // EVALUATED ARGUMENTS ARE ROOTED, centrally and for every primitive.
-        //
-        // A value here exists only in this Vec: it was just computed and nothing
-        // in the heap points at it yet. Any primitive that allocates while
-        // holding one — `str append`, `pair`, every constructor — could have its
-        // own arguments collected out from under it. Rooting each one at its own
-        // call site would be a rule to remember; rooting them here is a place
-        // they cannot escape.
-        for v in &vals {
-            self.root_push(*v);
-        }
+        // The values are already rooted -- `eval_args` leaves them so, because
+        // every applicative needs the same thing and one place is easier to keep
+        // right than ninety.
         // PADDED, not checked. A body indexes the slots its arity declares, so
         // the slots must exist -- but a missing operand is nil, not an error.
         // x-engine-c raises "+: operand is nil" here; that is the same layer
@@ -345,11 +368,50 @@ impl Engine {
     }
 
     /// Evaluate an argument spine into values.
+    /// Evaluate an argument spine into values, ROOTING as it goes.
+    ///
+    /// This is the choke point every applicative passes through, and it holds
+    /// two things the heap cannot see. The unevaluated FORMS are collected into
+    /// a Rust Vec first — the iterator's borrow has to end before `eval` can
+    /// take the objects mutably — so from that moment the spine is not what is
+    /// being read; the Vec is. And each VALUE already computed exists only in
+    /// the results Vec until the call is made.
+    ///
+    /// Evaluating argument one can collect, and did: the poison trap caught
+    /// argument two being read after it was freed. Rooting here covers every
+    /// caller, where rooting at each of them would have covered the ones I
+    /// thought of.
     fn eval_args(&mut self, args: Obj, env: EnvId) -> Result<Vec<Obj>, Cond> {
         // Collected first so the iterator's borrow of the objects ends before
         // `eval` needs it mutably.
         let forms: Vec<Obj> = self.objects.list(args).collect();
-        forms.into_iter().map(|f| self.eval(f, env)).collect()
+        let mark = self.root_mark();
+        for f in &forms {
+            self.root_push(*f);
+        }
+        let mut out = Vec::with_capacity(forms.len());
+        for f in forms {
+            match self.eval(f, env) {
+                Ok(v) => {
+                    self.root_push(v);
+                    out.push(v);
+                }
+                Err(c) => {
+                    self.root_truncate(mark);
+                    return Err(c);
+                }
+            }
+        }
+        // The FORMS are done with; the VALUES are not. They are about to be
+        // bound into a frame or handed to a primitive, and `bind_params` builds
+        // a rest list — an allocation, with the values reachable from nothing
+        // but the caller's Vec. So the forms come off and the values go back on,
+        // and they stay until the enclosing `eval_pending` truncates on exit.
+        self.root_truncate(mark);
+        for v in &out {
+            self.root_push(*v);
+        }
+        Ok(out)
     }
 
     /// Apply a closure. APPLICATIVE, and the first parameter is bound to the

@@ -248,6 +248,10 @@ pub struct Objects {
     /// object's words stay where they are, so they can only serve an allocation
     /// that fits them exactly.
     pub(crate) free: HashMap<u64, Vec<Obj>>,
+    /// Overwrite a swept object's flags, so a later read of it traps. Debug only.
+    pub(crate) poison_freed: bool,
+    /// What a poisoned object used to be, so the trap can name it.
+    pub(crate) freed_kind: HashMap<Obj, u64>,
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -317,6 +321,8 @@ impl Objects {
             satom_marker: NIL,
             heap_chain: NIL,
             free: HashMap::new(),
+            poison_freed: std::env::var("X_GC_POISON").is_ok(),
+            freed_kind: HashMap::new(),
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with
@@ -400,6 +406,20 @@ impl Objects {
     // --- header ----------------------------------------------------------------
 
     pub fn flags(&self, o: Obj) -> Flags {
+        debug_assert!(
+            !self.poison_freed
+                || self
+                    .heap
+                    .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+                    .raw()
+                    != crate::collect::POISON,
+            "read of a FREED {} at {:?} -- a root is missing",
+            self.freed_kind
+                .get(&o)
+                .map(|f| crate::objects::kind_name(Flags::from_word(Word(*f))))
+                .unwrap_or("object"),
+            o
+        );
         Flags::from_word(self.heap.word(o.addr().plus(SLOT_FLAGS * WORD as u64)))
     }
 

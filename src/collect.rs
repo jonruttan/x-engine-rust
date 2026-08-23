@@ -26,14 +26,20 @@
 //!
 //! This engine does not have those yet, so an instance's words are traced
 //! CONSERVATIVELY: a word is followed only if it could be an object here — in
-//! range, correctly aligned, on the chain. That errs the safe way. A live object
-//! is never freed; some garbage survives because an integer happened to look
-//! like an address. Retaining garbage costs memory, and freeing something live
-//! costs correctness, so the choice is not a close one.
+//! range and correctly aligned.
+//!
+//! That is a NARROW licence, and widening it was tried and reverted. Tracing
+//! every kind's words this way looks safer — "never free a live object" — but it
+//! is not: a word that passes the plausibility test may point into the MIDDLE of
+//! an object, and marking it writes the mark bit over whatever lives there. The
+//! failure mode is not retained garbage, it is a corrupted heap. Conservatism is
+//! only safe where the alternative is not knowing, which is instances; for every
+//! other kind the layout is known and precision is both cheaper and correct.
 
 use crate::obj::{Flags, Obj, Word};
 use crate::objects::{
-    Objects, FLAG_BUF, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR, FLAG_SPAIR, FLAG_TOKBASE, FLAG_WRAP,
+    Objects, FLAG_BUF, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR, FLAG_SPAIR,
+    FLAG_TOKBASE, FLAG_WRAP,
 };
 
 /// The mark, kept in a spare bit of the flags word.
@@ -43,6 +49,14 @@ use crate::objects::{
 /// means the mark costs no extra memory and is cleared by the same sweep that
 /// reads it.
 const MARK: u64 = 1 << 63;
+
+/// Written over a swept object's flags when poisoning is on. No real flags word
+/// has this value, so reading one is proof of a use-after-free.
+///
+/// This is how the missing roots were found rather than argued about: with
+/// reuse disabled, a freed object that something still holds keeps the poison,
+/// and the next read of it traps with a backtrace naming the exact primitive.
+pub const POISON: u64 = 0x0BAD_0BAD_0BAD_0BAD;
 
 impl Objects {
     fn flags_word(&self, o: Obj) -> u64 {
@@ -130,6 +144,15 @@ impl Objects {
                 f if f == FLAG_WRAP || f == FLAG_TOKBASE => {
                     stack.push(self.data(o, 0).as_obj());
                 }
+                // THE FALSE SINGLETON IS SCRATCH SPACE. It looks like a value
+                // with nothing in it, and x-lang hangs the include list off its
+                // REST — lib/x/boot/module.x does that at boot and reads it for
+                // the rest of the run.
+                f if f == FLAG_FALSE => {
+                    for i in 0..n {
+                        stack.push(self.data(o, i).as_obj());
+                    }
+                }
                 // retain (raw), cursor CELL, text.
                 f if f == FLAG_BUF => {
                     stack.push(self.data(o, 1).as_obj());
@@ -178,6 +201,11 @@ impl Objects {
                 // free list for an allocation of exactly this size. Nothing is
                 // compacted, so every address x-lang is holding stays valid.
                 let n = self.data_len(at);
+                if self.poison_freed {
+                    let was = self.flags_word(at) & !MARK;
+                    self.freed_kind.insert(at, was);
+                    self.set_flags_word(at, POISON);
+                }
                 self.free.entry(n).or_default().push(at);
                 freed += 1;
             }
@@ -189,6 +217,11 @@ impl Objects {
 
     /// Take a free object of exactly `n` data words, if one is waiting.
     pub(crate) fn take_free(&mut self, n: usize) -> Option<Obj> {
+        // While poisoning, nothing is handed back: reuse overwrites the poison,
+        // which is exactly what hides the bug being hunted.
+        if self.poison_freed {
+            return None;
+        }
         self.free.get_mut(&(n as u64)).and_then(|v| v.pop())
     }
 
