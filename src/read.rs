@@ -94,6 +94,11 @@ impl Reader {
         self.text
     }
 
+    /// The source object if one was ever made, else nil. For rooting.
+    pub(crate) fn text_obj_if_made(&self) -> Obj {
+        self.text
+    }
+
     pub fn pos(&self) -> usize {
         self.pos
     }

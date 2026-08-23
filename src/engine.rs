@@ -30,12 +30,12 @@ pub struct Engine {
     pub base: Obj,
     /// The primitive catalog, shared by every base. The instructions are the
     /// same objects whichever base reaches them; only BINDINGS are per-base.
-    catalog: Obj,
+    pub(crate) catalog: Obj,
     /// Name-to-primitive for every registered instruction, kept so a new base
     /// can be given the instruction set. A fresh base must evaluate `(+ 2 3)`,
     /// so it is born knowing the machine — what it does NOT get is the host's
     /// definitions.
-    prim_bindings: Vec<(Obj, Obj)>,
+    pub(crate) prim_bindings: Vec<(Obj, Obj)>,
     /// The input stream. The engine owns it because the PROGRAM arrives on it:
     /// what `io read-char` should answer is whatever is left after the form being
     /// evaluated, which a reader living in main could not be asked.
@@ -52,6 +52,16 @@ pub struct Engine {
     /// stdin — so the first form after `(include "lib/x-core.x")` silently
     /// vanished, and the REPL launcher was the form that vanished.
     pub(crate) loading: Vec<Reader>,
+    /// Values the EVALUATOR is holding that nothing else points at.
+    ///
+    /// A form being evaluated came from the reader and lives in a Rust local; a
+    /// collection triggered underneath it would free the code that is running.
+    /// See `Engine::root_set`.
+    pub(crate) roots: Vec<Obj>,
+    /// Collect every N evaluation steps. Zero — the default — never collects on
+    /// its own, which is what `gc/explicit-only` promises.
+    pub(crate) gc_stress: u32,
+    pub(crate) stress_countdown: u32,
     /// An escape in flight: which continuation is unwinding, and with what.
     ///
     /// A raise carries a value; this says the unwind is an ESCAPE rather than a
@@ -115,6 +125,15 @@ impl Engine {
             prim_bindings: Vec::new(),
             reader: Reader::new(""),
             loading: Vec::new(),
+            roots: Vec::new(),
+            gc_stress: std::env::var("X_GC_STRESS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            stress_countdown: std::env::var("X_GC_STRESS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
             escaping: None,
             next_cont: 1,
             base_syms: HashMap::new(),

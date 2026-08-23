@@ -43,7 +43,11 @@ fn count(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// The two properties the contract states are that a reachable object survives
 /// and that collecting twice looks the same as once. Both hold here for the
 /// strongest possible reason: there is no collector to get them wrong.
-fn collect(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn collect(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+    let freed = e.collect();
+    if std::env::var("X_HEAP_STATS").is_ok() {
+        eprintln!("collect: freed {} of {}", freed, e.objects.alloc_count());
+    }
     Ok(NIL)
 }
 

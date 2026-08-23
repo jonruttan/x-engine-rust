@@ -72,7 +72,15 @@ impl Engine {
 
     fn eval_pending(&mut self, form: Obj, env: EnvId) -> EvalResult {
         let (mut form, mut env) = (form, env);
-        loop {
+        // ONE root slot for the form under evaluation, replaced as the
+        // trampoline moves rather than pushed per iteration — a long tail chain
+        // would otherwise grow the root set without bound. The form came from
+        // the reader and nothing else points at it, so a collection underneath
+        // this call would free the code that is running.
+        let mark = self.root_mark();
+        self.root_push(form);
+        let slot = mark;
+        let out = loop {
             // The armed ceiling. A heap that never frees is exactly the kind
             // that needs one, and unbounded allocation has taken this project's
             // machine down before.
@@ -83,32 +91,47 @@ impl Engine {
                 let flag = self.sigint_flag;
                 self.objects.set_data(flag, 0, crate::obj::Word(1));
             }
+            // STRESS: collect far more often than x-lang ever would, to shake
+            // out a root nobody remembered. A missing root frees something live,
+            // and under normal use that might not surface for hours — here it
+            // surfaces on the next form. Off unless asked for.
+            if self.gc_stress != 0 {
+                self.stress_countdown = self.stress_countdown.saturating_sub(1);
+                if self.stress_countdown == 0 {
+                    self.stress_countdown = self.gc_stress;
+                    self.collect();
+                }
+            }
             if let Some(limit) = self.alloc_limit {
                 if self.objects.alloc_count() > limit {
-                    return Err(Cond::AllocLimit);
+                    break Err(Cond::AllocLimit);
                 }
             }
             if form.is_nil() {
-                return Ok(NIL);
+                break Ok(NIL);
             }
             if self.objects.is_sym(form) {
-                return match self.envs.lookup(env, form) {
+                break match self.envs.lookup(env, form) {
                     Some(v) => Ok(v),
                     None => Err(Cond::Unbound(form)),
                 };
             }
             if !self.objects.is_cell(form) {
                 // Integers, strings, closures, primitives: self-evaluating.
-                return Ok(form);
+                break Ok(form);
             }
             let head = self.objects.first(form);
             let args = self.objects.rest(form);
-            let callee = self.eval(head, env)?;
+            let callee = match self.eval(head, env) {
+                Ok(c) => c,
+                Err(e) => break Err(e),
+            };
             let answer = match self.combine(callee, args, env) {
-                Some(r) => r?,
+                Some(Ok(v)) => v,
+                Some(Err(e)) => break Err(e),
                 // A head that is not callable makes the form DATA, which is how
                 // x-lang's quoted structures survive being evaluated.
-                None => return Ok(form),
+                None => break Ok(form),
             };
             // Something in tail position asked to be evaluated HERE rather than
             // under another frame. Loop instead of recursing.
@@ -116,10 +139,13 @@ impl Engine {
                 Some((f, e)) => {
                     form = f;
                     env = e;
+                    self.roots[slot] = form;
                 }
-                None => return Ok(answer),
+                None => break Ok(answer),
             }
-        }
+        };
+        self.root_truncate(mark);
+        out
     }
 
     /// Park a form to be evaluated in the caller's own loop.
@@ -256,17 +282,42 @@ impl Engine {
     /// THE ARGUMENT BOUNDARY. Arity is checked and arguments are evaluated here,
     /// once, for every applicative in the engine.
     fn call_prim(&mut self, def: &PrimDef, args: Obj, env: EnvId) -> EvalResult {
+        // The ARGUMENT SPINE is rooted for the whole call. It hangs off the form
+        // being evaluated, which is rooted too — but an operative may park a
+        // tail and let that form go, and then the spine is held in Rust alone.
+        let mark = self.root_mark();
+        self.root_push(args);
+
         // An operative takes the spine as written; everything else wants values.
         if let Body::Operative(f) = def.body {
-            return f(self, args, env);
+            let out = f(self, args, env);
+            self.root_truncate(mark);
+            return out;
         }
-        let mut vals = self.eval_args(args, env)?;
+        let mut vals = match self.eval_args(args, env) {
+            Ok(v) => v,
+            Err(c) => {
+                self.root_truncate(mark);
+                return Err(c);
+            }
+        };
+        // EVALUATED ARGUMENTS ARE ROOTED, centrally and for every primitive.
+        //
+        // A value here exists only in this Vec: it was just computed and nothing
+        // in the heap points at it yet. Any primitive that allocates while
+        // holding one — `str append`, `pair`, every constructor — could have its
+        // own arguments collected out from under it. Rooting each one at its own
+        // call site would be a rule to remember; rooting them here is a place
+        // they cannot escape.
+        for v in &vals {
+            self.root_push(*v);
+        }
         // PADDED, not checked. A body indexes the slots its arity declares, so
         // the slots must exist -- but a missing operand is nil, not an error.
         // x-engine-c raises "+: operand is nil" here; that is the same layer
         // violation, and copying it would import someone else's.
         vals.resize(def.arity.0.max(vals.len()), NIL);
-        match def.body {
+        let out = match def.body {
             // Already handled above; the compiler cannot know that.
             Body::Operative(_) => unreachable!("operatives return early"),
             // Handed the object model and nothing else. It cannot evaluate, it
@@ -288,7 +339,9 @@ impl Engine {
                 let x = self.objects.as_int(vals[0]);
                 Ok(self.objects.int(f(x)))
             }
-        }
+        };
+        self.root_truncate(mark);
+        out
     }
 
     /// Evaluate an argument spine into values.

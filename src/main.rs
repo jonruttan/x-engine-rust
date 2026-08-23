@@ -39,10 +39,22 @@ fn main() {
     // library into. A raise ends the run and is reported on stderr, the only
     // channel a bare engine has: there is no printer here, because `display` and
     // `write` are x-lang.
+    if std::env::var("X_HEAP_STATS").is_ok() {
+        // one-off measurement hook
+    }
     while let Some(form) = engine.next_form() {
         if let Err(cond) = engine.eval_top(form) {
             report(&engine, &cond);
         }
+    }
+    if std::env::var("X_HEAP_STATS").is_ok() {
+        eprintln!(
+            "heap words={} ({} MB)  objects={}  frames={}",
+            engine.objects.heap_words(),
+            engine.objects.heap_words() * 8 / 1_048_576,
+            engine.objects.alloc_count(),
+            engine.envs.frame_count()
+        );
     }
 }
 

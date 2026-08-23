@@ -153,14 +153,27 @@ impl Engine {
             .map(|entry| self.objects.rest(entry))
             .collect();
 
+        // ROOTED for the same reason the scorer's locals are: the analysers and
+        // readers below are x-lang code and may collect, and the source object
+        // and the buffers handed to them live only in Rust locals.
         let text = r.text_obj(&mut self.objects);
+        let mark = self.root_mark();
+        self.root_push(text);
+        for t in &types {
+            self.root_push(*t);
+        }
         let at = r.pos() as u64;
         for ty in types {
             if ty.is_nil() || handler(self, ty, Family::Analyse).is_nil() {
                 continue;
             }
-            let Some(n) = score_one(self, ty, text, at)? else {
-                continue;
+            let n = match score_one(self, ty, text, at) {
+                Ok(Some(n)) => n,
+                Ok(None) => continue,
+                Err(c) => {
+                    self.root_truncate(mark);
+                    return Err(c);
+                }
             };
             if n == 0 {
                 continue;
@@ -176,16 +189,28 @@ impl Engine {
                 }
                 let buf = self.objects.buf(text, at);
                 self.objects.set_buf_cursor(buf, at + n);
+                let bmark = self.root_mark();
+                self.root_push(buf);
+                self.root_push(rd);
                 // The handler may read FURTHER through `tok read` — `'x` reads
                 // the quote then the form after it — so the reader's position
                 // comes from the buffer afterwards, not from the claim.
-                let got = self.call_with_values(rd, &[buf], env)?;
+                let got = match self.call_with_values(rd, &[buf], env) {
+                    Ok(v) => v,
+                    Err(c) => {
+                        self.root_truncate(mark);
+                        return Err(c);
+                    }
+                };
+                self.root_truncate(bmark);
                 if !got.is_nil() {
                     r.set_pos(self.objects.buf_cursor(buf) as usize);
+                    self.root_truncate(mark);
                     return Ok(Some(got));
                 }
             }
         }
+        self.root_truncate(mark);
         Ok(None)
     }
 

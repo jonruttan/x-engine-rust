@@ -92,6 +92,7 @@
 pub use x_engine_foreign as foreign;
 
 pub mod base;
+pub mod collect;
 pub mod dbl;
 pub mod diag;
 pub mod engine;

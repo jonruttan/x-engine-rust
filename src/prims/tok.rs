@@ -179,19 +179,37 @@ pub(crate) fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
 
 /// Run ONE analyser state machine from `from`, answering the length it claims.
 fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Option<u64>, Cond> {
+    let mark = e.root_mark();
+    e.root_push(text);
+    e.root_push(analyse);
     let buf = e.objects.buf(text, from);
+    e.root_push(buf);
     let score = e.objects.int(0);
+    e.root_push(score);
     let mut state = analyse;
     let env = e.root_env();
 
     loop {
-        let chr = read(&mut e.objects, &[buf])?;
+        let chr = match read(&mut e.objects, &[buf]) {
+            Ok(v) => v,
+            Err(c) => {
+                e.root_truncate(mark);
+                return Err(c);
+            }
+        };
         if chr.is_nil() {
             // END OF INPUT. No accept branch runs, so nothing is scored — a
             // token must be delimited.
+            e.root_truncate(mark);
             return Ok(None);
         }
-        let next = e.call_with_values(state, &[buf, score, chr], env)?;
+        let next = match e.call_with_values(state, &[buf, score, chr], env) {
+            Ok(v) => v,
+            Err(c) => {
+                e.root_truncate(mark);
+                return Err(c);
+            }
+        };
         let claimed = e.objects.as_int(score);
         if claimed != 0 {
             // THE LENGTH IS WHAT WAS CONSUMED, and the score only carries its
@@ -210,12 +228,15 @@ fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Opti
                 .objects
                 .buf_cursor(buf)
                 .saturating_sub(e.objects.buf_retain(buf));
+            e.root_truncate(mark);
             return Ok(Some(consumed.max(1)));
         }
         if !e.objects.truthy(next) {
+            e.root_truncate(mark);
             return Ok(None);
         }
         state = next;
+        e.roots[mark + 1] = state;
     }
 }
 
@@ -223,6 +244,8 @@ fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Opti
 /// them against each other, and answer the LIST of tokens produced.
 fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
     let text = a[1];
+    let gmark = e.root_mark();
+    e.root_push(text);
     let len = e.objects.bytes_of(text).len() as u64;
     // THE FIRST ARGUMENT IS A BASE, not a token base. x-lang calls this as
     // `(tok read-str (%base) text)` — lib/x/reader/lit-reader.x's `chunk` does,
@@ -260,6 +283,11 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
         return Ok(list);
     }
     let types: Vec<Obj> = e.objects.list(e.objects.tokbase_types(a[0])).collect();
+    // The registered types are held in a Rust Vec for the whole drive, and the
+    // handlers they carry are x-lang code that can collect.
+    for t in &types {
+        e.root_push(*t);
+    }
     let env = e.root_env();
 
     let mut tokens: Vec<Obj> = Vec::new();
@@ -285,7 +313,12 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
         // span it claimed: retain at the start, cursor at the end.
         let buf = e.objects.buf(text, at);
         e.objects.set_buf_cursor(buf, at + n);
+        // The winner and its buffer, live until the read returns.
+        let rmark = e.root_mark();
+        e.root_push(ty);
+        e.root_push(buf);
         let reader = handler(e, ty, Family::Read);
+        e.root_push(reader);
         // As with the analysers, the slot may be a LIST. A reader DECLINES by
         // answering nil without consuming, so the next one sees the same buffer
         // — which is why each attempt gets a buffer positioned identically
@@ -297,13 +330,19 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
             for r in handler_list(e, reader) {
                 let fresh = e.objects.buf(text, at);
                 e.objects.set_buf_cursor(fresh, at + n);
+                let fmark = e.root_mark();
+                e.root_push(fresh);
+                e.root_push(r);
                 let got = e.call_with_values(r, &[fresh], env)?;
+                e.root_truncate(fmark);
                 if !got.is_nil() {
                     token = got;
                     break;
                 }
             }
         }
+        e.root_truncate(rmark);
+        e.root_push(token);
         tokens.push(token);
         at += n;
     }
@@ -311,7 +350,9 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
     let mut list = NIL;
     for &t in tokens.iter().rev() {
         list = e.objects.pair(t, list);
+        e.root_push(list);
     }
+    e.root_truncate(gmark);
     Ok(list)
 }
 

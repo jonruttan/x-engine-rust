@@ -103,6 +103,10 @@ impl Heap {
         self.words.as_ptr() as u64 + at.raw()
     }
 
+    pub fn words_len(&self) -> usize {
+        self.words.len()
+    }
+
     pub fn push(&mut self, v: Word) {
         self.words.push(v.raw());
     }

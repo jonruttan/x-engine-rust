@@ -6,8 +6,17 @@
 ; it is paired with, so these values are the contract this implementation must
 ; keep.
 ;
-; They now MATCH the C engine's — heap link at 0, type at 1, flags at 2, data at
-; 3 — and that is a change from what this file used to say. The header was two
+; Heap link at 0, type at 1, flags at 2, LENGTH at 3, data at 4.
+;
+; The first three are the C engine's. The fourth is this engine's own, and the
+; deviation is deliberate: a sweep has to know how far an object extends, and
+; the reference encodes that in its flags word. x-lang READS flags — it masks
+; them with %obj-flag-attr-mask — so packing a length in beside them would put
+; the collector's bookkeeping inside a value the language inspects. A word of
+; its own costs 8 bytes an object and keeps the two apart.
+;
+; That is what decision L1 is for: the STEPS are the engine's, the NAMES are the
+; contract, and a consumer reads %obj-meta-len rather than assuming three. The header was two
 ; words while the engine had no collector: with nothing to sweep there was no
 ; chain to thread, so the slot was reserved and left out of the count.
 ;
@@ -43,10 +52,12 @@
 (def %obj-units-heap 1)   ; the collector's chain link
 (def %obj-units-type 1)   ; pointer to the type object (nil for none)
 (def %obj-units-flags 1)  ; the flags bitfield, held as an integer
+(def %obj-units-len 1)    ; how many DATA words follow the header
 (def %obj-slot-heap 0)    ; every object is threaded here when allocated
 (def %obj-slot-type 1)
 (def %obj-slot-flags 2)
-(def %obj-meta-len 3)     ; header length = the word where data begins
+(def %obj-slot-len 3)
+(def %obj-meta-len 4)     ; header length = the word where data begins
 
 ; --- data shapes (words, relative to data start) ---
 (def %obj-units-atom 1)   ; atom: the value word (int / str offset / char)

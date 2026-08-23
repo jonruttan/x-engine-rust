@@ -22,6 +22,11 @@ pub struct Symbols {
 }
 
 impl Symbols {
+    /// Every interned symbol — all of them are roots.
+    pub fn all(&self) -> Vec<Obj> {
+        self.table.values().copied().collect()
+    }
+
     pub fn new() -> Self {
         Symbols {
             table: HashMap::new(),

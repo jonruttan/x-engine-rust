@@ -46,9 +46,12 @@ use std::collections::HashMap;
 pub const SLOT_HEAP: u64 = 0;
 pub const SLOT_TYPE: u64 = 1;
 pub const SLOT_FLAGS: u64 = 2;
+/// How many DATA words follow. The sweep needs it to know where an object ends;
+/// the reference packs the same fact into its flags word, which x-lang reads.
+pub const SLOT_LEN: u64 = 3;
 /// Header words before the data. Committed in `tools/contract/obj-layout.x` as
 /// `%obj-meta-len`, which is where the library reads it from.
-pub const META_LEN: u64 = 3;
+pub const META_LEN: u64 = 4;
 
 // Simple-type codes, held in the flags word. Same values as x-engine-c uses: the
 // layout is this engine's to choose, but these bits are read by name from
@@ -239,6 +242,12 @@ pub struct Objects {
     /// The C engine keeps the same chain in header word 0, and for the same
     /// reason: a flat heap has no other enumeration.
     pub(crate) heap_chain: Obj,
+    /// Swept objects, by data length, waiting to be handed out again.
+    ///
+    /// Keyed by exact size because the collector is NON-MOVING: a reclaimed
+    /// object's words stay where they are, so they can only serve an allocation
+    /// that fits them exactly.
+    pub(crate) free: HashMap<u64, Vec<Obj>>,
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -307,6 +316,7 @@ impl Objects {
             spair_marker: NIL,
             satom_marker: NIL,
             heap_chain: NIL,
+            free: HashMap::new(),
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with
@@ -332,53 +342,59 @@ impl Objects {
     /// not need one.
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
+        let ty = self.stamp_for(flags);
+
+        // A swept object of exactly this size is reused before the heap grows.
+        // Exactly, because the collector is NON-MOVING: reclaimed words stay
+        // where they are and can only serve an allocation that fits them.
+        if let Some(o) = self.take_free(n) {
+            self.write_header(o, ty, flags, n);
+            for i in 0..n as u64 {
+                self.set_data(o, i, NIL.word());
+            }
+            self.heap_chain = o;
+            return o;
+        }
+
         let at = self.heap.frontier();
-        // THE TYPE WORD. x-lang reads it DIRECTLY — `%reflect-type-word` is a
-        // raw word read — and lib/x/boot/printer.x dispatches on what it finds,
-        // rendering NOTHING for a word of 0. So a value must point at its type
-        // TREE before the library can print it, and `display` stays silent until
-        // it does.
-        //
-        // A SPINE carries the tree tag, a HANDLE the atom tag, and everything
-        // else points at its own type TREE.
-        //
-        // Stamping this word broke `def-class` for a long time, and the cause
-        // was not the stamping: `type make-instance` allocated ONE data slot
-        // where the reference allocates a PAIR, so `%class-hot`'s cache read
-        // `(rest class)` past the end of the object. A nil word made that
-        // garbage read as nil and the cache rebuilt correctly every time; a
-        // stamped word made it read a type tree, which came back AS the cached
-        // member table. Three structural theories were tried and discarded
-        // before the out-of-bounds read turned up, so: when a change "breaks"
-        // something, check what it EXPOSED before rearranging what it touched.
-        //
-        // A STRUCTURAL pair carries the tree tag; everything else keeps a nil
-        // word for now.
-        let ty = if flags == FLAG_SPAIR {
-            self.spair_marker
-        } else if flags == FLAG_HANDLE {
-            self.satom_marker
-        } else {
-            // By the REPORTED kind, not the raw flags. A foreign callable is
-            // flagged apart so a dispatch cannot mistake a machine address for a
-            // table index, and that distinction stops at the engine's edge: to
-            // x-lang it IS a primitive, and `obj make-callable` is required to
-            // answer something of a primitive's type.
-            let key = reported_kind(flags);
-            self.builtin_types.get(&key).copied().unwrap_or(NIL)
-        };
-        // THREADED ON THE CHAIN at birth. The collector has no other way to
-        // find an object: the heap is a flat Vec of words with no object table,
-        // so sweeping means walking this link from the newest allocation back.
+        // THREADED ON THE CHAIN at birth. The collector has no other way to find
+        // an object: the heap is a flat Vec of words with no object table, so
+        // sweeping means walking this link from the newest allocation back.
         self.heap.push(self.heap_chain.word());
         self.heap.push(ty.word());
-        self.heap.push(Word(flags.raw())); // flags
+        self.heap.push(Word(flags.raw()));
+        self.heap.push(Word(n as u64));
         for _ in 0..n {
             self.heap.push(NIL.word());
         }
         let o = at.as_obj();
         self.heap_chain = o;
         o
+    }
+
+    /// The type word a fresh object of these flags carries. See the type-word
+    /// note above.
+    fn stamp_for(&self, flags: Flags) -> Obj {
+        if flags == FLAG_SPAIR {
+            self.spair_marker
+        } else if flags == FLAG_HANDLE {
+            self.satom_marker
+        } else {
+            let key = reported_kind(flags);
+            self.builtin_types.get(&key).copied().unwrap_or(NIL)
+        }
+    }
+
+    /// Write an object's four header words in place, for a reused slot.
+    fn write_header(&mut self, o: Obj, ty: Obj, flags: Flags, n: usize) {
+        let a = o.addr();
+        let w = WORD as u64;
+        self.heap
+            .set_word(a.plus(SLOT_HEAP * w), self.heap_chain.word());
+        self.heap.set_word(a.plus(SLOT_TYPE * w), ty.word());
+        self.heap
+            .set_word(a.plus(SLOT_FLAGS * w), Word(flags.raw()));
+        self.heap.set_word(a.plus(SLOT_LEN * w), Word(n as u64));
     }
 
     // --- header ----------------------------------------------------------------
@@ -467,6 +483,22 @@ impl Objects {
     /// every one of them taking a base argument — the C threads `p_base`
     /// everywhere for the same reason.
     /// How many objects have been allocated — what `heap count` answers.
+    /// How many data words an object has.
+    pub fn data_len(&self, o: Obj) -> u64 {
+        self.heap.word(o.addr().plus(SLOT_LEN * WORD as u64)).raw()
+    }
+
+    /// Every interned symbol in this base and in the shared table.
+    pub fn interned(&self) -> Vec<Obj> {
+        let mut out = self.symbols.all();
+        out.extend(self.shared_symbols.all());
+        out
+    }
+
+    pub fn heap_words(&self) -> usize {
+        self.heap.words_len()
+    }
+
     pub fn alloc_count(&self) -> usize {
         self.heap.allocations()
     }
