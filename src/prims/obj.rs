@@ -84,8 +84,22 @@ fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
     Ok(t)
 }
 
-fn type_of(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.type_of(a[0]))
+/// `(type of v)` — the type handle, FILING it if this is the first sight of it.
+///
+/// Builtin types are made on demand, and one that is never filed cannot be
+/// reached: `type by-atom` walks the base's alist, answers nil, and callers
+/// write into the nil. That is how `lib/x/type/iter.x` came to push a write
+/// handler through nothing.
+///
+/// Filing here rather than at each construction site is deliberate: this
+/// instruction is the only door x-lang has to a type, so anything the library
+/// can name has passed through it.
+fn type_of(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let t = e.objects.type_of(a[0]);
+    for fresh in e.objects.take_unfiled_types() {
+        e.file_type(fresh);
+    }
+    Ok(t)
 }
 
 fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
@@ -125,7 +139,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::bare("rest", 1, rest),
     PrimDef::bare("pair", 2, pair),
     PrimDef::both_full("make-type", "type", "make", 2, type_make),
-    PrimDef::both("type-of", "type", "of", 1, type_of),
+    PrimDef::both_full("type-of", "type", "of", 1, type_of),
     PrimDef::both("type?", "type", "?", 2, type_is),
     PrimDef::filed("type", "make-instance", 2, make_instance),
     PrimDef::filed("obj", "make", 2, obj_make),

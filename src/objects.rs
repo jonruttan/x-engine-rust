@@ -178,6 +178,9 @@ pub struct Objects {
     pub(crate) shared_symbols: Symbols,
     /// `#f`. x-lang's falsy set is exactly {nil, #f} and that model is settled.
     false_obj: Obj,
+    /// Builtin types made on demand and not yet filed in a base's type-alist.
+    /// See [`Objects::take_unfiled_types`].
+    pub(crate) unfiled_types: Vec<Obj>,
     /// The symbol `t`. `eq?` answers with it rather than `#t` because nil is a
     /// legitimate value to compare: a predicate answering nil for "equal" could
     /// not say that `(eq? () ())` holds.
@@ -195,6 +198,7 @@ impl Objects {
             symbols: Symbols::new(),
             shared_symbols: Symbols::new(),
             false_obj: NIL,
+            unfiled_types: Vec::new(),
             sym_t: NIL,
             builtin_types: HashMap::new(),
         };

@@ -239,7 +239,17 @@ impl Objects {
         let name = self.str_new("BUILTIN");
         let t = self.type_new(name, NIL);
         self.builtin_types.insert(flags, t);
+        // A type nobody filed is a type the library cannot reach: `type by-atom`
+        // walks the base's alist and answers nil, and its callers write into
+        // what they get back rather than checking. Record it here and let the
+        // `type of` instruction file it — this layer has no base to file into.
+        self.unfiled_types.push(t);
         t
+    }
+
+    /// Types created since the last drain, for the caller that owns a base.
+    pub fn take_unfiled_types(&mut self) -> Vec<Obj> {
+        std::mem::take(&mut self.unfiled_types)
     }
 
     /// The flags a value's TYPE is keyed by, which are not always the flags it

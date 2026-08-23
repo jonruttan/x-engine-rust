@@ -172,7 +172,39 @@ impl Engine {
             };
             return Some(self.invoke_cont(callee, v));
         }
+        // VALUE-CALL DISPATCH, and it is the last thing tried on purpose: a
+        // value whose TYPE carries a `call` handler is callable.
+        //
+        // This is how x-lang's whole class layer is reached. `(Type of 1)` has a
+        // CLASS at its head, not a closure — `lib/x/type/class.x` installs
+        // `%class-call-handler` on the class's type, and the engine's job is to
+        // find it and hand the form over. Without this the head is simply not
+        // callable, the form falls through to the data rule, and `(Type of 1)`
+        // evaluates to the LIST `(Type of 1)`. Nothing raises; every class call
+        // in the library quietly answers its own source text.
+        //
+        // The handler is an OPERATIVE taking `(obj . args)`, so the arguments
+        // stay unevaluated and the SUBJECT goes first — the selector and the
+        // rest are the handler's to interpret, not this engine's.
+        if let Some(handler) = self.call_handler_for(callee) {
+            let spine = self.objects.pair(callee, args);
+            return Some(self.eval_call(handler, spine, env));
+        }
         None
+    }
+
+    /// The `call` handler installed on a value's type, if any.
+    fn call_handler_for(&mut self, callee: Obj) -> Option<Obj> {
+        let ty = self.objects.type_of(callee);
+        if ty.is_nil() {
+            return None;
+        }
+        let h = self.objects.type_handler(ty, "call");
+        if h.is_nil() {
+            None
+        } else {
+            Some(h)
+        }
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the

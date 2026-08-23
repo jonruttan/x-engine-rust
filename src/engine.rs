@@ -183,10 +183,11 @@ impl Engine {
             self.objects.env_obj(EnvId::new(0)),
         ];
         for v in samples {
-            let t = self.objects.type_of(v);
-            if !t.is_nil() {
-                self.file_type(t);
-            }
+            let _ = self.objects.type_of(v);
+        }
+        // Drained here and, from now on, by the `type of` instruction itself.
+        for t in self.objects.take_unfiled_types() {
+            self.file_type(t);
         }
     }
 
