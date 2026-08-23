@@ -1,0 +1,29 @@
+[package]
+name = "x-engine-foreign"
+version = "0.0.1"
+edition = "2021"
+description = "The foreign door: the only unsafe code in the x-engine-rust workspace"
+license = "MIT-0"
+repository = "https://github.com/jonruttan/x-engine-rust"
+rust-version = "1.78"
+
+# THE ONLY CRATE IN THIS WORKSPACE THAT MAY WRITE `unsafe`.
+#
+# It is a separate crate rather than a module because of what `forbid` means.
+# The engine core forbids unsafe, and `forbid` is precisely the level that an
+# inner `#![allow]` cannot override -- which is the whole reason to want it, and
+# also the reason the door cannot live inside. A `deny` that one module opts out
+# of is a convention; a `forbid` the compiler enforces across a crate boundary
+# is a guarantee, and the difference shows up the day someone adds a second
+# `#![allow(unsafe_code)]` in a hurry.
+#
+# So the boundary is a package boundary. Everything with a side effect on the
+# world outside the process -- dlopen, calling through an address, syscalls,
+# signal dispositions -- is here, and it is a few hundred lines that can be
+# reviewed as a unit. The engine that depends on it cannot contain unsafe at
+# all, and the build says so rather than a comment.
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"

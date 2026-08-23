@@ -1,0 +1,478 @@
+//! The evaluator: the Engine, the ways a combiner can be applied, and the
+//! argument boundary every primitive crosses exactly once.
+//!
+//! What is NOT here is the primitives themselves. They live in `src/prims/`, one
+//! module per capability group in `tools/contract/isa.x`, because that partition
+//! is the one the language already draws and inventing a second one would mean
+//! two answers to "what does this engine implement".
+//!
+//! FEXPR FROM THE START. x-lang's model is operative-by-default at this level:
+//! a primitive receives its arguments unevaluated and decides. Applicative
+//! semantics are a wrapper over that, not the other way round, and the
+//! conformance suite tests the difference with an unbound symbol — an engine
+//! that evaluated an operative's arguments dies rather than merely differing.
+//! `Body::Applicative` is therefore a CONVENIENCE the dispatcher provides, not a
+//! second evaluation model: it evaluates the spine and checks arity so that a
+//! hundred primitives do not each do it by hand.
+
+use crate::diag::Cond;
+use crate::engine::Engine;
+use crate::obj::{EnvId, Obj, NIL};
+use crate::prim::{Body, PrimDef};
+
+pub type EvalResult = Result<Obj, Cond>;
+
+impl Engine {
+    // --- evaluation ---------------------------------------------------------
+
+    /// Evaluate, WITHOUT growing the stack in tail position.
+    ///
+    /// x-lang requires proper tail calls. This engine recursed on the Rust
+    /// stack and died somewhere between five and ten thousand frames, which is
+    /// not an efficiency question: the conformance suite's own prelude burns
+    /// twenty thousand iterations, so unrelated cases failed with a stack
+    /// overflow — the one failure that reports nothing at all.
+    ///
+    /// The mechanism is the reference engine's. A form in tail position is not
+    /// evaluated by recursing; it is PARKED in `self.tail` and this loop picks
+    /// it up. x-engine-c parks it in the base's `tco-expr` and `tco-env` slots
+    /// for exactly the same reason.
+    pub fn eval(&mut self, form: Obj, env: EnvId) -> EvalResult {
+        let (mut form, mut env) = (form, env);
+        loop {
+            // The armed ceiling. A heap that never frees is exactly the kind
+            // that needs one, and unbounded allocation has taken this project's
+            // machine down before.
+            // Publish an interrupt the handler recorded. Between forms is soon
+            // enough and is the only safe place: the handler runs at an
+            // arbitrary instruction and may not touch the heap.
+            if crate::foreign::interrupted() {
+                let flag = self.sigint_flag;
+                self.objects.set_data(flag, 0, crate::obj::Word(1));
+            }
+            if let Some(limit) = self.alloc_limit {
+                if self.objects.alloc_count() > limit {
+                    return Err(Cond::AllocLimit);
+                }
+            }
+            if form.is_nil() {
+                return Ok(NIL);
+            }
+            if self.objects.is_sym(form) {
+                return match self.envs.lookup(env, form) {
+                    Some(v) => Ok(v),
+                    None => Err(Cond::Unbound(form)),
+                };
+            }
+            if !self.objects.is_pair(form) {
+                // Integers, strings, closures, primitives: self-evaluating.
+                return Ok(form);
+            }
+            let head = self.objects.first(form);
+            let args = self.objects.rest(form);
+            let callee = self.eval(head, env)?;
+            let answer = match self.combine(callee, args, env) {
+                Some(r) => r?,
+                // A head that is not callable makes the form DATA, which is how
+                // x-lang's quoted structures survive being evaluated.
+                None => return Ok(form),
+            };
+            // Something in tail position asked to be evaluated HERE rather than
+            // under another frame. Loop instead of recursing.
+            match self.tail.take() {
+                Some((f, e)) => {
+                    form = f;
+                    env = e;
+                }
+                None => return Ok(answer),
+            }
+        }
+    }
+
+    /// Park a form to be evaluated in the caller's own loop.
+    ///
+    /// Every tail position goes through here: a closure's last body form, the
+    /// winning arm of a `match`, a `guard`'s handler. Anything that evaluates
+    /// its tail directly would reintroduce the frame this removes.
+    pub fn park_tail(&mut self, form: Obj, env: EnvId) -> Obj {
+        self.tail = Some((form, env));
+        NIL
+    }
+
+    /// Run something that may park a tail, and settle it here.
+    ///
+    /// Callers that are NOT a tail position — `apply`, the iterator driver, the
+    /// binary's top level — need a value, not a parked form. Forgetting this is
+    /// how a parked tail leaks into an unrelated evaluation.
+    fn settle(&mut self, r: EvalResult, env: EnvId) -> EvalResult {
+        let v = r?;
+        match self.tail.take() {
+            Some((f, e)) => self.eval(f, e),
+            None => {
+                let _ = env;
+                Ok(v)
+            }
+        }
+    }
+
+    /// Apply a callee to an UNEVALUATED argument spine. `None` when the callee is
+    /// not a combiner at all — the caller decides whether that is data or an
+    /// error, because those two answers differ by context.
+    fn combine(&mut self, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+        if self.objects.is_prim(callee) {
+            let def = self.prims[self.objects.prim_idx(callee)];
+            return Some(self.call_prim(&def, args, env));
+        }
+        if self.objects.is_closure(callee) {
+            return Some(self.apply_closure(callee, args, env));
+        }
+        if self.objects.is_op(callee) {
+            return Some(self.apply_op(callee, args, env));
+        }
+        if self.objects.is_wrapper(callee) {
+            return Some(self.apply_wrapper(callee, args, env));
+        }
+        if self.objects.is_cont(callee) {
+            let v = match self.eval_args(args, env) {
+                Ok(vals) => vals.first().copied().unwrap_or(NIL),
+                Err(c) => return Some(Err(c)),
+            };
+            return Some(self.invoke_cont(callee, v));
+        }
+        None
+    }
+
+    /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the
+    /// inner operative quoted, so it does not evaluate them a second time. That
+    /// is the whole of what "applicative" means here.
+    fn apply_wrapper(&mut self, w: Obj, args: Obj, env: EnvId) -> EvalResult {
+        let inner = self.objects.wrapper_inner(w);
+        let vals = self.eval_args(args, env)?;
+
+        // The spine is the VALUES, unquoted.
+        //
+        // `call_with_values` wraps each in `(lit v)`, which is right for a
+        // closure -- it would otherwise evaluate them a second time -- and wrong
+        // here. An operative binds its spine elements DIRECTLY, so a quoted
+        // value arrives as the two-element form `(lit 3)` rather than as 3, and
+        // `(wrap (op (x) e x))` answers a list instead of its argument.
+        //
+        // Which is exactly what wrapping means: evaluate, then hand the results
+        // to something that does not evaluate.
+        let mut spine = NIL;
+        for &v in vals.iter().rev() {
+            spine = self.objects.pair(v, spine);
+        }
+        self.eval_call(inner, spine, env)
+    }
+
+    /// Call an already-evaluated combiner. Unlike `eval`, a non-combiner here is
+    /// an error: nothing wrote this form, so there is no syntax to fall back to.
+    pub fn eval_call(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+        match self.combine(callee, args, env) {
+            // NOT a tail position: a caller here wants a value.
+            Some(r) => self.settle(r, env),
+            // NOT an error. `eval` already answers the form unchanged when the
+            // head is not callable, and x-engine-c runs `(1 2)` without
+            // complaint. Answering the callee keeps the two paths consistent.
+            None => Ok(callee),
+        }
+    }
+
+    /// Call a combiner with values already computed.
+    pub fn call_with_values(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        let spine = self.quote_values(vals);
+        self.eval_call(callee, spine, env)
+    }
+
+    /// THE ARGUMENT BOUNDARY. Arity is checked and arguments are evaluated here,
+    /// once, for every applicative in the engine.
+    fn call_prim(&mut self, def: &PrimDef, args: Obj, env: EnvId) -> EvalResult {
+        // An operative takes the spine as written; everything else wants values.
+        if let Body::Operative(f) = def.body {
+            return f(self, args, env);
+        }
+        let mut vals = self.eval_args(args, env)?;
+        // PADDED, not checked. A body indexes the slots its arity declares, so
+        // the slots must exist -- but a missing operand is nil, not an error.
+        // x-engine-c raises "+: operand is nil" here; that is the same layer
+        // violation, and copying it would import someone else's.
+        vals.resize(def.arity.0.max(vals.len()), NIL);
+        match def.body {
+            // Already handled above; the compiler cannot know that.
+            Body::Operative(_) => unreachable!("operatives return early"),
+            // Handed the object model and nothing else. It cannot evaluate, it
+            // cannot see an environment, and it cannot read the input stream.
+            Body::Value(f) => f(&mut self.objects, &vals),
+            Body::Applicative(f) => f(self, &vals),
+            // The pure kinds: unwrap, apply the operator, re-box. This preamble
+            // was repeated in eleven primitive bodies before the operator became
+            // the primitive.
+            Body::IntBinop(f) => {
+                let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
+                Ok(self.objects.int(f(x, y)))
+            }
+            Body::IntPred(f) => {
+                let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
+                Ok(self.objects.truth(f(x, y)))
+            }
+            Body::IntUnop(f) => {
+                let x = self.objects.as_int(vals[0]);
+                Ok(self.objects.int(f(x)))
+            }
+        }
+    }
+
+    /// Evaluate an argument spine into values.
+    fn eval_args(&mut self, args: Obj, env: EnvId) -> Result<Vec<Obj>, Cond> {
+        // Collected first so the iterator's borrow of the objects ends before
+        // `eval` needs it mutably.
+        let forms: Vec<Obj> = self.objects.list(args).collect();
+        forms.into_iter().map(|f| self.eval(f, env)).collect()
+    }
+
+    /// Apply a closure. APPLICATIVE, and the first parameter is bound to the
+    /// CLOSURE ITSELF — x-lang's self-passing convention, which is why every
+    /// function in the conformance prelude is written with a leading `self`. It
+    /// recurses without ever having been named.
+    fn apply_closure(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+        let params = self.objects.closure_params(callee);
+        let body = self.objects.closure_body(callee);
+        let defenv = self.objects.closure_env(callee);
+
+        let vals = self.eval_args(args, env)?;
+
+        // Lexical: the new frame hangs off the DEFINING environment. A closure
+        // resolving names in the CALLER's environment would be dynamic scope
+        // wearing this syntax.
+        // The FIRST parameter is bound to the closure itself and the rest take
+        // the arguments in order, so the values line up one position behind the
+        // names.
+        let bound: Vec<Obj> = std::iter::once(callee).chain(vals).collect();
+        let frame = self.envs.push(defenv);
+        self.bind_params(frame, params, &bound);
+        self.eval_body_tail(body, frame)
+    }
+
+    /// Apply an operative: arguments arrive UNEVALUATED and the caller's
+    /// environment is handed over as a value. No self-binding — the two kinds
+    /// differ in what they are for.
+    ///
+    /// The body runs off the OPERATIVE's own environment, so its scope is lexical
+    /// like everything else; the caller's environment is reachable only through
+    /// the name the operative asked for, which makes reaching into it deliberate.
+    fn apply_op(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+        let params = self.objects.op_params(callee);
+        let envname = self.objects.op_envname(callee);
+        let body = self.objects.op_body(callee);
+        let defenv = self.objects.op_env(callee);
+
+        // Arguments arrive AS WRITTEN, so the spine is bound to the names
+        // directly; a name with no argument is nil.
+        let given: Vec<Obj> = self.objects.list(args).collect();
+        let frame = self.envs.push(defenv);
+        self.bind_params(frame, params, &given);
+        if !envname.is_nil() {
+            let e = self.objects.env_obj(env);
+            self.envs.bind(frame, envname, e);
+        }
+        self.eval_body_tail(body, frame)
+    }
+
+    /// Bind a parameter list to values, honouring a DOTTED REST PARAMETER.
+    ///
+    /// `(fn (_ . args) ...)` names a list, not a position: the tail of the
+    /// parameter spine is a symbol rather than nil, and everything not already
+    /// bound goes to it as a list. x-lang's reader protocol depends on it —
+    /// every `read` handler in the conformance suite is written that way — and
+    /// a binder that only walked proper lists would leave the name unbound while
+    /// silently accepting the definition.
+    fn bind_params(&mut self, frame: EnvId, params: Obj, vals: &[Obj]) {
+        let mut p = params;
+        let mut i = 0usize;
+        while self.objects.is_pair(p) {
+            let name = self.objects.first(p);
+            let v = vals.get(i).copied().unwrap_or(NIL);
+            self.envs.bind(frame, name, v);
+            i += 1;
+            p = self.objects.rest(p);
+        }
+        // A non-nil tail is the rest parameter.
+        if !p.is_nil() {
+            let mut list = NIL;
+            for &v in vals[i.min(vals.len())..].iter().rev() {
+                list = self.objects.pair(v, list);
+            }
+            self.envs.bind(frame, p, list);
+        }
+    }
+
+    /// Evaluate a sequence, answering the last value.
+    /// Evaluate all but the last form, and PARK the last.
+    ///
+    /// The last form of a body is in tail position, so evaluating it here would
+    /// be the recursion this whole mechanism exists to avoid.
+    pub fn eval_body_tail(&mut self, body: Obj, env: EnvId) -> EvalResult {
+        let forms: Vec<Obj> = self.objects.list(body).collect();
+        let Some((last, rest)) = forms.split_last() else {
+            return Ok(NIL);
+        };
+        for f in rest {
+            self.eval(*f, env)?;
+        }
+        Ok(self.park_tail(*last, env))
+    }
+
+    pub fn eval_body(&mut self, body: Obj, env: EnvId) -> EvalResult {
+        // Collected first so the iterator's borrow of the objects ends before
+        // `eval` needs it mutably.
+        let forms: Vec<Obj> = self.objects.list(body).collect();
+        let mut last = NIL;
+        for f in forms {
+            last = self.eval(f, env)?;
+        }
+        Ok(last)
+    }
+
+    // --- helpers the primitive modules share ---------------------------------
+
+    /// The nth element of an unevaluated spine. Operatives only: an applicative
+    /// is handed a slice and has no spine to walk.
+    pub fn nth(&self, mut l: Obj, n: usize) -> Obj {
+        for _ in 0..n {
+            if !self.objects.is_pair(l) {
+                return NIL;
+            }
+            l = self.objects.rest(l);
+        }
+        if self.objects.is_pair(l) {
+            self.objects.first(l)
+        } else {
+            NIL
+        }
+    }
+
+    /// Wrap values in `(lit x)` so that calling a combiner with an
+    /// already-computed argument list does not evaluate them a second time. For
+    /// a symbol value the difference is a live unbound-name error, not a nuance.
+    pub fn quote_values(&mut self, vals: &[Obj]) -> Obj {
+        let lit = self.objects.sym("lit");
+        let mut out = NIL;
+        for &v in vals.iter().rev() {
+            let inner = self.objects.pair(v, NIL);
+            let q = self.objects.pair(lit, inner);
+            out = self.objects.pair(q, out);
+        }
+        out
+    }
+
+    // --- reading operands -----------------------------------------------
+    // UNCHECKED, every one. An engine is a machine: it reads the word at a
+    // slot and applies an operator. Deciding that a word is "not a number" is
+    // a TYPE judgement, and types are x-lang's, one layer up.
+    //
+    // x-lang's contract already ruled first/rest unchecked; these are the same
+    // rule. They were written as checks anyway, and each check individually
+    // looked like an improvement while collectively pulling the type system
+    // down into the machine.
+    //
+    // x-engine-c agrees by demonstration: `(+ 1 (lit a))` and `(1 2)` both run
+    // there. Nothing here can fail, so nothing here returns a Result.
+
+    // --- what the process boundary needs ------------------------------------
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::testkit::{eval_ok, int_of, raises, truthy};
+
+    // These exercise the EVALUATOR, not the instructions that ride on it. Every
+    // test in this crate used to reach it sideways through a primitive, which
+    // meant the rules below — what self-evaluates, what a non-callable head
+    // does, how arguments line up with names — were only ever asserted by
+    // accident.
+
+    #[test]
+    fn literals_evaluate_to_themselves() {
+        assert_eq!(int_of("7"), 7);
+        assert!(truthy(r#"(eq? (lit ()) ())"#));
+    }
+
+    #[test]
+    fn a_symbol_resolves_and_an_unbound_one_raises() {
+        assert_eq!(int_of("(def x 5) x"), 5);
+        assert!(raises("no-such-name"));
+    }
+
+    /// A head that is not callable makes the form DATA. This is how quoted
+    /// structures survive evaluation, and x-engine-c agrees: `(1 2)` runs there.
+    #[test]
+    fn a_non_callable_head_makes_the_form_data() {
+        assert!(!raises("(1 2)"));
+        assert!(truthy("(eq? (first (1 2)) 1)"));
+    }
+
+    /// Arguments are evaluated LEFT TO RIGHT and exactly once. A second
+    /// evaluation would be invisible for constants and fatal for a symbol.
+    #[test]
+    fn arguments_are_evaluated_once_each() {
+        assert_eq!(
+            int_of("(def n 0) (def bump (fn (self) (set! n (+ n 1)))) (+ (bump) (bump)) n"),
+            2
+        );
+    }
+
+    /// Missing operands are nil, extra ones ignored. Not a check — a machine
+    /// reads the slots its instruction declares.
+    #[test]
+    fn operands_are_padded_and_extras_dropped() {
+        assert_eq!(int_of("(+ 1)"), 1);
+        assert_eq!(int_of("(+ 1 2 99)"), 3);
+    }
+
+    /// `fn` binds its first parameter to the closure itself, so the values line
+    /// up one position behind the names.
+    #[test]
+    fn a_closures_values_line_up_behind_its_names() {
+        assert_eq!(int_of("((fn (self a b) (- a b)) 9 4)"), 5);
+        assert!(truthy("((fn (self) (same? self self)))"));
+    }
+
+    /// A rest parameter takes everything left over, including nothing.
+    #[test]
+    fn a_rest_parameter_collects_what_remains() {
+        assert_eq!(int_of("((fn (self a . more) (first more)) 1 2 3)"), 2);
+        assert!(truthy("(eq? ((fn (self . more) more) ) ())"));
+    }
+
+    /// The frame hangs off the DEFINING environment, not the caller's. Dynamic
+    /// scope would find the caller's `n` here and answer 2.
+    #[test]
+    fn a_closure_resolves_names_where_it_was_written() {
+        assert_eq!(
+            int_of("(def n 1) (def get (fn (self) n)) (def call (fn (self) (%seq (def n 2) (get)))) (call)"),
+            1
+        );
+    }
+
+    /// An operative gets its spine AS WRITTEN, so an unbound name survives.
+    #[test]
+    fn an_operative_receives_forms_not_values() {
+        assert!(truthy("(def q (op (x) e x)) (eq? (q nope) (lit nope))"));
+    }
+
+    /// Nested calls unwind a raise all the way out rather than swallowing it.
+    #[test]
+    fn a_raise_propagates_through_nested_calls() {
+        assert!(raises("((fn (self) ((fn (s2) (error 1)))))"));
+        assert_eq!(int_of("(guard (e 9) ((fn (self) (error 1))))"), 9);
+    }
+
+    /// `eval_str` answers the LAST form's value, which is what makes the
+    /// embedding API usable and what every test here depends on.
+    #[test]
+    fn a_source_string_answers_its_last_form() {
+        let (e, v) = eval_ok("(def a 1) (def b 2) (+ a b)");
+        assert_eq!(e.objects.as_int(v), 3);
+    }
+}

@@ -1,0 +1,75 @@
+# The engine is TWO crates, and the split is a safety boundary rather than a
+# packaging preference. See `[lints.rust]` below and foreign/Cargo.toml.
+[workspace]
+members = ["foreign"]
+
+[package]
+name = "x-engine-rust"
+version = "0.0.1"
+edition = "2021"
+description = "An x-lang engine in Rust; the core forbids unsafe code"
+license = "MIT-0"
+repository = "https://github.com/jonruttan/x-engine-rust"
+
+# The oldest toolchain this has been COMPILED with, not a guess.
+#
+# First written as 1.82 on the reasoning that `Option::is_none_or` needed it --
+# except that call went away when arity checking was removed, and the crate
+# builds fine on 1.78. An MSRV asserted from memory is worse than none: it
+# refuses toolchains that work.
+#
+# 1.78 is what is on this machine to test against. The true floor may be lower;
+# it is not claimed, because it is not checked. `Integer::div_ceil` (1.73) is the
+# newest API in use.
+rust-version = "1.78"
+
+# A LIBRARY first, a binary second.
+#
+# Without a lib target Rust never runs doctests -- they are silently skipped for
+# binaries -- so every example in this crate's documentation went unchecked, and
+# a doc comment that makes a claim about behaviour is an unverified assertion.
+#
+# It also matters for what this engine is FOR. x-lang's contract describes an
+# engine driven by a wrapper, and a binary-only crate can only be driven through
+# stdin. Everything the binary does is now available to a caller.
+[lib]
+name = "x_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "x-engine"
+path = "src/main.rs"
+
+# Declared here rather than passed on the command line, so a plain `cargo build`
+# holds the same bar as check.sh. A warning nobody has to fix is a warning that
+# accumulates, and this repo has demonstrated that.
+[dependencies]
+# The foreign door, and the only dependency. It is in this workspace, not on
+# crates.io: it exists to be the one place `unsafe` is permitted, and a
+# dependency that could be swapped for a version with different contents would
+# defeat that.
+x-engine-foreign = { path = "foreign" }
+
+[lints.rust]
+# FORBID, which is stronger than deny in exactly the way that matters: an inner
+# `#![allow(unsafe_code)]` cannot override it. Under `deny` any module could opt
+# itself out with one line, so the boundary was a convention the build agreed to
+# rather than a property it checked.
+#
+# The engine core therefore contains NO unsafe code, and cannot be made to
+# without editing this file. Everything that reaches outside the process --
+# dlopen, calling through a machine address, syscalls, signal dispositions --
+# lives in the x-engine-foreign crate, which is small enough to review as a unit
+# and is the only place the compiler permits it.
+#
+# What crosses the boundary is deliberately narrow: addresses as `Foreign`, and
+# integers. Marshalling x-lang values stays here, on the safe side, because it
+# is ordinary code and does not become safer by moving next to the unsafe.
+unsafe_code = "forbid"
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"
+
+[profile.release]
+opt-level = 3

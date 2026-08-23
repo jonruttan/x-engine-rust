@@ -1,0 +1,48 @@
+# Runs check.sh, and nothing else.
+#
+# The repository already knows what "correct" means -- fmt, clippy with warnings
+# as errors, unit tests, doctests, a release build. Restating that list here
+# would give two answers to one question, and the one CI used would be the one
+# that drifted.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # x-lang owns the conformance suite. Without it the engine can be
+          # checked against its own intent but not against the language's, and
+          # those are different questions.
+          repository: jonruttan/x-lang
+          path: x-lang
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          path: engine
+      # rust-toolchain.toml decides the version; nothing is pinned here, so the
+      # repository's answer is the only answer.
+      - run: cargo --version && rustc --version
+        working-directory: engine
+      - run: sh check.sh "$GITHUB_WORKSPACE/x-lang"
+        working-directory: engine
+
+  # The conformance score is REPORTED, not enforced. This engine does not yet
+  # satisfy `core`, so a threshold here would either be a lie or a permanent
+  # red -- and the number moving is not by itself evidence of anything, which is
+  # a lesson this repository learned the hard way.
+  report:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - run: echo "conformance is reported by check.sh above"

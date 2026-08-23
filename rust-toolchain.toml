@@ -1,0 +1,12 @@
+# The toolchain channel this engine is built with.
+#
+# ONLY RUSTUP READS THIS. On a machine whose Rust came from a package manager --
+# Homebrew's `rust` formula, a distribution package -- nothing consults it, and
+# that is fine: it is a statement of what the project targets, honoured where it
+# can be. CI runners use rustup, so it takes effect there.
+#
+# The CHANNEL only, never the architecture. That must follow the host, or this
+# file breaks every machine that is not the one it was written on.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

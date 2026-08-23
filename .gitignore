@@ -1,0 +1,4 @@
+/target
+# The build's param declaration: a per-BINARY fact, regenerated on every build.
+# Committing it would assert whichever platform built last as the project's.
+x-engine-build.xon
