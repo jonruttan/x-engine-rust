@@ -105,8 +105,8 @@ fn cell_spine(o: &mut Objects, n: usize) -> Obj {
     let mut spine = NIL;
     for _ in 0..n {
         let zero = o.int(0);
-        let cell = o.pair(zero, NIL);
-        spine = o.pair(cell, spine);
+        let cell = o.spair(zero, NIL);
+        spine = o.spair(cell, spine);
     }
     spine
 }
@@ -114,7 +114,7 @@ fn cell_spine(o: &mut Objects, n: usize) -> Obj {
 pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     let mut spine = NIL;
     for _ in 0..ROUTES.len() {
-        spine = o.pair(NIL, spine);
+        spine = o.spair(NIL, spine);
     }
     let env_obj = o.env_obj(env);
     set_slot(o, spine, PRIMS_SLOT, catalog);
@@ -122,7 +122,7 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
 
     // The library's own slots, shaped the way it reads them.
     let zero = o.int(0);
-    let line = o.pair(zero, NIL);
+    let line = o.spair(zero, NIL);
     set_slot(o, spine, LINE, line);
     // stdin, stdout, stderr: the library indexes the second and third.
     let files = cell_spine(o, 3);

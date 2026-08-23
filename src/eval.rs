@@ -97,7 +97,7 @@ impl Engine {
                     None => Err(Cond::Unbound(form)),
                 };
             }
-            if !self.objects.is_pair(form) {
+            if !self.objects.is_cell(form) {
                 // Integers, strings, closures, primitives: self-evaluating.
                 return Ok(form);
             }
@@ -355,7 +355,7 @@ impl Engine {
     fn bind_params(&mut self, frame: EnvId, params: Obj, vals: &[Obj]) {
         let mut p = params;
         let mut i = 0usize;
-        while self.objects.is_pair(p) {
+        while self.objects.is_cell(p) {
             let name = self.objects.first(p);
             let v = vals.get(i).copied().unwrap_or(NIL);
             self.envs.bind(frame, name, v);
@@ -405,12 +405,12 @@ impl Engine {
     /// is handed a slice and has no spine to walk.
     pub fn nth(&self, mut l: Obj, n: usize) -> Obj {
         for _ in 0..n {
-            if !self.objects.is_pair(l) {
+            if !self.objects.is_cell(l) {
                 return NIL;
             }
             l = self.objects.rest(l);
         }
-        if self.objects.is_pair(l) {
+        if self.objects.is_cell(l) {
             self.objects.first(l)
         } else {
             NIL

@@ -40,7 +40,7 @@ fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
         // depth, silently turning a non-local exit into a handled error.
         Err(cond) if e.is_escaping() => Err(cond),
         Err(cond) => {
-            let (name, handler) = if e.objects.is_pair(spec) {
+            let (name, handler) = if e.objects.is_cell(spec) {
                 (e.objects.first(spec), e.objects.rest(spec))
             } else {
                 (NIL, NIL)
@@ -70,7 +70,7 @@ fn match_(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
         // different question from walking the spine — that is the iterator's job
         // now. A malformed arm is skipped rather than raising, because a match
         // with no true arm is already a legitimate nil.
-        if !e.objects.is_pair(arm) {
+        if !e.objects.is_cell(arm) {
             continue;
         }
         let test = e.objects.first(arm);

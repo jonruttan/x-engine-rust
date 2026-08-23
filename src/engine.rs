@@ -215,9 +215,9 @@ impl Engine {
     /// separate sentinel. The library only cares about the alist's shape.
     pub(crate) fn file_type(&mut self, t: Obj) {
         let base = self.base;
-        let entry = self.objects.pair(t, t);
+        let entry = self.objects.spair(t, t);
         let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
-        let cell = self.objects.pair(entry, head);
+        let cell = self.objects.spair(entry, head);
         crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);
     }
 
@@ -237,12 +237,12 @@ impl Engine {
             let mut methods = NIL;
             for (m, o) in ms.iter().rev() {
                 let msym = self.objects.sym(m);
-                let entry = self.objects.pair(msym, *o);
-                methods = self.objects.pair(entry, methods);
+                let entry = self.objects.spair(msym, *o);
+                methods = self.objects.spair(entry, methods);
             }
             let nsym = self.objects.sym(ns);
-            let nsentry = self.objects.pair(nsym, methods);
-            cat = self.objects.pair(nsentry, cat);
+            let nsentry = self.objects.spair(nsym, methods);
+            cat = self.objects.spair(nsentry, cat);
         }
         cat
     }

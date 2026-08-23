@@ -70,6 +70,22 @@ pub const FLAG_PTR: Flags = Flags::new(0x15);
 /// Not simple-type codes: these have their own marker bits, because the low
 /// nibble is reserved for per-type attributes.
 pub const FLAG_PAIR: Flags = Flags::new(0x0100);
+
+/// A STRUCTURAL pair: an interpreter spine, not an x-lang list.
+///
+/// The distinction is x-lang's, not an implementation detail. The reference
+/// keeps two pair kinds and the library tells them apart by their TYPE WORD — a
+/// list pair points at the pair/list type, a structural one carries the spair
+/// tag. The C's ISA states it outright of `base bind`: it "allocates a
+/// STRUCTURAL spair for the env spine, which X pair cannot make."
+///
+/// What rides on it: `pair?` answers #f for a spine, so the library's list
+/// walkers do not wander into the interpreter's own structure, and `def-class`
+/// can tell its member rows from the frames they live in.
+///
+/// Same layout as a list pair — `first` and `rest` work on both — so this costs
+/// nothing but the tag.
+pub const FLAG_SPAIR: Flags = Flags::new(0x0101);
 pub const FLAG_SYM: Flags = Flags::new(0x0200);
 
 /// `#f`. x-lang's falsy set is exactly {nil, #f} and that model is SETTLED — it
@@ -274,27 +290,33 @@ impl Objects {
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
         let at = self.heap.frontier();
-        // THE TYPE WORD, and it is NOT stamped yet. The reason is worth keeping.
+        // THE TYPE WORD. x-lang reads it DIRECTLY — `%reflect-type-word` is a
+        // raw word read — and lib/x/boot/printer.x dispatches on what it finds,
+        // rendering NOTHING for a word of 0. So a value must point at its type
+        // TREE before the library can print it, and `display` stays silent until
+        // it does.
         //
-        // x-lang reads this word directly — `%reflect-type-word` is a raw word
-        // read — and lib/x/boot/printer.x renders NOTHING for a word of 0. So a
-        // value must carry a pointer to its type TREE before the library can
-        // print it, and `display` stays silent until it does.
+        // SPINES are stamped and VALUES are not, which is a halfway house and
+        // known to be one. Stamping values was tried per kind: ints, strings,
+        // symbols, characters, primitives and closures are all fine. LIST PAIRS
+        // alone break `def-class` — its member key comes out nil and every class
+        // answers "no such static member" — and that survived separating spines
+        // from lists, so it is not the spine confusion this commit fixes.
         //
-        // Stamping every kind was tried and reverted. It is right for ints,
-        // strings, symbols and characters; it breaks on PAIRS, and that is not a
-        // bug in the stamping. The reference has TWO pair kinds — LIST pairs
-        // carrying the pair/list type, and STRUCTURAL spairs carrying the spair
-        // tag — and the library tells them apart by exactly this word. The C's
-        // own ISA says so of `base bind`: it "allocates a STRUCTURAL spair for
-        // the env spine, which X pair cannot make."
+        // What it looks like: with a word to follow, `%reflect-iter-new` and
+        // friends now dereference a list pair's type tree where they used to
+        // stop at 0, so the library reaches machinery this engine had been
+        // starving. That is the library working as designed against an engine
+        // that is not ready for it, rather than a bug in the stamping.
         //
-        // This engine has ONE pair kind, so stamping tells the library that every
-        // interpreter spine is a list. `def-class` then mis-walks its member rows
-        // and every class answers "no such static member".
-        //
-        // The next step is therefore the object model, not the printer.
-        self.heap.push(NIL.word());
+        // A STRUCTURAL pair carries the tree tag; everything else keeps a nil
+        // word for now.
+        let ty = if flags == FLAG_SPAIR {
+            self.spair_marker
+        } else {
+            NIL
+        };
+        self.heap.push(ty.word());
         self.heap.push(Word(flags.raw())); // flags
         for _ in 0..n {
             self.heap.push(NIL.word());

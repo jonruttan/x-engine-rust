@@ -56,8 +56,8 @@ impl Objects {
     fn group(&mut self, n: usize) -> Obj {
         let mut spine = NIL;
         for _ in 0..n {
-            let stack = self.pair(NIL, NIL);
-            spine = self.pair(stack, spine);
+            let stack = self.spair(NIL, NIL);
+            spine = self.spair(stack, spine);
         }
         spine
     }
@@ -92,15 +92,15 @@ impl Objects {
 
         // The name is a STACK too, so that `type-name` — its head — is the name
         // itself. The reference does the same, and reflect.x reads the head.
-        let name_stack = self.pair(name, NIL);
+        let name_stack = self.spair(name, NIL);
 
         let mut spine = NIL;
-        let data = self.pair(NIL, NIL);
+        let data = self.spair(NIL, NIL);
         for slot in [ops, iter, io, cvt, proc, heap, data, name_stack]
             .into_iter()
             .take(TYPE_GROUPS)
         {
-            spine = self.pair(slot, spine);
+            spine = self.spair(slot, spine);
         }
         // A type TREE carries the tree tag in its own word, which is how the
         // library tells a real tree from any other word it might find: it probes
@@ -143,10 +143,10 @@ impl Objects {
     /// question one layer up.
     fn install_handlers(&mut self, ty: Obj, handlers: Obj) {
         let mut at = handlers;
-        while self.is_pair(at) {
+        while self.is_cell(at) {
             let entry = self.first(at);
             at = self.rest(at);
-            if !self.is_pair(entry) {
+            if !self.is_cell(entry) {
                 continue;
             }
             let key = self.first(entry);
@@ -167,7 +167,7 @@ impl Objects {
                 fam = self.rest(fam);
             }
             let stack = self.first(fam);
-            if self.is_pair(stack) {
+            if self.is_cell(stack) {
                 self.set_data(stack, 0, handler.word());
             }
         }

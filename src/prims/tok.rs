@@ -169,7 +169,7 @@ pub(crate) fn score_one(
 /// it lets the quote and quasiquote readers live on the symbol type beside the
 /// symbol reader.
 pub(crate) fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
-    if e.objects.is_pair(slot) {
+    if e.objects.is_cell(slot) {
         e.objects.list(slot).collect()
     } else {
         vec![slot]

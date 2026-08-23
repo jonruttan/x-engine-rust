@@ -168,17 +168,17 @@ fn render(a: &Objects, v: Obj, depth: usize) -> String {
     if depth >= 4 {
         return "...".to_string();
     }
-    if a.is_pair(v) {
+    if a.is_cell(v) {
         let mut parts = Vec::new();
         let mut at = v;
-        while a.is_pair(at) && parts.len() < 8 {
+        while a.is_cell(at) && parts.len() < 8 {
             parts.push(render(a, a.first(at), depth + 1));
             at = a.rest(at);
         }
         if !at.is_nil() {
             parts.push(".".to_string());
             parts.push(render(a, at, depth + 1));
-        } else if a.is_pair(v) && parts.len() == 8 {
+        } else if a.is_cell(v) && parts.len() == 8 {
             parts.push("...".to_string());
         }
         return format!("({})", parts.join(" "));
