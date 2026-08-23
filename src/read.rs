@@ -22,6 +22,13 @@ use crate::objects::Objects;
 pub struct Reader {
     src: Vec<u8>,
     pos: usize,
+    /// The source as a string OBJECT, made once and kept.
+    ///
+    /// Reader macros run against a BUFFER, and a buffer views a string object's
+    /// bytes — so driving x-lang's registered analysers needs the source to
+    /// exist as a value, not just as a Vec. Made lazily because a reader that
+    /// never meets a macro never needs one.
+    text: Obj,
 }
 
 impl Reader {
@@ -29,7 +36,75 @@ impl Reader {
         Reader {
             src: src.as_bytes().to_vec(),
             pos: 0,
+            text: NIL,
         }
+    }
+
+    /// A reader over bytes already held, starting at `at`.
+    ///
+    /// Used when a reader macro reads FURTHER from a buffer: the text object
+    /// already exists, so it is handed over rather than remade.
+    pub(crate) fn from_bytes(src: Vec<u8>, at: usize, text: Obj) -> Self {
+        Reader { src, pos: at, text }
+    }
+
+    /// One form of BUILT-IN syntax, EXCEPT a list.
+    ///
+    /// Lists are the form reader's, not this one's, because every element is a
+    /// position where a macro may begin — `(def q 'str)` is the ordinary case —
+    /// and a list read here would read its elements with no macro in the loop.
+    ///
+    /// It does NOT skip blanks: the caller has already done that, and may have
+    /// offered the position to a macro first.
+    pub(crate) fn read_one_builtin(&mut self, a: &mut Objects) -> Option<Obj> {
+        let c = self.peek()?;
+        match c {
+            b'(' => None,
+            b')' => {
+                self.pos += 1;
+                Some(NIL)
+            }
+            b'"' => {
+                self.pos += 1;
+                Some(self.read_string(a))
+            }
+            b'#' if self.at(1) == Some(b'\\') => {
+                self.pos += 2;
+                Some(self.read_char(a))
+            }
+            _ => Some(self.read_atom(a)),
+        }
+    }
+
+    /// Is the byte at the cursor a lone `.` acting as a tail separator?
+    pub(crate) fn at_dot_separator(&self) -> bool {
+        self.peek() == Some(b'.') && self.dot_is_a_separator()
+    }
+
+    pub(crate) fn bump(&mut self) {
+        self.pos += 1;
+    }
+
+    /// The source as a string object, for a buffer to view.
+    pub(crate) fn text_obj(&mut self, a: &mut Objects) -> Obj {
+        if self.text.is_nil() {
+            let s = String::from_utf8_lossy(&self.src).into_owned();
+            self.text = a.str_new(&s);
+        }
+        self.text
+    }
+
+    /// The source object if one was ever made, else nil. For rooting.
+    pub(crate) fn text_obj_if_made(&self) -> Obj {
+        self.text
+    }
+
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
+    pub(crate) fn set_pos(&mut self, at: usize) {
+        self.pos = at;
     }
 
     /// One byte, consumed. `None` at end of input — which is how `io read-char`
@@ -40,16 +115,16 @@ impl Reader {
         Some(c)
     }
 
-    fn peek(&self) -> Option<u8> {
+    pub(crate) fn peek(&self) -> Option<u8> {
         self.src.get(self.pos).copied()
     }
 
     /// The byte `n` ahead, for the one-byte lookahead `#\` needs.
-    fn at(&self, n: usize) -> Option<u8> {
+    pub(crate) fn at(&self, n: usize) -> Option<u8> {
         self.src.get(self.pos + n).copied()
     }
 
-    fn skip_blanks(&mut self) {
+    pub(crate) fn skip_blanks(&mut self) {
         loop {
             match self.peek() {
                 Some(c) if c.is_ascii_whitespace() => self.pos += 1,
@@ -102,7 +177,7 @@ impl Reader {
     /// `(fn (_ . args) ...)`, so the whole protocol fails on a reader that
     /// treats the dot as an atom, and it fails by producing nil rather than by
     /// complaining.
-    fn read_list(&mut self, a: &mut Objects) -> Obj {
+    pub(crate) fn read_list(&mut self, a: &mut Objects) -> Obj {
         // Collect then build right-to-left: a list is a spine of pairs ending in
         // its tail, and building it backwards avoids walking to the end per
         // element.
@@ -151,7 +226,7 @@ impl Reader {
         }
     }
 
-    fn read_string(&mut self, a: &mut Objects) -> Obj {
+    pub(crate) fn read_string(&mut self, a: &mut Objects) -> Obj {
         let mut s = String::new();
         while let Some(c) = self.peek() {
             self.pos += 1;
@@ -175,18 +250,6 @@ impl Reader {
 
     /// The nine named characters, which are the reference engine's list and not
     /// a choice: `lib/` writes `#\newline` and expects a character back.
-    const CHAR_NAMES: &'static [(&'static str, u32)] = &[
-        ("alarm", 7),
-        ("backspace", 8),
-        ("delete", 127),
-        ("escape", 27),
-        ("newline", 10),
-        ("null", 0),
-        ("return", 13),
-        ("space", 32),
-        ("tab", 9),
-    ];
-
     /// A character literal, with `#\` already consumed.
     ///
     /// ENGINE SYNTAX, not a library reader macro. docs/syntax.md's dialect
@@ -201,7 +264,7 @@ impl Reader {
     ///   * a NAME, but only where the first byte is a letter, because a
     ///     non-letter scores immediately. That is what makes `#\(` and `#\;`
     ///     readable at all.
-    fn read_char(&mut self, a: &mut Objects) -> Obj {
+    pub(crate) fn read_char(&mut self, a: &mut Objects) -> Obj {
         let Some(first) = self.peek() else {
             // `#\` at end of input: nothing to name a character with.
             return NIL;
@@ -240,7 +303,7 @@ impl Reader {
         if name.len() == 1 {
             return a.char_new(first as u32);
         }
-        for (n, cp) in Self::CHAR_NAMES {
+        for (n, cp) in crate::vocabulary::CHAR_NAMES {
             if *n == name {
                 return a.char_new(*cp);
             }
@@ -253,7 +316,7 @@ impl Reader {
         a.char_new(first as u32)
     }
 
-    fn read_atom(&mut self, a: &mut Objects) -> Obj {
+    pub(crate) fn read_atom(&mut self, a: &mut Objects) -> Obj {
         let start = self.pos;
         while let Some(c) = self.peek() {
             if c.is_ascii_whitespace() || c == b'(' || c == b')' || c == b';' {

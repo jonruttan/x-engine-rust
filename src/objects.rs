@@ -19,9 +19,10 @@
 //!   word 2+  data
 //! ```
 //!
-//! There is no heap-link word. This engine has no collector, so there is no chain
-//! to thread — which also makes `gc/explicit-only` and `gc/non-moving` true for
-//! free rather than by care.
+//! Word 0 is the HEAP LINK, threading every live object into one chain so the
+//! collector has something to sweep. It is the header's whole cost: x-lang never
+//! reads it, and `tools/contract/obj-layout.x` does not name it, because the
+//! chain is the engine's business and not the contract's.
 //!
 //! STORAGE ANSWERS `Word`, NOT MEANING. `data(o, i)` cannot know whether the slot
 //! holds an object, an integer or an address, so it answers a raw `Word` and the
@@ -42,9 +43,16 @@ use std::collections::HashMap;
 // Header shape. These MUST agree with tools/contract/obj-layout.x: x-lang reads
 // that file and computes offsets from it, so a disagreement here is not a Rust
 // bug that Rust can catch — it is the engine lying about itself.
-pub const SLOT_TYPE: u64 = 0;
-pub const SLOT_FLAGS: u64 = 1;
-pub const META_LEN: u64 = 2;
+/// The collector's chain link: every object is threaded here at birth.
+pub const SLOT_HEAP: u64 = 0;
+pub const SLOT_TYPE: u64 = 1;
+pub const SLOT_FLAGS: u64 = 2;
+/// How many DATA words follow. The sweep needs it to know where an object ends;
+/// the reference packs the same fact into its flags word, which x-lang reads.
+pub const SLOT_LEN: u64 = 3;
+/// Header words before the data. Committed in `tools/contract/obj-layout.x` as
+/// `%obj-meta-len`, which is where the library reads it from.
+pub const META_LEN: u64 = 4;
 
 // Simple-type codes, held in the flags word. Same values as x-engine-c uses: the
 // layout is this engine's to choose, but these bits are read by name from
@@ -70,6 +78,36 @@ pub const FLAG_PTR: Flags = Flags::new(0x15);
 /// Not simple-type codes: these have their own marker bits, because the low
 /// nibble is reserved for per-type attributes.
 pub const FLAG_PAIR: Flags = Flags::new(0x0100);
+
+/// A STRUCTURAL pair: an interpreter spine, not an x-lang list.
+///
+/// The distinction is x-lang's, not an implementation detail. The reference
+/// keeps two pair kinds and the library tells them apart by their TYPE WORD — a
+/// list pair points at the pair/list type, a structural one carries the spair
+/// tag. The C's ISA states it outright of `base bind`: it "allocates a
+/// STRUCTURAL spair for the env spine, which X pair cannot make."
+///
+/// What rides on it: `pair?` answers #f for a spine, so the library's list
+/// walkers do not wander into the interpreter's own structure, and `def-class`
+/// can tell its member rows from the frames they live in.
+///
+/// Same layout as a list pair — `first` and `rest` work on both — so this costs
+/// nothing but the tag.
+pub const FLAG_SPAIR: Flags = Flags::new(0x0101);
+
+/// A type HANDLE: the atom `type of` answers and the type-alist is keyed by.
+///
+/// NOT an ordinary symbol, and the difference is one x-lang reads.
+/// `lib/x/boot/reflect.x` says it plainly: "The static-ATOM sentinel tag marks
+/// type HANDLES (the name atoms `type of` returns) and other raw atoms. It is
+/// NOT what #t/#f carry (nil-typed, tag 0) and NOT what interned symbols carry
+/// (the SYMBOL type tree)."
+///
+/// So a handle carries the atom tag while a symbol points at the SYMBOL tree,
+/// and the library derives both tags by probing a real handle and a real tree.
+/// With `type of` answering the TREE instead, this engine made the two tags
+/// identical — and its own base then read as a type handle.
+pub const FLAG_HANDLE: Flags = Flags::new(0x0102);
 pub const FLAG_SYM: Flags = Flags::new(0x0200);
 
 /// `#f`. x-lang's falsy set is exactly {nil, #f} and that model is SETTLED — it
@@ -178,6 +216,9 @@ pub struct Objects {
     pub(crate) shared_symbols: Symbols,
     /// `#f`. x-lang's falsy set is exactly {nil, #f} and that model is settled.
     false_obj: Obj,
+    /// Builtin types made on demand and not yet filed in a base's type-alist.
+    /// See [`Objects::take_unfiled_types`].
+    pub(crate) unfiled_types: Vec<Obj>,
     /// The symbol `t`. `eq?` answers with it rather than `#t` because nil is a
     /// legitimate value to compare: a predicate answering nil for "equal" could
     /// not say that `(eq? () ())` holds.
@@ -186,6 +227,88 @@ pub struct Objects {
     /// answer the SAME object. Simple values carry no type word, so the
     /// stability x-lang requires comes from here rather than from the header.
     pub(crate) builtin_types: HashMap<Flags, Obj>,
+    /// The tag every registered type TREE carries in its own type word.
+    ///
+    /// x-lang derives this rather than being told it — `%reflect-spair-tw` is
+    /// the type word of the first type-alist entry's tree — and then uses it to
+    /// check that a word really points at a tree before walking one.
+    pub(crate) spair_marker: Obj,
+    /// The tag every type HANDLE carries, distinct from [`Objects::spair_marker`].
+    ///
+    /// x-lang probes it off `(type of 0)` and uses it to tell a handle from a
+    /// thing that merely has a type. The two must not be equal.
+    pub(crate) satom_marker: Obj,
+    /// The newest allocation; every object links to the one before it.
+    ///
+    /// The C engine keeps the same chain in header word 0, and for the same
+    /// reason: a flat heap has no other enumeration.
+    pub(crate) heap_chain: Obj,
+    /// Swept objects, by data length, waiting to be handed out again.
+    ///
+    /// Keyed by exact size because the collector is NON-MOVING: a reclaimed
+    /// object's words stay where they are, so they can only serve an allocation
+    /// that fits them exactly.
+    pub(crate) free: HashMap<u64, Vec<Obj>>,
+    /// Overwrite a swept object's flags, so a later read of it traps. Debug only.
+    /// Objects on the heap chain right now, as against `heap count`, which is
+    /// every object ever allocated and only ever rises.
+    pub(crate) live: usize,
+    pub(crate) poison_freed: bool,
+    /// What a poisoned object used to be, so the trap can name it.
+    pub(crate) freed_kind: HashMap<Obj, (u64, u64, u64)>,
+}
+
+/// The kinds whose type word is stamped at birth.
+///
+/// Every kind an ordinary value can be. The list is explicit rather than derived
+/// because the types must exist BEFORE the objects that carry them, and a kind
+/// left out does not fail where it is missing — it fails wherever something
+/// tries to print one.
+pub const STAMPED_KINDS: &[(Flags, &str)] = &[
+    (FLAG_INT, "INTEGER"),
+    (FLAG_CHAR, "CHARACTER"),
+    (FLAG_STR, "STRING"),
+    (FLAG_SYM, "SYMBOL"),
+    (FLAG_PAIR, "PAIR"),
+    (FLAG_PTR, "POINTER"),
+    (FLAG_PRIM, "PRIMITIVE"),
+    (FLAG_FN, "PROCEDURE"),
+    (FLAG_OP, "OPERATIVE"),
+    (FLAG_WRAP, "PROCEDURE"),
+    (FLAG_ENV, "ENVIRONMENT"),
+    (FLAG_TYPE, "TYPE"),
+    (FLAG_ITER, "ITER"),
+    (FLAG_BUF, "BUFFER"),
+    (FLAG_TOKBASE, "TOKENBASE"),
+    (FLAG_CONT, "CONTINUATION"),
+];
+
+/// The kind a value REPORTS as, which is not always the one it carries.
+///
+/// See [`Objects::reported_flags`] — this is the same rule at the point of
+/// allocation, where there is no object to ask yet.
+pub fn reported_kind(flags: Flags) -> Flags {
+    if flags == FLAG_FOREIGN {
+        FLAG_PRIM
+    } else {
+        flags
+    }
+}
+
+/// The name a kind reports, or `BUILTIN` for one nobody has named.
+///
+/// These are the REFERENCE's names, and they are reachable from x-lang rather
+/// than decorative: once a value carries a pointer to its type tree,
+/// `%reflect-type-name` dereferences it and answers what it finds. Naming every
+/// builtin type the same thing made every type-name comparison in the library
+/// agree, which is worse than answering nothing at all — a name of "BUILTIN"
+/// for both INTEGER and SYMBOL is not a missing answer, it is a wrong one.
+pub fn kind_name(flags: Flags) -> &'static str {
+    STAMPED_KINDS
+        .iter()
+        .find(|(f, _)| *f == flags)
+        .map(|(_, n)| *n)
+        .unwrap_or("BUILTIN")
 }
 
 impl Objects {
@@ -195,16 +318,29 @@ impl Objects {
             symbols: Symbols::new(),
             shared_symbols: Symbols::new(),
             false_obj: NIL,
+            unfiled_types: Vec::new(),
             sym_t: NIL,
             builtin_types: HashMap::new(),
+            spair_marker: NIL,
+            satom_marker: NIL,
+            heap_chain: NIL,
+            free: HashMap::new(),
+            live: 0,
+            poison_freed: std::env::var("X_GC_POISON").is_ok(),
+            freed_kind: HashMap::new(),
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with
         // (%set-rest! %false-stack …). With no room for it the write ran off the
         // end of the object and made `#f` itself truthy — the boot then took
         // every wrong branch, silently.
+        // The two tags, before anything exists to be tagged. Distinct objects:
+        // the library compares against both and behaves differently.
+        a.spair_marker = a.alloc(Flags::new(0), 1);
+        a.satom_marker = a.alloc(Flags::new(0), 1);
+
         a.false_obj = a.alloc(FLAG_FALSE, 2);
-        a.sym_t = a.sym("t");
+        a.sym_t = a.sym(crate::vocabulary::TRUTH);
         a
     }
 
@@ -217,18 +353,92 @@ impl Objects {
     /// not need one.
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
+        self.live += 1;
+        let ty = self.stamp_for(flags);
+
+        // A swept object of exactly this size is reused before the heap grows.
+        // Exactly, because the collector is NON-MOVING: reclaimed words stay
+        // where they are and can only serve an allocation that fits them.
+        if let Some(o) = self.take_free(n) {
+            self.write_header(o, ty, flags, n);
+            for i in 0..n as u64 {
+                self.set_data(o, i, NIL.word());
+            }
+            self.heap_chain = o;
+            return o;
+        }
+
         let at = self.heap.frontier();
-        self.heap.push(NIL.word()); // type
-        self.heap.push(Word(flags.raw())); // flags
+        // THREADED ON THE CHAIN at birth. The collector has no other way to find
+        // an object: the heap is a flat Vec of words with no object table, so
+        // sweeping means walking this link from the newest allocation back.
+        self.heap.push(self.heap_chain.word());
+        self.heap.push(ty.word());
+        self.heap.push(Word(flags.raw()));
+        self.heap.push(Word(n as u64));
         for _ in 0..n {
             self.heap.push(NIL.word());
         }
-        at.as_obj()
+        let o = at.as_obj();
+        self.heap_chain = o;
+        o
+    }
+
+    /// The type word a fresh object of these flags carries. See the type-word
+    /// note above.
+    fn stamp_for(&self, flags: Flags) -> Obj {
+        if flags == FLAG_SPAIR {
+            self.spair_marker
+        } else if flags == FLAG_HANDLE {
+            self.satom_marker
+        } else {
+            let key = reported_kind(flags);
+            self.builtin_types.get(&key).copied().unwrap_or(NIL)
+        }
+    }
+
+    /// Write an object's four header words in place, for a reused slot.
+    fn write_header(&mut self, o: Obj, ty: Obj, flags: Flags, n: usize) {
+        let a = o.addr();
+        let w = WORD as u64;
+        self.heap
+            .set_word(a.plus(SLOT_HEAP * w), self.heap_chain.word());
+        self.heap.set_word(a.plus(SLOT_TYPE * w), ty.word());
+        self.heap
+            .set_word(a.plus(SLOT_FLAGS * w), Word(flags.raw()));
+        self.heap.set_word(a.plus(SLOT_LEN * w), Word(n as u64));
     }
 
     // --- header ----------------------------------------------------------------
 
     pub fn flags(&self, o: Obj) -> Flags {
+        #[cfg(debug_assertions)]
+        if self.poison_freed
+            && self
+                .heap
+                .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+                .raw()
+                == crate::collect::POISON
+        {
+            let what = self
+                .freed_kind
+                .get(&o)
+                .map(|(f, a, b)| {
+                    format!(
+                        "{} first={} rest={}",
+                        kind_name(Flags::from_word(Word(*f))),
+                        self.describe_word(*a),
+                        self.describe_word(*b)
+                    )
+                })
+                .unwrap_or_else(|| "object".to_string());
+            panic!(
+                "read of a FREED {} at {:?}\n  still held by: {:?}\n  -- a root is missing",
+                what,
+                o,
+                self.holders_of(o)
+            );
+        }
         Flags::from_word(self.heap.word(o.addr().plus(SLOT_FLAGS * WORD as u64)))
     }
 
@@ -280,6 +490,30 @@ impl Objects {
     }
 
     pub fn set_data(&mut self, o: Obj, i: u64, v: Word) {
+        // TRAP THE STORE, not just the read. A freed object being written INTO a
+        // live one means something held it in Rust across a collection — and the
+        // backtrace here names that something, where the read-side trap only
+        // names whoever stumbled over the result later.
+        // Only where the slot really holds a REFERENCE. An environment object's
+        // word is a frame id and a primitive's is a table index; a raw number
+        // that happens to equal a freed address is not a use-after-free, and
+        // trapping on one sends the hunt somewhere there is nothing to find.
+        #[cfg(debug_assertions)]
+        if self.poison_freed
+            && self.freed_kind.contains_key(&v.as_obj())
+            && matches!(
+                self.flags(o),
+                f if f == FLAG_PAIR || f == FLAG_SPAIR
+            )
+        {
+            panic!(
+                "storing a FREED object {:?} into slot {} of a live {} -- it was \
+                 held across a collection",
+                v.as_obj(),
+                i,
+                kind_name(self.flags(o))
+            );
+        }
         self.heap.set_word(Self::slot(o, i), v)
     }
 
@@ -312,6 +546,75 @@ impl Objects {
     /// every one of them taking a base argument — the C threads `p_base`
     /// everywhere for the same reason.
     /// How many objects have been allocated — what `heap count` answers.
+    /// How many data words an object has.
+    pub fn data_len(&self, o: Obj) -> u64 {
+        self.heap.word(o.addr().plus(SLOT_LEN * WORD as u64)).raw()
+    }
+
+    /// Every interned symbol in this base and in the shared table.
+    pub fn interned(&self) -> Vec<Obj> {
+        let mut out = self.symbols.all();
+        out.extend(self.shared_symbols.all());
+        out
+    }
+
+    /// Who still points at `o`? Walks the live chain looking for a data word
+    /// holding it.
+    ///
+    /// When a whole structure is collected, naming one lost cell says nothing —
+    /// the question is which live object was still holding the structure, since
+    /// that is the reference the tracer failed to follow.
+    #[cfg(debug_assertions)]
+    pub(crate) fn holders_of(&self, target: Obj) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut at = self.heap_chain;
+        while !at.is_nil() && out.len() < 4 {
+            let n = self.data_len(at);
+            for i in 0..n {
+                if self.data(at, i).as_obj() == target {
+                    out.push(format!("{} slot {}", kind_name(self.flags(at)), i));
+                    break;
+                }
+            }
+            at = self
+                .heap
+                .word(at.addr().plus(SLOT_HEAP * WORD as u64))
+                .as_obj();
+        }
+        out
+    }
+
+    /// A one-line description of a raw word, for the collector's trap.
+    #[cfg(debug_assertions)]
+    pub(crate) fn describe_word(&self, w: u64) -> String {
+        let o = Word(w).as_obj();
+        if o.is_nil() {
+            return "()".to_string();
+        }
+        if w % 8 != 0 || (w / 8) as usize + META_LEN as usize > self.heap.words_len() {
+            return format!("raw:{}", w);
+        }
+        let f = self
+            .heap
+            .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+            .raw();
+        if f == crate::collect::POISON {
+            return "<freed>".to_string();
+        }
+        let flags = Flags::from_word(Word(f));
+        if flags == FLAG_SYM || flags == FLAG_STR || flags == FLAG_HANDLE {
+            format!("{}:{}", kind_name(flags), self.str_val(o))
+        } else if flags == FLAG_INT {
+            format!("INT:{}", self.int_val(o))
+        } else {
+            kind_name(flags).to_string()
+        }
+    }
+
+    pub fn heap_words(&self) -> usize {
+        self.heap.words_len()
+    }
+
     pub fn alloc_count(&self) -> usize {
         self.heap.allocations()
     }

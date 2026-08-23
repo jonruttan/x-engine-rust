@@ -70,6 +70,11 @@ pub const ROUTES: &[&str] = &[
     "files",
     "profile",
     "false",
+    // The REPL's two: the fd currently being read, and the buffer being read
+    // from. lib/x/repl/loop.x snapshots the fd per read so a cancelled read can
+    // un-poison it, and resets the buffer when a form is abandoned.
+    "filein",
+    "buffer",
 ];
 
 /// Slots the heap instructions reach for by name.
@@ -83,6 +88,8 @@ pub const LINE: usize = 13;
 pub const FILES: usize = 14;
 pub const PROFILE: usize = 15;
 pub const FALSE: usize = 16;
+pub const FILEIN: usize = 17;
+pub const BUFFER: usize = 18;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -104,25 +111,40 @@ const PRIMS_SLOT: usize = 0;
 fn cell_spine(o: &mut Objects, n: usize) -> Obj {
     let mut spine = NIL;
     for _ in 0..n {
-        let zero = o.int(0);
-        let cell = o.pair(zero, NIL);
-        spine = o.pair(cell, spine);
+        let cell = raw_cell(o, 0);
+        spine = o.spair(cell, spine);
     }
     spine
+}
+
+/// A cell whose first data word IS the number, not a pointer to one.
+///
+/// `%cell-int` in lib/x/boot/data.x is a RAW WORD READ —
+/// `(%ptr-ref-word (%obj->ptr x) %data-off-0)` — so a cell holding an int
+/// OBJECT answers that object's ADDRESS. A fresh base's line counter came back
+/// as 27021584 instead of 1, and every fd read the same way.
+///
+/// The library WRITES these too, with `%set-cell-int!`, so the slot has to be a
+/// place a bare integer lives rather than a reference to one.
+fn raw_cell(o: &mut Objects, n: i64) -> Obj {
+    let cell = o.spair(NIL, NIL);
+    o.set_data(cell, 0, crate::obj::Word(n as u64));
+    cell
 }
 
 pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     let mut spine = NIL;
     for _ in 0..ROUTES.len() {
-        spine = o.pair(NIL, spine);
+        spine = o.spair(NIL, spine);
     }
     let env_obj = o.env_obj(env);
     set_slot(o, spine, PRIMS_SLOT, catalog);
     set_slot(o, spine, ENV_SLOT, env_obj);
 
     // The library's own slots, shaped the way it reads them.
-    let zero = o.int(0);
-    let line = o.pair(zero, NIL);
+    // A fresh base's line counter reads 1: the first line of the source is
+    // line one, and x-lang's own spec says so.
+    let line = raw_cell(o, 1);
     set_slot(o, spine, LINE, line);
     // stdin, stdout, stderr: the library indexes the second and third.
     let files = cell_spine(o, 3);
@@ -135,6 +157,14 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     // rest, so the object the route answers must be the one with the room.
     let f = o.false_obj();
     set_slot(o, spine, FALSE, f);
+    // A cell holding the fd, so `(%cell-int (first …))` reads it. 0 is stdin,
+    // which is where a bare engine's program arrives.
+    let fd = raw_cell(o, 0);
+    set_slot(o, spine, FILEIN, fd);
+    // The buffer slot exists and is empty: the library resets what it finds
+    // here, and a route that walked off the end would answer nil either way —
+    // indistinguishable from a route this engine forgot.
+    set_slot(o, spine, BUFFER, NIL);
     spine
 }
 
@@ -243,5 +273,34 @@ mod tests {
         let b = build(&mut o, NIL, EnvId::new(2));
         assert_eq!(env_of(&o, a), EnvId::new(1));
         assert_eq!(env_of(&o, b), EnvId::new(2));
+    }
+
+    /// The ROUTES list and base-paths.x are the same list, and this is what
+    /// keeps them so.
+    ///
+    /// The names live twice — here, beside the slot constants that index them,
+    /// and in the contract file x-lang reads. That duplication is deliberate
+    /// (a slot constant next to a name read from a file at runtime would be
+    /// worse), and it is only safe while something compares them. A route
+    /// renamed on one side alone fails here rather than at boot.
+    #[test]
+    fn the_route_list_is_exactly_what_base_paths_declares() {
+        let paths = std::fs::read_to_string("tools/contract/base-paths.x")
+            .expect("the engine's own committed paths");
+        let declared: Vec<String> = paths
+            .lines()
+            .filter_map(|l| {
+                let body = l.trim().strip_prefix('(')?;
+                let body = body.split(';').next().unwrap_or("");
+                let mut w = body.trim().trim_end_matches(')').split_whitespace();
+                let name = w.next()?;
+                (w.next()? == "base").then(|| name.to_string())
+            })
+            .collect();
+        let ours: Vec<String> = ROUTES.iter().map(|r| r.to_string()).collect();
+        assert_eq!(
+            ours, declared,
+            "ROUTES and base-paths.x disagree; they are one list in two files"
+        );
     }
 }

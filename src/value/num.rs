@@ -80,7 +80,7 @@ impl Iterator for ListIter<'_> {
     type Item = Obj;
 
     fn next(&mut self) -> Option<Obj> {
-        if !self.objects.is_pair(self.at) {
+        if !self.objects.is_cell(self.at) {
             return None;
         }
         let v = self.objects.first(self.at);

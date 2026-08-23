@@ -72,9 +72,9 @@ fn unwrap(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// `(atomic body...)` — its body's value.
 ///
-/// A sequencing point. There is nothing to make atomic in a single-threaded
-/// engine with no collector to interleave with, so it is its body and no more,
-/// which is exactly what x-lang asserts of it.
+/// A sequencing point. Nothing here interleaves with a body: the engine is
+/// single-threaded and collection only happens where the evaluator asks for it,
+/// so this is its body and no more — which is exactly what x-lang asserts of it.
 fn atomic(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     e.eval_body_tail(args, env)
 }

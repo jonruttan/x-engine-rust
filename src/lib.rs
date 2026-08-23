@@ -92,11 +92,13 @@
 pub use x_engine_foreign as foreign;
 
 pub mod base;
+pub mod collect;
 pub mod dbl;
 pub mod diag;
 pub mod engine;
 pub mod env;
 pub mod eval;
+pub mod form;
 pub mod heap;
 pub mod obj;
 pub mod objects;
@@ -107,6 +109,7 @@ pub mod session;
 pub mod symbols;
 pub mod syntax;
 pub mod value;
+pub mod vocabulary;
 
 #[cfg(test)]
 mod testkit;

@@ -49,6 +49,20 @@ impl Engine {
         self.eval_depth += 1;
         let r = self.eval_pending(form, env);
         self.eval_depth -= 1;
+        // THE RESULT IS ROOTED until the enclosing evaluation moves on.
+        //
+        // A value that has just been computed is reachable from nothing: it sits
+        // in a Rust local while its caller goes on to evaluate the NEXT thing,
+        // and that evaluation can collect. `apply` was caught doing exactly
+        // this — holding the callee while it evaluated the argument list — and
+        // every operative that evaluates more than once has the same shape.
+        //
+        // Rooting here rather than at each of those sites makes it a property of
+        // evaluation instead of a rule to remember. The trampoline drops these
+        // between steps, so a tail loop does not accumulate them.
+        if let Ok(v) = r {
+            self.root_push(v);
+        }
         r
     }
 
@@ -72,10 +86,25 @@ impl Engine {
 
     fn eval_pending(&mut self, form: Obj, env: EnvId) -> EvalResult {
         let (mut form, mut env) = (form, env);
-        loop {
-            // The armed ceiling. A heap that never frees is exactly the kind
-            // that needs one, and unbounded allocation has taken this project's
-            // machine down before.
+        // ONE root slot for the form under evaluation, replaced as the
+        // trampoline moves rather than pushed per iteration — a long tail chain
+        // would otherwise grow the root set without bound. The form came from
+        // the reader and nothing else points at it, so a collection underneath
+        // this call would free the code that is running.
+        let mark = self.root_mark();
+        self.root_push(form);
+        let slot = mark;
+        // The same for the ENVIRONMENT, and for the same reason: an activation
+        // frame is named by this Rust local and by nothing on the heap until a
+        // closure captures it, which most frames never do.
+        let env_mark = self.env_root_mark();
+        self.env_root_push(env);
+        let env_slot = env_mark;
+        let out = loop {
+            // The armed ceiling. Collection is explicit-only, so between two
+            // `(heap collect)` calls nothing bounds a runaway loop but this —
+            // and unbounded allocation has taken this project's machine down
+            // before.
             // Publish an interrupt the handler recorded. Between forms is soon
             // enough and is the only safe place: the handler runs at an
             // arbitrary instruction and may not touch the heap.
@@ -83,32 +112,47 @@ impl Engine {
                 let flag = self.sigint_flag;
                 self.objects.set_data(flag, 0, crate::obj::Word(1));
             }
+            // STRESS: collect far more often than x-lang ever would, to shake
+            // out a root nobody remembered. A missing root frees something live,
+            // and under normal use that might not surface for hours — here it
+            // surfaces on the next form. Off unless asked for.
+            if self.gc_stress != 0 {
+                self.stress_countdown = self.stress_countdown.saturating_sub(1);
+                if self.stress_countdown == 0 {
+                    self.stress_countdown = self.gc_stress;
+                    self.collect();
+                }
+            }
             if let Some(limit) = self.alloc_limit {
                 if self.objects.alloc_count() > limit {
-                    return Err(Cond::AllocLimit);
+                    break Err(Cond::AllocLimit);
                 }
             }
             if form.is_nil() {
-                return Ok(NIL);
+                break Ok(NIL);
             }
             if self.objects.is_sym(form) {
-                return match self.envs.lookup(env, form) {
+                break match self.envs.lookup(env, form) {
                     Some(v) => Ok(v),
                     None => Err(Cond::Unbound(form)),
                 };
             }
-            if !self.objects.is_pair(form) {
+            if !self.objects.is_cell(form) {
                 // Integers, strings, closures, primitives: self-evaluating.
-                return Ok(form);
+                break Ok(form);
             }
             let head = self.objects.first(form);
             let args = self.objects.rest(form);
-            let callee = self.eval(head, env)?;
+            let callee = match self.eval(head, env) {
+                Ok(c) => c,
+                Err(e) => break Err(e),
+            };
             let answer = match self.combine(callee, args, env) {
-                Some(r) => r?,
+                Some(Ok(v)) => v,
+                Some(Err(e)) => break Err(e),
                 // A head that is not callable makes the form DATA, which is how
                 // x-lang's quoted structures survive being evaluated.
-                None => return Ok(form),
+                None => break Ok(form),
             };
             // Something in tail position asked to be evaluated HERE rather than
             // under another frame. Loop instead of recursing.
@@ -116,10 +160,20 @@ impl Engine {
                 Some((f, e)) => {
                     form = f;
                     env = e;
+                    // A new trampoline step: the previous step's intermediate
+                    // results are done with, and a long tail loop must not
+                    // accumulate one root per iteration.
+                    self.root_truncate(slot + 1);
+                    self.roots[slot] = form;
+                    self.env_root_truncate(env_slot + 1);
+                    self.env_roots[env_slot] = env;
                 }
-                None => return Ok(answer),
+                None => break Ok(answer),
             }
-        }
+        };
+        self.root_truncate(mark);
+        self.env_root_truncate(env_mark);
+        out
     }
 
     /// Park a form to be evaluated in the caller's own loop.
@@ -172,7 +226,42 @@ impl Engine {
             };
             return Some(self.invoke_cont(callee, v));
         }
+        // VALUE-CALL DISPATCH, and it is the last thing tried on purpose: a
+        // value whose TYPE carries a `call` handler is callable.
+        //
+        // This is how x-lang's whole class layer is reached. `(Type of 1)` has a
+        // CLASS at its head, not a closure — `lib/x/type/class.x` installs
+        // `%class-call-handler` on the class's type, and the engine's job is to
+        // find it and hand the form over. Without this the head is simply not
+        // callable, the form falls through to the data rule, and `(Type of 1)`
+        // evaluates to the LIST `(Type of 1)`. Nothing raises; every class call
+        // in the library quietly answers its own source text.
+        //
+        // The handler is an OPERATIVE taking `(obj . args)`, so the arguments
+        // stay unevaluated and the SUBJECT goes first — the selector and the
+        // rest are the handler's to interpret, not this engine's.
+        if let Some(handler) = self.call_handler_for(callee) {
+            let spine = self.objects.pair(callee, args);
+            return Some(self.eval_call(handler, spine, env));
+        }
         None
+    }
+
+    /// The `call` handler installed on a value's type, if any.
+    fn call_handler_for(&mut self, callee: Obj) -> Option<Obj> {
+        // The TREE, not the handle: handlers live in the tree.
+        let ty = self.objects.type_tree_of(callee);
+        if ty.is_nil() {
+            return None;
+        }
+        let h = self
+            .objects
+            .type_handler(ty, crate::vocabulary::Family::Call);
+        if h.is_nil() {
+            None
+        } else {
+            Some(h)
+        }
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the
@@ -214,24 +303,54 @@ impl Engine {
 
     /// Call a combiner with values already computed.
     pub fn call_with_values(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        // ROOTED while the spine is BUILT. `quote_values` allocates a cell per
+        // value, so a collection partway through would be free to take the
+        // values still waiting in the caller's slice — and callers hand this a
+        // plain Rust slice from anywhere: `apply`, the class dispatcher, every
+        // reader handler.
+        let mark = self.root_mark();
+        self.root_push(callee);
+        for v in vals {
+            self.root_push(*v);
+        }
         let spine = self.quote_values(vals);
-        self.eval_call(callee, spine, env)
+        self.root_push(spine);
+        let out = self.eval_call(callee, spine, env);
+        self.root_truncate(mark);
+        out
     }
 
     /// THE ARGUMENT BOUNDARY. Arity is checked and arguments are evaluated here,
     /// once, for every applicative in the engine.
     fn call_prim(&mut self, def: &PrimDef, args: Obj, env: EnvId) -> EvalResult {
+        // The ARGUMENT SPINE is rooted for the whole call. It hangs off the form
+        // being evaluated, which is rooted too — but an operative may park a
+        // tail and let that form go, and then the spine is held in Rust alone.
+        let mark = self.root_mark();
+        self.root_push(args);
+
         // An operative takes the spine as written; everything else wants values.
         if let Body::Operative(f) = def.body {
-            return f(self, args, env);
+            let out = f(self, args, env);
+            self.root_truncate(mark);
+            return out;
         }
-        let mut vals = self.eval_args(args, env)?;
+        let mut vals = match self.eval_args(args, env) {
+            Ok(v) => v,
+            Err(c) => {
+                self.root_truncate(mark);
+                return Err(c);
+            }
+        };
+        // The values are already rooted -- `eval_args` leaves them so, because
+        // every applicative needs the same thing and one place is easier to keep
+        // right than ninety.
         // PADDED, not checked. A body indexes the slots its arity declares, so
         // the slots must exist -- but a missing operand is nil, not an error.
         // x-engine-c raises "+: operand is nil" here; that is the same layer
         // violation, and copying it would import someone else's.
         vals.resize(def.arity.0.max(vals.len()), NIL);
-        match def.body {
+        let out = match def.body {
             // Already handled above; the compiler cannot know that.
             Body::Operative(_) => unreachable!("operatives return early"),
             // Handed the object model and nothing else. It cannot evaluate, it
@@ -253,15 +372,56 @@ impl Engine {
                 let x = self.objects.as_int(vals[0]);
                 Ok(self.objects.int(f(x)))
             }
-        }
+        };
+        self.root_truncate(mark);
+        out
     }
 
     /// Evaluate an argument spine into values.
+    /// Evaluate an argument spine into values, ROOTING as it goes.
+    ///
+    /// This is the choke point every applicative passes through, and it holds
+    /// two things the heap cannot see. The unevaluated FORMS are collected into
+    /// a Rust Vec first — the iterator's borrow has to end before `eval` can
+    /// take the objects mutably — so from that moment the spine is not what is
+    /// being read; the Vec is. And each VALUE already computed exists only in
+    /// the results Vec until the call is made.
+    ///
+    /// Evaluating argument one can collect, and did: the poison trap caught
+    /// argument two being read after it was freed. Rooting here covers every
+    /// caller, where rooting at each of them would have covered the ones I
+    /// thought of.
     fn eval_args(&mut self, args: Obj, env: EnvId) -> Result<Vec<Obj>, Cond> {
         // Collected first so the iterator's borrow of the objects ends before
         // `eval` needs it mutably.
         let forms: Vec<Obj> = self.objects.list(args).collect();
-        forms.into_iter().map(|f| self.eval(f, env)).collect()
+        let mark = self.root_mark();
+        for f in &forms {
+            self.root_push(*f);
+        }
+        let mut out = Vec::with_capacity(forms.len());
+        for f in forms {
+            match self.eval(f, env) {
+                Ok(v) => {
+                    self.root_push(v);
+                    out.push(v);
+                }
+                Err(c) => {
+                    self.root_truncate(mark);
+                    return Err(c);
+                }
+            }
+        }
+        // The FORMS are done with; the VALUES are not. They are about to be
+        // bound into a frame or handed to a primitive, and `bind_params` builds
+        // a rest list — an allocation, with the values reachable from nothing
+        // but the caller's Vec. So the forms come off and the values go back on,
+        // and they stay until the enclosing `eval_pending` truncates on exit.
+        self.root_truncate(mark);
+        for v in &out {
+            self.root_push(*v);
+        }
+        Ok(out)
     }
 
     /// Apply a closure. APPLICATIVE, and the first parameter is bound to the
@@ -283,8 +443,14 @@ impl Engine {
         // names.
         let bound: Vec<Obj> = std::iter::once(callee).chain(vals).collect();
         let frame = self.envs.push(defenv);
+        // Rooted from the moment it exists: binding a dotted rest parameter
+        // allocates, and the body's non-tail forms run under it.
+        let env_mark = self.env_root_mark();
+        self.env_root_push(frame);
         self.bind_params(frame, params, &bound);
-        self.eval_body_tail(body, frame)
+        let out = self.eval_body_tail(body, frame);
+        self.env_root_truncate(env_mark);
+        out
     }
 
     /// Apply an operative: arguments arrive UNEVALUATED and the caller's
@@ -304,12 +470,16 @@ impl Engine {
         // directly; a name with no argument is nil.
         let given: Vec<Obj> = self.objects.list(args).collect();
         let frame = self.envs.push(defenv);
+        let env_mark = self.env_root_mark();
+        self.env_root_push(frame);
         self.bind_params(frame, params, &given);
         if !envname.is_nil() {
             let e = self.objects.env_obj(env);
             self.envs.bind(frame, envname, e);
         }
-        self.eval_body_tail(body, frame)
+        let out = self.eval_body_tail(body, frame);
+        self.env_root_truncate(env_mark);
+        out
     }
 
     /// Bind a parameter list to values, honouring a DOTTED REST PARAMETER.
@@ -323,7 +493,7 @@ impl Engine {
     fn bind_params(&mut self, frame: EnvId, params: Obj, vals: &[Obj]) {
         let mut p = params;
         let mut i = 0usize;
-        while self.objects.is_pair(p) {
+        while self.objects.is_cell(p) {
             let name = self.objects.first(p);
             let v = vals.get(i).copied().unwrap_or(NIL);
             self.envs.bind(frame, name, v);
@@ -373,12 +543,12 @@ impl Engine {
     /// is handed a slice and has no spine to walk.
     pub fn nth(&self, mut l: Obj, n: usize) -> Obj {
         for _ in 0..n {
-            if !self.objects.is_pair(l) {
+            if !self.objects.is_cell(l) {
                 return NIL;
             }
             l = self.objects.rest(l);
         }
-        if self.objects.is_pair(l) {
+        if self.objects.is_cell(l) {
             self.objects.first(l)
         } else {
             NIL
@@ -389,7 +559,7 @@ impl Engine {
     /// already-computed argument list does not evaluate them a second time. For
     /// a symbol value the difference is a live unbound-name error, not a nuance.
     pub fn quote_values(&mut self, vals: &[Obj]) -> Obj {
-        let lit = self.objects.sym("lit");
+        let lit = self.objects.sym(crate::vocabulary::LIT);
         let mut out = NIL;
         for &v in vals.iter().rev() {
             let inner = self.objects.pair(v, NIL);

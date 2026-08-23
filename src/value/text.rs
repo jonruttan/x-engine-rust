@@ -63,6 +63,23 @@ impl Objects {
 
     /// Interned symbol. Two spellings of one name are the SAME object, which is
     /// what makes `eq?` on symbols a pointer comparison.
+    /// A type HANDLE: an atom holding a name, carrying the atom tag.
+    ///
+    /// Deliberately NOT interned with the symbols. A handle and a symbol of the
+    /// same spelling are different objects, because they carry different tags
+    /// and the library reads the tag: `%reflect-handle-tw?` asks whether a word
+    /// marks a HANDLE, and an interned symbol must answer no.
+    pub fn handle(&mut self, name: &str) -> Obj {
+        let at = self.heap.store_bytes(name.as_bytes());
+        let o = self.alloc(crate::objects::FLAG_HANDLE, 1);
+        self.set_data(o, 0, Word(at.raw()));
+        o
+    }
+
+    pub fn is_handle(&self, o: Obj) -> bool {
+        self.is(o, crate::objects::FLAG_HANDLE)
+    }
+
     pub fn sym(&mut self, name: &str) -> Obj {
         // Instruction names first: they are the same object in every base, so a
         // per-base intern must never mint a second one.

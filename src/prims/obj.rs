@@ -1,6 +1,8 @@
 //! Objects: identity, pairs, and the type registry.
 
 use crate::diag::Cond;
+use crate::engine::Engine;
+use crate::eval::EvalResult;
 use crate::obj::Obj;
 use crate::objects::Objects;
 use crate::prim::PrimDef;
@@ -12,9 +14,30 @@ use crate::prim::PrimDef;
 /// x-engine-c was asked rather than guessed at, and it draws the line in a
 /// specific place: `(eq? 1 1)` holds and `(eq? "a" "a")` does NOT. Numbers
 /// compare by value; strings, which are mutable, by identity.
+/// `(obj eq?)` — by VALUE for numbers and characters, by identity otherwise.
+///
+/// The character half was missing, and it is not a nicety: `%str-ref` answers a
+/// freshly made character, so every string comparison in x-lang's library comes
+/// down to `(eq? (%str-ref hay i) (%str-ref needle j))`. With identity those are
+/// never equal, and `lib/x/platform/syscall.x` could not find "darwin" inside
+/// "aarch64-apple-darwin" — the whole posix layer refused to load with
+/// `(unsupported-platform . aarch64-apple-darwin)`.
+///
+/// Asked of x-engine-c rather than assumed:
+///
+/// ```text
+/// (def %ic (prim-ref 'int '->char))
+/// (match ((eq? (%ic 100) (%ic 100)) 'EQ) (#t 'NOT-EQ))   =>  'EQ
+/// ```
+///
+/// Strings stay identity-compared, which the same interrogation confirmed
+/// earlier: `(eq? "a" "a")` does not hold. The reference reads slot 0 either
+/// way — for an atom that is its value, and for a string it is the pointer.
 fn eq(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let same = if a_.is_int(a[0]) && a_.is_int(a[1]) {
         a_.int_val(a[0]) == a_.int_val(a[1])
+    } else if a_.is_char(a[0]) && a_.is_char(a[1]) {
+        a_.as_char(a[0]) == a_.as_char(a[1])
     } else {
         a[0] == a[1]
     };
@@ -48,12 +71,41 @@ fn pair(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.pair(a[0], a[1]))
 }
 
-fn type_make(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.type_new(a[0], a[1]))
+/// `(type make name parent)` — a new type, FILED where the library can find it.
+///
+/// Registration is not optional and not a courtesy. `lib/x/type/struct.x`'s
+/// `type by-atom` is the only way the library reaches a type's tree, and it
+/// walks the base's type-alist; a type that never lands there answers nil, and
+/// callers write into what they get back rather than checking. That is how
+/// `lib/x/type/promise.x` came to push a call handler through nil.
+fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    // The NAME arrives as a string; the handle is made from it here, and the
+    // handle is what comes back. x-lang keeps the type-alist keyed by it and
+    // passes it to `make-instance`, so answering the tree would hand the library
+    // something its own accessors do not expect.
+    let text = e.objects.str_val(a[0]);
+    let name = e.objects.handle(&text);
+    let t = e.objects.type_new(name, a[1]);
+    e.file_type(t);
+    Ok(name)
 }
 
-fn type_of(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.type_of(a[0]))
+/// `(type of v)` — the type handle, FILING it if this is the first sight of it.
+///
+/// Builtin types are made on demand, and one that is never filed cannot be
+/// reached: `type by-atom` walks the base's alist, answers nil, and callers
+/// write into the nil. That is how `lib/x/type/iter.x` came to push a write
+/// handler through nothing.
+///
+/// Filing here rather than at each construction site is deliberate: this
+/// instruction is the only door x-lang has to a type, so anything the library
+/// can name has passed through it.
+fn type_of(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let t = e.objects.type_of(a[0]);
+    for fresh in e.objects.take_unfiled_types() {
+        e.file_type(fresh);
+    }
+    Ok(t)
 }
 
 fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
@@ -62,17 +114,39 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.truth(!t.is_nil() && got == t))
 }
 
-fn make_instance(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let o = a_.instance(a[0], 1);
-    a_.set_data(o, 0, a[1].word());
+/// `(type make-instance handle data)` — an instance of a registered type.
+///
+/// The handle is resolved to its TREE through the base, because the type word
+/// must hold the tree: the library dereferences it and checks the tree tag
+/// before walking.
+/// TWO slots, not one, and the second one matters.
+///
+/// The reference allocates a PAIR-SIZED instance — `X_OBJ_LENGTH_PAIR`, data in
+/// the first slot and NULL in the second — and x-lang uses that second slot:
+/// `%class-hot` in lib/x/type/class.x caches a class's flattened member table
+/// there with `(rest class)` and `%set-rest!`.
+///
+/// With one slot, `rest` read PAST THE END of the object — into the next
+/// allocation's header. That was invisible while type words were nil: the
+/// garbage read as nil, so `%class-hot` saw an empty cache and rebuilt it
+/// correctly every time. Stamping the type word made the same read return a type
+/// TREE, which `%class-hot` then returned AS the cached table, and every class
+/// answered "no such static member".
+///
+/// The stamping did not cause that. It exposed it.
+fn make_instance(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let tree = e.resolve_tree(a[0]);
+    let o = e.objects.instance(tree, 2);
+    e.objects.set_data(o, 0, a[1].word());
     Ok(o)
 }
 
 /// The type word is written from the operand, whatever it is. Whether that
 /// operand is a REGISTERED type is x-lang's question to ask.
-fn obj_make(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let n = a_.as_int(a[1]).max(0) as usize;
-    Ok(a_.instance(a[0], n))
+fn obj_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let tree = e.resolve_tree(a[0]);
+    let n = e.objects.as_int(a[1]).max(0) as usize;
+    Ok(e.objects.instance(tree, n))
 }
 
 /// `(obj make-callable p)` — a raw address dressed as callable.
@@ -92,11 +166,11 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::bare("first", 1, first),
     PrimDef::bare("rest", 1, rest),
     PrimDef::bare("pair", 2, pair),
-    PrimDef::filed("type", "make", 2, type_make),
-    PrimDef::both("type-of", "type", "of", 1, type_of),
+    PrimDef::both_full("make-type", "type", "make", 2, type_make),
+    PrimDef::both_full("type-of", "type", "of", 1, type_of),
     PrimDef::both("type?", "type", "?", 2, type_is),
-    PrimDef::filed("type", "make-instance", 2, make_instance),
-    PrimDef::filed("obj", "make", 2, obj_make),
+    PrimDef::both_full("make-instance", "type", "make-instance", 2, make_instance),
+    PrimDef::filed_full("obj", "make", 2, obj_make),
     PrimDef::filed("obj", "make-callable", 1, make_callable),
 ];
 

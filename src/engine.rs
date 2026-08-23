@@ -30,16 +30,42 @@ pub struct Engine {
     pub base: Obj,
     /// The primitive catalog, shared by every base. The instructions are the
     /// same objects whichever base reaches them; only BINDINGS are per-base.
-    catalog: Obj,
+    pub(crate) catalog: Obj,
     /// Name-to-primitive for every registered instruction, kept so a new base
     /// can be given the instruction set. A fresh base must evaluate `(+ 2 3)`,
     /// so it is born knowing the machine — what it does NOT get is the host's
     /// definitions.
-    prim_bindings: Vec<(Obj, Obj)>,
+    pub(crate) prim_bindings: Vec<(Obj, Obj)>,
     /// The input stream. The engine owns it because the PROGRAM arrives on it:
     /// what `io read-char` should answer is whatever is left after the form being
     /// evaluated, which a reader living in main could not be asked.
     pub reader: Reader,
+    /// Sources being LOADED, innermost last.
+    ///
+    /// `io read` and `io read-char` must answer from the source currently being
+    /// read, not from the process's stdin. x-lang's reader handlers depend on
+    /// it: `lib/x/type/vector.x` reads a `#(…)` literal's elements by calling
+    /// `(io read)` from inside the reader, and while an `include` is running the
+    /// thing being read is the FILE.
+    ///
+    /// Without this the vector handler reached past the file and ate a form off
+    /// stdin — so the first form after `(include "lib/x-core.x")` silently
+    /// vanished, and the REPL launcher was the form that vanished.
+    pub(crate) loading: Vec<Reader>,
+    /// Values the EVALUATOR is holding that nothing else points at.
+    ///
+    /// A form being evaluated came from the reader and lives in a Rust local; a
+    /// collection triggered underneath it would free the code that is running.
+    /// See `Engine::root_set`.
+    pub(crate) roots: Vec<Obj>,
+    /// Frames the EVALUATOR is holding, for the same reason and with the same
+    /// discipline: an activation frame is named by a Rust local from the moment
+    /// it is pushed until its body starts running.
+    pub(crate) env_roots: Vec<EnvId>,
+    /// Collect every N evaluation steps. Zero — the default — never collects on
+    /// its own, which is what `gc/explicit-only` promises.
+    pub(crate) gc_stress: u32,
+    pub(crate) stress_countdown: u32,
     /// An escape in flight: which continuation is unwinding, and with what.
     ///
     /// A raise carries a value; this says the unwind is an ESCAPE rather than a
@@ -102,6 +128,17 @@ impl Engine {
             catalog: NIL,
             prim_bindings: Vec::new(),
             reader: Reader::new(""),
+            loading: Vec::new(),
+            roots: Vec::new(),
+            env_roots: Vec::new(),
+            gc_stress: std::env::var("X_GC_STRESS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            stress_countdown: std::env::var("X_GC_STRESS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
             escaping: None,
             next_cont: 1,
             base_syms: HashMap::new(),
@@ -164,29 +201,88 @@ impl Engine {
     /// type object itself; the reference keys by a separate sentinel. The alist
     /// shape is what matters to the library, not which of the two it holds.
     fn register_builtin_types(&mut self) {
-        // One representative value per kind the library files a handler for.
+        // One representative value per kind, and EVERY kind the library can
+        // name — not just the ones it files render handlers for. A missing entry
+        // does not surface where it is missing: `lib/x/type/convert.x` looks the
+        // PTR type up, gets nil, and writes a conversion alist through it, after
+        // which an unrelated `def-class` fails hundreds of lines later naming a
+        // symbol that has nothing to do with it.
+        let one = self.objects.int(1);
         let samples = [
             self.objects.int(0),
             self.objects.str_new(""),
-            self.objects.sym("q"),
+            self.objects.sym(crate::vocabulary::TRUTH),
             self.objects.char_new(65),
             self.objects.false_obj(),
+            self.objects.pair(one, NIL),
+            self.objects.ptr(crate::obj::Addr::new(0)),
+            self.objects.foreign(0),
+            self.objects.env_obj(EnvId::new(0)),
         ];
-        let pair = {
-            let one = self.objects.int(1);
-            self.objects.pair(one, NIL)
-        };
-        let base = self.base;
-        for v in samples.into_iter().chain(std::iter::once(pair)) {
-            let t = self.objects.type_of(v);
-            if t.is_nil() {
-                continue;
-            }
-            let entry = self.objects.pair(t, t);
-            let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
-            let cell = self.objects.pair(entry, head);
-            crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);
+        for v in samples {
+            let _ = self.objects.type_tree_of(v);
         }
+        // The callables and the reader's own kinds too. A type made only when
+        // something first asks for it leaves every object allocated BEFORE that
+        // ask carrying a nil type word, and the library reads that word
+        // directly — so the ask has to happen here, before any of them exist.
+        for (flags, text) in crate::objects::STAMPED_KINDS {
+            if !self.objects.builtin_types.contains_key(flags) {
+                let name = self.objects.handle(text);
+                let t = self.objects.type_new(name, NIL);
+                self.objects.builtin_types.insert(*flags, t);
+                self.objects.unfiled_types.push(t);
+            }
+        }
+        // Drained here and, from now on, by the `type of` instruction itself.
+        for t in self.objects.take_unfiled_types() {
+            self.file_type(t);
+        }
+    }
+
+    /// The TREE a handle names, resolved through the base's type-alist.
+    ///
+    /// The alist is the library's index and the only complete one: a type
+    /// `make-type` built lives there and nowhere else. A value that is already a
+    /// tree passes through, so callers need not know which they hold.
+    pub(crate) fn resolve_tree(&mut self, t: Obj) -> Obj {
+        if !self.objects.is_handle(t) {
+            return t;
+        }
+        let alist = crate::base::get(&self.objects, self.base, crate::base::TYPE_ALIST);
+        let mut at = alist;
+        while self.objects.is_cell(at) {
+            let entry = self.objects.first(at);
+            if self.objects.is_cell(entry) && self.objects.first(entry) == t {
+                return self.objects.rest(entry);
+            }
+            at = self.objects.rest(at);
+        }
+        // Unknown handle: hand it back rather than nil, so a caller storing it
+        // keeps what it was given instead of silently losing the type.
+        t
+    }
+
+    /// File a type in the base's `type-alist`, where the library looks it up.
+    ///
+    /// EVERY type goes here, the ones `type make` builds at runtime as much as
+    /// the builtins. `(type by-atom …)` in lib/x/type/struct.x walks this table
+    /// and answers nil for anything absent — and its callers do not check:
+    /// `lib/x/type/promise.x` pushes a call handler straight into what it gets
+    /// back, so an unfiled type turned into a write through nil.
+    ///
+    /// Handle and tree are the same object here; the reference keys by a
+    /// separate sentinel. The library only cares about the alist's shape.
+    pub(crate) fn file_type(&mut self, t: Obj) {
+        let base = self.base;
+        // Keyed by the HANDLE, valued by the TREE — the shape x-lang walks:
+        // `type by-atom` is handed what `type of` answered and expects the tree
+        // back.
+        let handle = self.objects.type_handle_of_tree(t);
+        let entry = self.objects.spair(handle, t);
+        let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
+        let cell = self.objects.spair(entry, head);
+        crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);
     }
 
     /// Build the catalog: `((ns . ((method . prim) ...)) ...)`, the shape x-lang
@@ -205,12 +301,12 @@ impl Engine {
             let mut methods = NIL;
             for (m, o) in ms.iter().rev() {
                 let msym = self.objects.sym(m);
-                let entry = self.objects.pair(msym, *o);
-                methods = self.objects.pair(entry, methods);
+                let entry = self.objects.spair(msym, *o);
+                methods = self.objects.spair(entry, methods);
             }
             let nsym = self.objects.sym(ns);
-            let nsentry = self.objects.pair(nsym, methods);
-            cat = self.objects.pair(nsentry, cat);
+            let nsentry = self.objects.spair(nsym, methods);
+            cat = self.objects.spair(nsentry, cat);
         }
         cat
     }
@@ -231,9 +327,9 @@ impl Engine {
         // `#t` and `#f` are instruction-level too: a form read in the host and
         // evaluated in a child must find them. They are `%isa-values` rows in
         // their own right, which is why they are declared and not merely bound.
-        let t = self.objects.sym_shared("#t");
+        let t = self.objects.sym_shared(crate::vocabulary::TRUE);
         self.envs.bind(env, t, t);
-        let f = self.objects.sym_shared("#f");
+        let f = self.objects.sym_shared(crate::vocabulary::FALSE);
         let fo = self.objects.false_obj();
         self.envs.bind(env, f, fo);
 
@@ -249,9 +345,9 @@ impl Engine {
         // numbers: before the reference engine separated them, two releases
         // whose sources never changed reported identically.
         for (name, text) in [
-            ("x-machine", env!("X_MACHINE")),
-            ("x-version", X_EXPR_VERSION),
-            ("x-release", env!("X_RELEASE")),
+            (crate::vocabulary::X_MACHINE, env!("X_MACHINE")),
+            (crate::vocabulary::X_VERSION, X_EXPR_VERSION),
+            (crate::vocabulary::X_RELEASE, env!("X_RELEASE")),
         ] {
             let sym = self.objects.sym_shared(name);
             let v = self.objects.str_new(text);
@@ -266,10 +362,10 @@ impl Engine {
         // The objects themselves are SHARED, not copied per base, which is also
         // what the reference does: a child's `%sigint-flag` is `(obj same?)` to
         // the host's, so a signal is visible from wherever it is observed.
-        let eof = self.objects.sym_shared("%token-eof");
+        let eof = self.objects.sym_shared(crate::vocabulary::TOKEN_EOF);
         let (t, f) = (self.token_eof, self.sigint_flag);
         self.envs.bind(env, eof, t);
-        let flag = self.objects.sym_shared("%sigint-flag");
+        let flag = self.objects.sym_shared(crate::vocabulary::SIGINT_FLAG);
         self.envs.bind(env, flag, f);
 
         for (sym, obj) in self.prim_bindings.clone() {

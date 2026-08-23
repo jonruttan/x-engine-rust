@@ -14,6 +14,9 @@ use crate::eval::EvalResult;
 use crate::foreign::{self, Foreign};
 use crate::obj::{Obj, NIL};
 use crate::prim::PrimDef;
+use crate::vocabulary::{
+    CONV_DD_TO_D, CONV_D_TO_D, CONV_D_TO_I, CONV_D_TO_S, CONV_I_TO_D, CONV_S0_TO_D,
+};
 
 /// A NUL-terminated byte run for an operand, if it is a string.
 fn cstr(e: &Engine, o: Obj) -> Option<Vec<u8>> {
@@ -100,19 +103,21 @@ fn ffi_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
         return Ok(e.objects.truth(b));
     }
     // As does the one that answers a string.
-    if conv == "d->s" {
+    if conv == CONV_D_TO_S {
         let text = dbl::to_str(arg(0));
         return Ok(e.objects.str_new(&text));
     }
 
     let r = match conv.as_str() {
         // --- through the pointer ---
-        "d->d" => foreign::call_doubles(Foreign(marshal(e, a[1])), &bits[..bits.len().min(1)]),
-        "dd->d" => foreign::call_doubles(Foreign(marshal(e, a[1])), &bits[..bits.len().min(2)]),
-        "s0->d" => foreign::call_str_to_double(Foreign(marshal(e, a[1])), arg(0)),
+        CONV_D_TO_D => foreign::call_doubles(Foreign(marshal(e, a[1])), &bits[..bits.len().min(1)]),
+        CONV_DD_TO_D => {
+            foreign::call_doubles(Foreign(marshal(e, a[1])), &bits[..bits.len().min(2)])
+        }
+        CONV_S0_TO_D => foreign::call_str_to_double(Foreign(marshal(e, a[1])), arg(0)),
         // --- casts ---
-        "i->d" => dbl::from_int(e.objects.as_int(a[2])),
-        "d->i" => return Ok(e.objects.int(dbl::to_int(arg(0)))),
+        CONV_I_TO_D => dbl::from_int(e.objects.as_int(a[2])),
+        CONV_D_TO_I => return Ok(e.objects.int(dbl::to_int(arg(0)))),
         // --- arithmetic ---
         _ => match dbl::arith(&conv, arg(0), arg(1)) {
             Some(bits) => bits,

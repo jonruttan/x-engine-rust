@@ -6,9 +6,10 @@
 //! called `Store` for a while, which meant the contract and the code would have
 //! used different words for the same thing the moment isa/gc arrived.
 //!
-//! It never frees, which is what the `core` profile permits: no isa/gc means no
-//! collector is required and none is provided. That is a property of this heap,
-//! not a different concept deserving a different name.
+//! The word arena only GROWS: freed objects go back on the collector's free list
+//! (see `collect.rs`) and are handed out again, but nothing is ever returned to
+//! the allocator and nothing is compacted. That is what `gc/non-moving`
+//! promises — every address x-lang holds stays valid for the life of the run.
 //!
 //! A flat `Vec<u64>` and the operations on it: read a word, write a byte, copy a
 //! block, allocate a run. It knows NOTHING about objects — no headers, no flags,
@@ -28,8 +29,9 @@ pub struct Heap {
     words: Vec<u64>,
     /// How many objects have been allocated.
     ///
-    /// Allocations, not live objects — on a heap that never frees those are the
-    /// same number, and `heap count` only has to RISE across an allocation.
+    /// Allocations EVER, not live objects: this is `heap count`, which x-lang
+    /// requires only to RISE across an allocation, so collection must not lower
+    /// it. `Objects::live` is the other number.
     allocations: usize,
 }
 
@@ -80,8 +82,7 @@ impl Heap {
     /// Append one word, growing the heap.
     /// How many objects have been allocated.
     ///
-    /// Allocations, not live objects — on a heap that never frees those are the
-    /// same number, and `heap count` only has to RISE across an allocation.
+    /// Allocations EVER — see the field. `Objects::live` is what is on the chain.
     pub fn allocations(&self) -> usize {
         self.allocations
     }
@@ -101,6 +102,10 @@ impl Heap {
     /// uses; an address is what leaves.
     pub fn address_of(&self, at: Addr) -> u64 {
         self.words.as_ptr() as u64 + at.raw()
+    }
+
+    pub fn words_len(&self) -> usize {
+        self.words.len()
     }
 
     pub fn push(&mut self, v: Word) {

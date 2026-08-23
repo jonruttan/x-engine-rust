@@ -2,18 +2,16 @@
 //!
 //! Mirrors the reference engine's `x-prim/heap.c`.
 //!
-//! **This engine has no collector**, and that is a design consequence rather
-//! than an omission: the `core` profile does not include `isa/gc`, so the
-//! smallest thing that can boot x-lang allocates into a growing heap and never
-//! frees. Implementing this group does not change that — it makes the
-//! instructions *reachable*, which is what the capability means.
+//! `heap collect` MARKS AND SWEEPS. The `core` profile does not include
+//! `isa/gc`, so nothing x-lang runs requires this to free anything — but a heap
+//! that only grows took this project's machine down, which is a mechanism and
+//! not a preference, so it frees.
 //!
-//! What that costs is nothing the contract asks for. `heap collect` must
-//! PRESERVE a reachable object and be idempotent from the caller's view; a heap
-//! that never frees satisfies both by construction, and says so here rather than
-//! pretending to sweep. If a collector is ever added, `gc/explicit-only` and
-//! `gc/non-moving` stop being free and have to be earned — the compliance suite
-//! is where that gets falsified.
+//! The contract asks that `heap collect` PRESERVE a reachable object and be
+//! idempotent from the caller's view. Both are now properties of the mark rather
+//! than of doing nothing, and `gc/explicit-only` and `gc/non-moving` are earned
+//! the same way — see `collect.rs`, and the compliance suite for where they get
+//! falsified.
 //!
 //! REGISTRATION IS THE ENGINE'S JOB; INVOCATION IS THE LIBRARY'S. The three hook
 //! and root operations look like collector internals and are not. x-lang's own
@@ -31,19 +29,30 @@ use crate::prim::PrimDef;
 /// `(heap count)` — how many objects have been allocated.
 ///
 /// Must INCREASE across an allocation, which is the whole of what the contract
-/// asks. It counts allocations rather than live objects, and on a heap that
-/// never frees those are the same number.
+/// asks — so it counts allocations EVER and collection does not lower it. The
+/// live count is a different number and is not what x-lang asked for here.
 fn count(e: &mut Engine, _a: &[Obj]) -> EvalResult {
     let n = e.objects.alloc_count() as i64;
     Ok(e.objects.int(n))
 }
 
-/// `(heap collect)` — preserves everything, because nothing is ever freed.
+/// `(heap collect)` — reclaim what nothing can reach.
 ///
 /// The two properties the contract states are that a reachable object survives
-/// and that collecting twice looks the same as once. Both hold here for the
-/// strongest possible reason: there is no collector to get them wrong.
-fn collect(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
+/// and that collecting twice looks the same as once. The first is what the mark
+/// phase is for; the second follows from the mark being computed fresh each
+/// time, so a second collection immediately after a first finds nothing new.
+fn collect(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+    let freed = e.collect();
+    if std::env::var("X_HEAP_STATS").is_ok() {
+        eprintln!(
+            "collect: freed {} objects, {} live; {} of {} frames free",
+            freed,
+            e.objects.live,
+            e.envs.free_count(),
+            e.envs.frame_count()
+        );
+    }
     Ok(NIL)
 }
 
@@ -102,9 +111,9 @@ fn mark_root(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// an engine that filed it only in the catalog would leave every bare harness
 /// unable to guard itself.
 ///
-/// It is ENFORCED, not merely recorded. A heap that never frees is exactly the
-/// kind that needs a ceiling, and the guard exists because unbounded allocation
-/// has taken this project's machine down before.
+/// It is ENFORCED, not merely recorded. Collection is EXPLICIT-ONLY, so nothing
+/// stands between a runaway loop and the machine except this — and unbounded
+/// allocation has taken this project's machine down before.
 fn alloc_limit(e: &mut Engine, a: &[Obj]) -> EvalResult {
     let n = e.objects.as_int(a[0]);
     let b = e.base;
@@ -186,9 +195,9 @@ mod tests {
         assert!(truthy("(match ((eq? alloc-limit! ()) ()) (#t 1))"));
     }
 
-    /// And it is ENFORCED. A heap that never frees is the kind that needs a
-    /// ceiling; recording the number without honouring it would be a guard in
-    /// name only.
+    /// And it is ENFORCED. With collection explicit-only, a runaway loop meets
+    /// no other limit; recording the number without honouring it would be a
+    /// guard in name only.
     #[test]
     fn the_allocation_ceiling_is_enforced() {
         assert!(

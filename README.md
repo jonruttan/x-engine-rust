@@ -55,7 +55,10 @@ looks right — pure pointer identity — and the conformance harness said so.
 `docs/engine-contract.md` in x-lang describes four profiles. The one to aim at is
 **`core`** — 108 instructions — and the interesting thing about it is what it
 leaves out: no foreign door, no syscalls, and **no garbage collector**. The
-smallest thing that can boot x-lang allocates and never frees.
+smallest thing that can boot x-lang is permitted to allocate and never free.
+
+This engine collects anyway, because a heap that only grows took the machine
+down. `heap collect` marks and sweeps; see `src/collect.rs`.
 
 That shapes everything here:
 
@@ -93,9 +96,10 @@ to C and nothing outside this engine ever dereferences one. So:
 
 ## This engine's layout is not the C engine's
 
-`tools/contract/obj-layout.x` reserves **no heap-link word**: with no collector
-there is no chain to thread, so the header is two words where the C engine's is
-three, and every later slot shifts down.
+`tools/contract/obj-layout.x` names **no heap-link word**. The engine has one —
+the collector threads live objects through it — but x-lang never reads it, so the
+routes x-lang is given start at the type word and every later slot shifts down
+relative to the C engine's.
 
 That is a CONSEQUENCE, not a goal. The header is short because a feature is
 missing, and nothing was chosen here.
@@ -136,9 +140,12 @@ Following x-lang's own advice for a second implementation:
    `make conformance X_BIN=.../x-engine X_ENGINE_DIR=.../x-engine-rust`
 5. Add `gc`, then `posix`, if and when the library tiers that need them matter.
 
-Two guarantees are already claimed and both are free rather than earned:
-`gc/explicit-only` and `gc/non-moving` hold because there is no collector at all.
-If one is ever added they stop being free and must be re-earned.
+Two guarantees are claimed and both are now EARNED rather than free.
+`gc/explicit-only` holds because nothing but `(heap collect)` collects — the
+`X_GC_STRESS` hook exists to violate that deliberately, under test, so a missing
+root surfaces on the next form instead of in an hour. `gc/non-moving` holds
+because the sweep puts freed words back on a free list keyed by exact size and
+never compacts, so every address x-lang holds stays valid.
 
 ## Building and checking
 
