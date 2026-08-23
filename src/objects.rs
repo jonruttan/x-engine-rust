@@ -19,9 +19,10 @@
 //!   word 2+  data
 //! ```
 //!
-//! There is no heap-link word. This engine has no collector, so there is no chain
-//! to thread — which also makes `gc/explicit-only` and `gc/non-moving` true for
-//! free rather than by care.
+//! Word 0 is the HEAP LINK, threading every live object into one chain so the
+//! collector has something to sweep. It is the header's whole cost: x-lang never
+//! reads it, and `tools/contract/obj-layout.x` does not name it, because the
+//! chain is the engine's business and not the contract's.
 //!
 //! STORAGE ANSWERS `Word`, NOT MEANING. `data(o, i)` cannot know whether the slot
 //! holds an object, an integer or an address, so it answers a raw `Word` and the
@@ -249,6 +250,9 @@ pub struct Objects {
     /// that fits them exactly.
     pub(crate) free: HashMap<u64, Vec<Obj>>,
     /// Overwrite a swept object's flags, so a later read of it traps. Debug only.
+    /// Objects on the heap chain right now, as against `heap count`, which is
+    /// every object ever allocated and only ever rises.
+    pub(crate) live: usize,
     pub(crate) poison_freed: bool,
     /// What a poisoned object used to be, so the trap can name it.
     pub(crate) freed_kind: HashMap<Obj, (u64, u64, u64)>,
@@ -321,6 +325,7 @@ impl Objects {
             satom_marker: NIL,
             heap_chain: NIL,
             free: HashMap::new(),
+            live: 0,
             poison_freed: std::env::var("X_GC_POISON").is_ok(),
             freed_kind: HashMap::new(),
         };
@@ -348,6 +353,7 @@ impl Objects {
     /// not need one.
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
+        self.live += 1;
         let ty = self.stamp_for(flags);
 
         // A swept object of exactly this size is reused before the heap grows.

@@ -91,10 +91,23 @@ impl Bindings {
 struct Frame {
     vars: Bindings,
     parent: Option<EnvId>,
+    /// Reclaimed by the collector and not yet handed out again.
+    ///
+    /// An `EnvId` is a bare INDEX, so a frame freed while something still named
+    /// it would not fail — it would quietly answer the next activation's
+    /// bindings, and the wrong answer would surface somewhere else entirely.
+    /// This is the object heap's poison trap, in the one form an index allows.
+    dead: bool,
 }
 
 pub struct Envs {
     frames: Vec<Frame>,
+    /// Slots whose frames were reclaimed, ready for the next activation.
+    free: Vec<usize>,
+    /// Never hand a reclaimed slot back, so a stale `EnvId` stays dead and the
+    /// trap fires instead of being papered over by the next activation. The
+    /// same switch as the heap's, for the same reason. See `X_GC_POISON`.
+    poison: bool,
 }
 
 impl Envs {
@@ -102,32 +115,70 @@ impl Envs {
     /// its own base — there is no privileged "global" environment above the
     /// bases, because a base IS the top of a chain.
     pub fn new() -> Self {
-        Envs { frames: Vec::new() }
+        Envs {
+            frames: Vec::new(),
+            free: Vec::new(),
+            poison: std::env::var("X_GC_POISON").is_ok(),
+        }
     }
 
     /// Every name and value in every frame.
     ///
     /// Frames are not in the heap, so the collector cannot trace into them —
     /// their contents are roots.
-    pub fn all_bindings(&self) -> Vec<Obj> {
-        let mut out = Vec::new();
-        for f in &self.frames {
-            match &f.vars {
-                Bindings::Small(v) => {
-                    for (k, x) in v {
-                        out.push(*k);
-                        out.push(*x);
-                    }
+    /// Push a frame's names and values onto `out`.
+    pub fn bindings_of(&self, id: EnvId, out: &mut Vec<Obj>) {
+        match &self.frame(id).vars {
+            Bindings::Small(v) => {
+                for (k, x) in v {
+                    out.push(*k);
+                    out.push(*x);
                 }
-                Bindings::Large(m) => {
-                    for (k, x) in m {
-                        out.push(*k);
-                        out.push(*x);
-                    }
+            }
+            Bindings::Large(m) => {
+                for (k, x) in m {
+                    out.push(*k);
+                    out.push(*x);
                 }
             }
         }
-        out
+    }
+
+    /// How many slots the collector has reclaimed and not yet handed back.
+    pub fn free_count(&self) -> usize {
+        self.free.len()
+    }
+
+    pub fn parent_of(&self, id: EnvId) -> Option<EnvId> {
+        self.frame(id).parent
+    }
+
+    /// Release every frame not marked reachable, answering the count.
+    ///
+    /// A frame's SLOT is kept — an EnvId is an index — and its bindings are
+    /// dropped, which is where the memory is. The slot goes on a free list for
+    /// the next activation, which is safe precisely because nothing reachable
+    /// still names it.
+    pub fn sweep(&mut self, seen: &[bool]) -> usize {
+        let poison = self.poison;
+        let mut on_free = vec![false; self.frames.len()];
+        for &i in &self.free {
+            on_free[i] = true;
+        }
+        let mut freed = 0;
+        for (i, frame) in self.frames.iter_mut().enumerate() {
+            if seen.get(i).copied().unwrap_or(false) || on_free[i] {
+                continue;
+            }
+            frame.vars = Bindings::Small(Vec::new());
+            frame.parent = None;
+            frame.dead = true;
+            if !poison {
+                self.free.push(i);
+            }
+            freed += 1;
+        }
+        freed
     }
 
     pub fn frame_count(&self) -> usize {
@@ -135,7 +186,23 @@ impl Envs {
     }
 
     fn frame(&self, id: EnvId) -> &Frame {
-        &self.frames[id.index()]
+        let f = &self.frames[id.index()];
+        assert!(
+            !f.dead,
+            "environment {} used after it was reclaimed",
+            id.index()
+        );
+        f
+    }
+
+    fn frame_mut(&mut self, id: EnvId) -> &mut Frame {
+        let f = &mut self.frames[id.index()];
+        assert!(
+            !f.dead,
+            "environment {} used after it was reclaimed",
+            id.index()
+        );
+        f
     }
 
     /// A fresh frame with NO PARENT.
@@ -146,25 +213,41 @@ impl Envs {
     /// inherited everything, which is the opposite of the capability model
     /// `base bind` exists to provide.
     pub fn push_root(&mut self) -> EnvId {
-        self.frames.push(Frame {
-            vars: Bindings::Small(Vec::new()),
-            parent: None,
-        });
-        EnvId::new(self.frames.len() - 1)
+        self.alloc(None)
     }
 
     /// A fresh frame whose parent is `parent`.
     pub fn push(&mut self, parent: EnvId) -> EnvId {
-        self.frames.push(Frame {
+        self.alloc(Some(parent))
+    }
+
+    /// Take a frame, REUSING a slot the collector reclaimed when there is one.
+    ///
+    /// An `EnvId` is an index, so reusing a slot would be a disaster if anything
+    /// still named it — which is exactly what the sweep establishes it does not.
+    /// Without reuse the frame vector grows for the life of the process even
+    /// though its contents are being freed.
+    fn alloc(&mut self, parent: Option<EnvId>) -> EnvId {
+        let frame = Frame {
             vars: Bindings::Small(Vec::new()),
-            parent: Some(parent),
-        });
-        EnvId::new(self.frames.len() - 1)
+            parent,
+            dead: false,
+        };
+        match self.free.pop() {
+            Some(i) => {
+                self.frames[i] = frame;
+                EnvId::new(i)
+            }
+            None => {
+                self.frames.push(frame);
+                EnvId::new(self.frames.len() - 1)
+            }
+        }
     }
 
     /// Bind in THIS frame, shadowing any outer binding of the same name.
     pub fn bind(&mut self, env: EnvId, name: Obj, value: Obj) {
-        self.frames[env.index()].vars.set(name, value);
+        self.frame_mut(env).vars.set(name, value);
     }
 
     /// Walk out through the chain. `None` is unbound, which the caller turns into
@@ -189,10 +272,10 @@ impl Envs {
         loop {
             // One pass: `replace` answers whether the name was there, so a hit
             // never costs a second lookup and a miss never writes.
-            if self.frames[at.index()].vars.replace(name, value) {
+            if self.frame_mut(at).vars.replace(name, value) {
                 return true;
             }
-            match self.frames[at.index()].parent {
+            match self.frame(at).parent {
                 Some(p) => at = p,
                 None => return false,
             }

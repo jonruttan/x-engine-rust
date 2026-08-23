@@ -33,5 +33,6 @@
 # --- not x-lang at all --------------------------------------------------------
 "operatives return early"	a Rust unreachable! message; never reaches x-lang
 "tools/contract/base-paths.x"	a PATH this engine ships, not a name
-"collect: freed {} of {}"	engine telemetry on stderr under X_HEAP_STATS; x-lang never sees it
+"collect: freed {} objects, {} live; {} of {} frames free"	engine telemetry on stderr under X_HEAP_STATS; x-lang never sees it
 "heap words={} ({} MB)  objects={}  frames={}"	same -- a measurement hook, not language output
+"environment {} used after it was reclaimed"	panic message for the reclaimed-frame trap; an engine bug, never reachable from x-lang

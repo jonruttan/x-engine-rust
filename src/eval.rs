@@ -94,10 +94,17 @@ impl Engine {
         let mark = self.root_mark();
         self.root_push(form);
         let slot = mark;
+        // The same for the ENVIRONMENT, and for the same reason: an activation
+        // frame is named by this Rust local and by nothing on the heap until a
+        // closure captures it, which most frames never do.
+        let env_mark = self.env_root_mark();
+        self.env_root_push(env);
+        let env_slot = env_mark;
         let out = loop {
-            // The armed ceiling. A heap that never frees is exactly the kind
-            // that needs one, and unbounded allocation has taken this project's
-            // machine down before.
+            // The armed ceiling. Collection is explicit-only, so between two
+            // `(heap collect)` calls nothing bounds a runaway loop but this —
+            // and unbounded allocation has taken this project's machine down
+            // before.
             // Publish an interrupt the handler recorded. Between forms is soon
             // enough and is the only safe place: the handler runs at an
             // arbitrary instruction and may not touch the heap.
@@ -158,11 +165,14 @@ impl Engine {
                     // accumulate one root per iteration.
                     self.root_truncate(slot + 1);
                     self.roots[slot] = form;
+                    self.env_root_truncate(env_slot + 1);
+                    self.env_roots[env_slot] = env;
                 }
                 None => break Ok(answer),
             }
         };
         self.root_truncate(mark);
+        self.env_root_truncate(env_mark);
         out
     }
 
@@ -433,8 +443,14 @@ impl Engine {
         // names.
         let bound: Vec<Obj> = std::iter::once(callee).chain(vals).collect();
         let frame = self.envs.push(defenv);
+        // Rooted from the moment it exists: binding a dotted rest parameter
+        // allocates, and the body's non-tail forms run under it.
+        let env_mark = self.env_root_mark();
+        self.env_root_push(frame);
         self.bind_params(frame, params, &bound);
-        self.eval_body_tail(body, frame)
+        let out = self.eval_body_tail(body, frame);
+        self.env_root_truncate(env_mark);
+        out
     }
 
     /// Apply an operative: arguments arrive UNEVALUATED and the caller's
@@ -454,12 +470,16 @@ impl Engine {
         // directly; a name with no argument is nil.
         let given: Vec<Obj> = self.objects.list(args).collect();
         let frame = self.envs.push(defenv);
+        let env_mark = self.env_root_mark();
+        self.env_root_push(frame);
         self.bind_params(frame, params, &given);
         if !envname.is_nil() {
             let e = self.objects.env_obj(env);
             self.envs.bind(frame, envname, e);
         }
-        self.eval_body_tail(body, frame)
+        let out = self.eval_body_tail(body, frame);
+        self.env_root_truncate(env_mark);
+        out
     }
 
     /// Bind a parameter list to values, honouring a DOTTED REST PARAMETER.

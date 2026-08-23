@@ -58,6 +58,10 @@ pub struct Engine {
     /// collection triggered underneath it would free the code that is running.
     /// See `Engine::root_set`.
     pub(crate) roots: Vec<Obj>,
+    /// Frames the EVALUATOR is holding, for the same reason and with the same
+    /// discipline: an activation frame is named by a Rust local from the moment
+    /// it is pushed until its body starts running.
+    pub(crate) env_roots: Vec<EnvId>,
     /// Collect every N evaluation steps. Zero — the default — never collects on
     /// its own, which is what `gc/explicit-only` promises.
     pub(crate) gc_stress: u32,
@@ -126,6 +130,7 @@ impl Engine {
             reader: Reader::new(""),
             loading: Vec::new(),
             roots: Vec::new(),
+            env_roots: Vec::new(),
             gc_stress: std::env::var("X_GC_STRESS")
                 .ok()
                 .and_then(|v| v.parse().ok())
