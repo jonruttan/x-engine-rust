@@ -95,6 +95,19 @@ cargo test --workspace --doc --quiet
 echo "== release build =="
 cargo build --release --quiet
 
+# The ISA lives in two places -- tools/contract/isa.x, which x-lang reads, and
+# src/prims/*.rs, which the engine runs -- and nothing compared them until this
+# check existed. The contract gates all compare isa.x against x-lang's
+# vocabulary; none of them ever asks the BINARY.
+echo "== isa =="
+sh tools/check/isa.sh
+
+# x-lang's NAMES belong in one module. This is a gate rather than a convention
+# because the names had spread across twenty files and no reviewer catches the
+# twenty-first.
+echo "== vocabulary =="
+sh tools/check/vocabulary.sh
+
 # The conformance suite is x-lang's, not this repo's, so it runs only when a
 # checkout is pointed at. It answers a DIFFERENT question from the tests above:
 # those ask whether a primitive does what this engine intends, the suite asks

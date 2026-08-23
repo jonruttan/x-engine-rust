@@ -35,7 +35,7 @@ impl Engine {
             let s = self.objects.str_new(a.as_ref());
             list = self.objects.pair(s, list);
         }
-        let name = self.objects.sym("args");
+        let name = self.objects.sym(crate::vocabulary::ARGS);
         let env = self.root_env();
         self.envs.bind(env, name, list);
     }

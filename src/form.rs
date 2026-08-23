@@ -33,6 +33,7 @@ use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::obj::{Obj, NIL};
 use crate::prims::tok::{handler, handler_list, score_one};
+use crate::vocabulary::Family;
 
 impl Engine {
     /// One form from the engine's own reader, or `None` at end of input.
@@ -126,7 +127,7 @@ impl Engine {
         let text = r.text_obj(&mut self.objects);
         let at = r.pos() as u64;
         for ty in types {
-            if ty.is_nil() || handler(self, ty, "analyse").is_nil() {
+            if ty.is_nil() || handler(self, ty, Family::Analyse).is_nil() {
                 continue;
             }
             let Some(n) = score_one(self, ty, text, at)? else {
@@ -138,7 +139,7 @@ impl Engine {
             // The reader runs with the buffer positioned on the claimed span:
             // retain at the start, cursor at the end, so `buf last-char` is the
             // final character the analyser accepted.
-            let reader = handler(self, ty, "read");
+            let reader = handler(self, ty, Family::Read);
             let env = self.root_env();
             for rd in handler_list(self, reader) {
                 if rd.is_nil() {

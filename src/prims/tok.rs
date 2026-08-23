@@ -27,6 +27,7 @@ use crate::eval::EvalResult;
 use crate::obj::{Obj, NIL};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
+use crate::vocabulary::Family;
 
 // --- the buffer --------------------------------------------------------------
 
@@ -122,8 +123,8 @@ fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// `display` from. The reader's `analyse` and `read` are ordinary families, not
 /// a private arrangement, so a type built by `base make-tok` and one built by
 /// `type make` carry their handlers identically.
-pub(crate) fn handler(e: &mut Engine, ty: Obj, name: &str) -> Obj {
-    e.objects.type_handler(ty, name)
+pub(crate) fn handler(e: &mut Engine, ty: Obj, family: Family) -> Obj {
+    e.objects.type_handler(ty, family)
 }
 
 /// Run one type's analyser from the buffer's current position.
@@ -137,7 +138,7 @@ pub(crate) fn score_one(
     text: Obj,
     from: u64,
 ) -> Result<Option<u64>, Cond> {
-    let analyse = handler(e, ty, "analyse");
+    let analyse = handler(e, ty, Family::Analyse);
     if analyse.is_nil() {
         return Ok(None);
     }
@@ -234,7 +235,7 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
         // span it claimed: retain at the start, cursor at the end.
         let buf = e.objects.buf(text, at);
         e.objects.set_buf_cursor(buf, at + n);
-        let reader = handler(e, ty, "read");
+        let reader = handler(e, ty, Family::Read);
         // As with the analysers, the slot may be a LIST. A reader DECLINES by
         // answering nil without consuming, so the next one sees the same buffer
         // — which is why each attempt gets a buffer positioned identically

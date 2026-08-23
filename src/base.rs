@@ -244,4 +244,33 @@ mod tests {
         assert_eq!(env_of(&o, a), EnvId::new(1));
         assert_eq!(env_of(&o, b), EnvId::new(2));
     }
+
+    /// The ROUTES list and base-paths.x are the same list, and this is what
+    /// keeps them so.
+    ///
+    /// The names live twice — here, beside the slot constants that index them,
+    /// and in the contract file x-lang reads. That duplication is deliberate
+    /// (a slot constant next to a name read from a file at runtime would be
+    /// worse), and it is only safe while something compares them. A route
+    /// renamed on one side alone fails here rather than at boot.
+    #[test]
+    fn the_route_list_is_exactly_what_base_paths_declares() {
+        let paths = std::fs::read_to_string("tools/contract/base-paths.x")
+            .expect("the engine's own committed paths");
+        let declared: Vec<String> = paths
+            .lines()
+            .filter_map(|l| {
+                let body = l.trim().strip_prefix('(')?;
+                let body = body.split(';').next().unwrap_or("");
+                let mut w = body.trim().trim_end_matches(')').split_whitespace();
+                let name = w.next()?;
+                (w.next()? == "base").then(|| name.to_string())
+            })
+            .collect();
+        let ours: Vec<String> = ROUTES.iter().map(|r| r.to_string()).collect();
+        assert_eq!(
+            ours, declared,
+            "ROUTES and base-paths.x disagree; they are one list in two files"
+        );
+    }
 }

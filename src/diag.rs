@@ -67,10 +67,10 @@ impl Cond {
         match self {
             Cond::Raised(v) => value_text(a, *v),
             Cond::Unbound(sym) => format!("Unbound SYMBOL '{}", a.sym_name(*sym)),
-            Cond::CannotInclude(path) => format!("cannot include {}", path),
-            Cond::NotAnEnvironment(_) => "tail-eval: not an environment".to_string(),
-            Cond::NoProgram => "cannot read program from stdin".to_string(),
-            Cond::AllocLimit => "allocation limit exceeded".to_string(),
+            Cond::CannotInclude(path) => crate::vocabulary::MSG_CANNOT_INCLUDE.replace("{}", path),
+            Cond::NotAnEnvironment(_) => crate::vocabulary::MSG_NOT_AN_ENV.to_string(),
+            Cond::NoProgram => crate::vocabulary::MSG_NO_PROGRAM.to_string(),
+            Cond::AllocLimit => crate::vocabulary::MSG_ALLOC_LIMIT.to_string(),
         }
     }
 
@@ -161,8 +161,12 @@ fn render(a: &Objects, v: Obj, depth: usize) -> String {
     }
     if a.is_char(v) {
         return match char::from_u32(a.as_char(v)) {
-            Some(c) => format!("#\\{}", c),
-            None => "#\\?".to_string(),
+            Some(c) => format!("{}{}", crate::vocabulary::CHAR_PREFIX, c),
+            None => format!(
+                "{}{}",
+                crate::vocabulary::CHAR_PREFIX,
+                crate::vocabulary::CHAR_UNKNOWN
+            ),
         };
     }
     if depth >= 4 {
@@ -183,19 +187,14 @@ fn render(a: &Objects, v: Obj, depth: usize) -> String {
         }
         return format!("({})", parts.join(" "));
     }
-    // Everything else: say WHAT it was rather than nothing at all.
-    kind_name(a, v).to_string()
-}
-
-/// A one-word name for a value with no printed form, so an error can still say
-/// what it was handed.
-fn kind_name(a: &Objects, v: Obj) -> &'static str {
-    if a.is_env(v) {
-        "#<env>"
-    } else if a.is_prim(v) || a.is_foreign(v) {
-        "#<prim>"
-    } else {
-        "#<obj>"
+    // Everything else: say WHAT it was, by READING its type rather than by
+    // enumerating kinds here. Every value carries a pointer to its type tree and
+    // every tree carries its name, so the engine already knows the answer — a
+    // list of cases in this file would be a second, staler copy of it, and a
+    // kind added later would quietly print as the fallback.
+    match a.type_name_of(v) {
+        Some(name) => crate::vocabulary::opaque(&name),
+        None => crate::vocabulary::opaque(crate::vocabulary::UNNAMED),
     }
 }
 

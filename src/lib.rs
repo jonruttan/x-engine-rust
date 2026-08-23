@@ -108,6 +108,7 @@ pub mod session;
 pub mod symbols;
 pub mod syntax;
 pub mod value;
+pub mod vocabulary;
 
 #[cfg(test)]
 mod testkit;

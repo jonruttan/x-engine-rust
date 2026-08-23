@@ -309,7 +309,7 @@ impl Objects {
         a.satom_marker = a.alloc(Flags::new(0), 1);
 
         a.false_obj = a.alloc(FLAG_FALSE, 2);
-        a.sym_t = a.sym("t");
+        a.sym_t = a.sym(crate::vocabulary::TRUTH);
         a
     }
 

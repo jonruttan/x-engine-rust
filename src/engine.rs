@@ -174,7 +174,7 @@ impl Engine {
         let samples = [
             self.objects.int(0),
             self.objects.str_new(""),
-            self.objects.sym("q"),
+            self.objects.sym(crate::vocabulary::TRUTH),
             self.objects.char_new(65),
             self.objects.false_obj(),
             self.objects.pair(one, NIL),
@@ -290,9 +290,9 @@ impl Engine {
         // `#t` and `#f` are instruction-level too: a form read in the host and
         // evaluated in a child must find them. They are `%isa-values` rows in
         // their own right, which is why they are declared and not merely bound.
-        let t = self.objects.sym_shared("#t");
+        let t = self.objects.sym_shared(crate::vocabulary::TRUE);
         self.envs.bind(env, t, t);
-        let f = self.objects.sym_shared("#f");
+        let f = self.objects.sym_shared(crate::vocabulary::FALSE);
         let fo = self.objects.false_obj();
         self.envs.bind(env, f, fo);
 
@@ -308,9 +308,9 @@ impl Engine {
         // numbers: before the reference engine separated them, two releases
         // whose sources never changed reported identically.
         for (name, text) in [
-            ("x-machine", env!("X_MACHINE")),
-            ("x-version", X_EXPR_VERSION),
-            ("x-release", env!("X_RELEASE")),
+            (crate::vocabulary::X_MACHINE, env!("X_MACHINE")),
+            (crate::vocabulary::X_VERSION, X_EXPR_VERSION),
+            (crate::vocabulary::X_RELEASE, env!("X_RELEASE")),
         ] {
             let sym = self.objects.sym_shared(name);
             let v = self.objects.str_new(text);
@@ -325,10 +325,10 @@ impl Engine {
         // The objects themselves are SHARED, not copied per base, which is also
         // what the reference does: a child's `%sigint-flag` is `(obj same?)` to
         // the host's, so a signal is visible from wherever it is observed.
-        let eof = self.objects.sym_shared("%token-eof");
+        let eof = self.objects.sym_shared(crate::vocabulary::TOKEN_EOF);
         let (t, f) = (self.token_eof, self.sigint_flag);
         self.envs.bind(env, eof, t);
-        let flag = self.objects.sym_shared("%sigint-flag");
+        let flag = self.objects.sym_shared(crate::vocabulary::SIGINT_FLAG);
         self.envs.bind(env, flag, f);
 
         for (sym, obj) in self.prim_bindings.clone() {

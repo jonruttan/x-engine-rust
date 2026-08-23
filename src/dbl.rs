@@ -13,6 +13,10 @@
 //! `s0->d` actually cross, and they are the three that live in
 //! [`crate::foreign`].
 
+use crate::vocabulary::{
+    CONV_ADD, CONV_DIV, CONV_EQ, CONV_GE, CONV_GT, CONV_LE, CONV_LT, CONV_MUL, CONV_SUB,
+};
+
 /// Reinterpret an integer's bits as the double they spell.
 ///
 /// A CAST, not a conversion: `bits(1)` is 5e-324, not 1.0. That is the
@@ -61,10 +65,14 @@ pub fn to_str(bits: u64) -> String {
     const P: i32 = 15;
     let v = f64::from_bits(bits);
     if v.is_nan() {
-        return "nan".into();
+        return crate::vocabulary::NAN.into();
     }
     if v.is_infinite() {
-        return if v < 0.0 { "-inf".into() } else { "inf".into() };
+        return if v < 0.0 {
+            crate::vocabulary::NEG_INF.into()
+        } else {
+            crate::vocabulary::INF.into()
+        };
     }
     // The exponent %e would print, obtained by asking for %e. Deriving it from
     // log10 would disagree with the formatter at the rounding boundaries.
@@ -96,13 +104,13 @@ fn trim(s: &str) -> String {
 pub fn arith(op: &str, a: u64, b: u64) -> Option<u64> {
     let (x, y) = (f64::from_bits(a), f64::from_bits(b));
     let r = match op {
-        "d+d" => x + y,
-        "d-d" => x - y,
-        "d*d" => x * y,
+        CONV_ADD => x + y,
+        CONV_SUB => x - y,
+        CONV_MUL => x * y,
         // NOT guarded. Dividing by zero is infinity in IEEE-754 and that is an
         // answer, not an error — and even if it were, whether to refuse it is
         // x-lang's question, not this layer's.
-        "d/d" => x / y,
+        CONV_DIV => x / y,
         _ => return None,
     };
     Some(r.to_bits())
@@ -115,13 +123,13 @@ pub fn arith(op: &str, a: u64, b: u64) -> Option<u64> {
 pub fn compare(op: &str, a: u64, b: u64) -> Option<bool> {
     let (x, y) = (f64::from_bits(a), f64::from_bits(b));
     match op {
-        "d<d" => Some(x < y),
-        "d>d" => Some(x > y),
+        CONV_LT => Some(x < y),
+        CONV_GT => Some(x > y),
         // IEEE equality, so NaN is equal to nothing including itself. The
         // reference engine uses C's `==` and inherits exactly this.
-        "d=d" => Some(x == y),
-        "d<=d" => Some(x <= y),
-        "d>=d" => Some(x >= y),
+        CONV_EQ => Some(x == y),
+        CONV_LE => Some(x <= y),
+        CONV_GE => Some(x >= y),
         _ => None,
     }
 }

@@ -245,18 +245,6 @@ impl Reader {
 
     /// The nine named characters, which are the reference engine's list and not
     /// a choice: `lib/` writes `#\newline` and expects a character back.
-    const CHAR_NAMES: &'static [(&'static str, u32)] = &[
-        ("alarm", 7),
-        ("backspace", 8),
-        ("delete", 127),
-        ("escape", 27),
-        ("newline", 10),
-        ("null", 0),
-        ("return", 13),
-        ("space", 32),
-        ("tab", 9),
-    ];
-
     /// A character literal, with `#\` already consumed.
     ///
     /// ENGINE SYNTAX, not a library reader macro. docs/syntax.md's dialect
@@ -310,7 +298,7 @@ impl Reader {
         if name.len() == 1 {
             return a.char_new(first as u32);
         }
-        for (n, cp) in Self::CHAR_NAMES {
+        for (n, cp) in crate::vocabulary::CHAR_NAMES {
             if *n == name {
                 return a.char_new(*cp);
             }

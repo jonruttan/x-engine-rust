@@ -1,0 +1,33 @@
+# vocabulary-allow.txt -- string literals that LOOK like x-lang names and are not.
+#
+# One line each: the literal, then why. Adding a line here is a claim that the
+# string is not vocabulary; if it IS, the fix is src/vocabulary.rs instead.
+#
+# --- the base's route names ---------------------------------------------------
+# These ARE x-lang names, and they stay in src/base.rs on purpose: each sits
+# beside the slot constant that indexes it, and a name read from a file at
+# runtime could not do that. The duplication is guarded rather than removed --
+# base::tests::the_route_list_is_exactly_what_base_paths_declares compares the
+# list against tools/contract/base-paths.x, in order, so a rename on one side
+# alone fails the tests.
+"alloc-count"	base route, checked against base-paths.x
+"alloc-limit"	base route, checked against base-paths.x
+"env"	base route, checked against base-paths.x
+"err-file"	base route, checked against base-paths.x
+"err-line"	base route, checked against base-paths.x
+"error-str"	base route, checked against base-paths.x
+"false"	base route, checked against base-paths.x
+"file-registry"	base route, checked against base-paths.x
+"files"	base route, checked against base-paths.x
+"heap-free-hooks"	base route, checked against base-paths.x
+"heap-mark-hooks"	base route, checked against base-paths.x
+"heap-mark-roots"	base route, checked against base-paths.x
+"line"	base route, checked against base-paths.x
+"obj-meta-extra"	base route, checked against base-paths.x
+"prims"	base route, checked against base-paths.x
+"profile"	base route, checked against base-paths.x
+"type-alist"	base route, checked against base-paths.x
+#
+# --- not x-lang at all --------------------------------------------------------
+"operatives return early"	a Rust unreachable! message; never reaches x-lang
+"tools/contract/base-paths.x"	a PATH this engine ships, not a name

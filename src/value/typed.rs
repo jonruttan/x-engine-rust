@@ -28,12 +28,27 @@ use crate::objects::{Objects, FLAG_FOREIGN, FLAG_ITER, FLAG_PRIM};
 /// route, which is why `%reflect-path-parent` exists.
 ///
 /// The groups, in top-level order: name, data, heap, proc, cvt, io, iter, ops.
-pub const HEAP_FAMILIES: &[&str] = &["mark", "make", "free", "clone", "units", "length"];
-pub const PROC_FAMILIES: &[&str] = &["call", "eval"];
-pub const CVT_FAMILIES: &[&str] = &["from", "to"];
-pub const IO_FAMILIES: &[&str] = &["analyse", "delimit", "read", "write", "display"];
-pub const ITER_FAMILIES: &[&str] = &["iter"];
-pub const OPS_FAMILIES: &[&str] = &["ops"];
+use crate::vocabulary::Family;
+
+pub const HEAP_FAMILIES: &[Family] = &[
+    Family::Mark,
+    Family::Make,
+    Family::Free,
+    Family::Clone,
+    Family::Units,
+    Family::Length,
+];
+pub const PROC_FAMILIES: &[Family] = &[Family::Call, Family::Eval];
+pub const CVT_FAMILIES: &[Family] = &[Family::From, Family::To];
+pub const IO_FAMILIES: &[Family] = &[
+    Family::Analyse,
+    Family::Delimit,
+    Family::Read,
+    Family::Write,
+    Family::Display,
+];
+pub const ITER_FAMILIES: &[Family] = &[Family::Iter];
+pub const OPS_FAMILIES: &[Family] = &[Family::Ops];
 
 /// How many top-level cells a type spine has before the engine's own handlers.
 const TYPE_GROUPS: usize = 8;
@@ -117,7 +132,7 @@ impl Objects {
     /// The names are the library's, so they are not this engine's to choose.
     /// `make` and `clone` are absent deliberately — the reference does not let
     /// x-lang set them either.
-    fn handler_slot(key: &str) -> Option<(usize, usize)> {
+    fn handler_slot(key: Family) -> Option<(usize, usize)> {
         // Group slots, in the order type_new builds them.
         const DATA: usize = 1;
         const HEAP: usize = 2;
@@ -126,14 +141,20 @@ impl Objects {
         const IO: usize = 5;
         const ITER: usize = 6;
         const OPS: usize = 7;
-        let group = |g: usize, fams: &[&str]| fams.iter().position(|f| *f == key).map(|i| (g, i));
+        let group = |g: usize, fams: &[Family]| fams.iter().position(|f| *f == key).map(|i| (g, i));
         group(HEAP, HEAP_FAMILIES)
             .or_else(|| group(PROC, PROC_FAMILIES))
             .or_else(|| group(CVT, CVT_FAMILIES))
             .or_else(|| group(IO, IO_FAMILIES))
             .or_else(|| group(ITER, ITER_FAMILIES))
             .or_else(|| group(OPS, OPS_FAMILIES))
-            .or_else(|| if key == "data" { Some((DATA, 0)) } else { None })
+            .or_else(|| {
+                if key == Family::Data {
+                    Some((DATA, 0))
+                } else {
+                    None
+                }
+            })
     }
 
     /// Install each `(key . handler)` as the head of its family's stack.
@@ -153,7 +174,10 @@ impl Objects {
             if !self.is_sym(key) {
                 continue;
             }
-            let Some((group, family)) = Self::handler_slot(&self.str_val(key)) else {
+            let Some(fam) = Family::from_name(&self.str_val(key)) else {
+                continue;
+            };
+            let Some((group, family)) = Self::handler_slot(fam) else {
                 continue;
             };
             let handler = self.rest(entry);
@@ -180,7 +204,7 @@ impl Objects {
     /// same door the library uses for `write` and `display` — there is no second
     /// mechanism, and there was one until the handler alist started being
     /// distributed into the tree where it belongs.
-    pub fn type_handler(&self, o: Obj, family: &str) -> Obj {
+    pub fn type_handler(&self, o: Obj, family: Family) -> Obj {
         let Some((group, index)) = Self::handler_slot(family) else {
             return NIL;
         };
@@ -264,6 +288,26 @@ impl Objects {
             return NIL;
         }
         self.type_handle_of_tree(tree)
+    }
+
+    /// A value's type NAME, read from the tree it carries — or `None` when it
+    /// carries none.
+    ///
+    /// Non-mutating on purpose: it reads what is there and never creates a type
+    /// to answer. A diagnostic must not change the heap to describe it.
+    pub fn type_name_of(&self, o: Obj) -> Option<String> {
+        if o.is_nil() {
+            return None;
+        }
+        let tree = self.type_of_word(o);
+        if tree.is_nil() || tree == self.spair_marker || tree == self.satom_marker {
+            return None;
+        }
+        let handle = self.type_handle_of_tree(tree);
+        if handle.is_nil() {
+            return None;
+        }
+        Some(self.str_val(handle))
     }
 
     /// The handle stored in a tree's name slot.

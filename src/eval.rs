@@ -200,7 +200,9 @@ impl Engine {
         if ty.is_nil() {
             return None;
         }
-        let h = self.objects.type_handler(ty, "call");
+        let h = self
+            .objects
+            .type_handler(ty, crate::vocabulary::Family::Call);
         if h.is_nil() {
             None
         } else {
@@ -422,7 +424,7 @@ impl Engine {
     /// already-computed argument list does not evaluate them a second time. For
     /// a symbol value the difference is a live unbound-name error, not a nuance.
     pub fn quote_values(&mut self, vals: &[Obj]) -> Obj {
-        let lit = self.objects.sym("lit");
+        let lit = self.objects.sym(crate::vocabulary::LIT);
         let mut out = NIL;
         for &v in vals.iter().rev() {
             let inner = self.objects.pair(v, NIL);
