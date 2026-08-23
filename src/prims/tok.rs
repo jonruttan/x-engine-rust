@@ -136,6 +136,37 @@ fn score_one(e: &mut Engine, ty: Obj, text: Obj, from: u64) -> Result<Option<u64
     if analyse.is_nil() {
         return Ok(None);
     }
+    // The slot may hold ONE handler or a LIST of them, and the list is how
+    // x-lang installs reader macros: lib/x/reader/lit-reader.x pushes
+    // `(interp lit quasi unquote <the engine's own symbol analyser>)` onto the
+    // symbol type, with the engine's handler captured as the catch-all TAIL.
+    // Walking only a lone handler leaves `'x` reading as a symbol named `'x`.
+    //
+    // Order is the library's and it means something — the catch-all is last on
+    // purpose — so the FIRST handler that scores wins rather than the longest.
+    for h in handler_list(e, analyse) {
+        if let Some(n) = score_with(e, h, text, from)? {
+            return Ok(Some(n));
+        }
+    }
+    Ok(None)
+}
+
+/// The handlers in a slot: a list walked directly, a lone handler on its own.
+///
+/// The reference wraps the single case so its walk stays uniform, and says why:
+/// it lets the quote and quasiquote readers live on the symbol type beside the
+/// symbol reader.
+fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
+    if e.objects.is_pair(slot) {
+        e.objects.list(slot).collect()
+    } else {
+        vec![slot]
+    }
+}
+
+/// Run ONE analyser state machine from `from`, answering the length it claims.
+fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Option<u64>, Cond> {
     let buf = e.objects.buf(text, from);
     let score = e.objects.int(0);
     let mut state = analyse;
@@ -193,11 +224,24 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
         let buf = e.objects.buf(text, at);
         e.objects.set_buf_cursor(buf, at + n);
         let reader = handler(e, ty, "read");
-        let token = if reader.is_nil() {
-            tok(&mut e.objects, &[buf])?
+        // As with the analysers, the slot may be a LIST. A reader DECLINES by
+        // answering nil without consuming, so the next one sees the same buffer
+        // — which is why each attempt gets a buffer positioned identically
+        // rather than one carried over from a reader that already looked.
+        let mut token = NIL;
+        if reader.is_nil() {
+            token = tok(&mut e.objects, &[buf])?;
         } else {
-            e.call_with_values(reader, &[buf], env)?
-        };
+            for r in handler_list(e, reader) {
+                let fresh = e.objects.buf(text, at);
+                e.objects.set_buf_cursor(fresh, at + n);
+                let got = e.call_with_values(r, &[fresh], env)?;
+                if !got.is_nil() {
+                    token = got;
+                    break;
+                }
+            }
+        }
         tokens.push(token);
         at += n;
     }
