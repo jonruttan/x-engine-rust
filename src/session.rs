@@ -22,7 +22,7 @@ impl Engine {
 
     /// Read the next top-level form, or `None` at end of input.
     pub fn next_form(&mut self) -> Option<Obj> {
-        Reader::read(&mut self.reader, &mut self.objects)
+        self.read_form().ok().flatten()
     }
 
     /// Bind the argument vector as the list `args`. The engine parses NOTHING:
@@ -63,10 +63,17 @@ impl Engine {
 
     /// Read a source string and evaluate every form in it, answering the last.
     /// `include` and the test harness are the same act on different sources.
+    /// Read a source string and evaluate every form in it, answering the last.
+    ///
+    /// Through the FORM reader, so an included file sees the same reader macros
+    /// the top level does. Reading the whole file up front would be simpler and
+    /// wrong: `lib/x/reader/lit-reader.x` installs the quote macro partway
+    /// through x-core.x, and everything after it — in the same file — is written
+    /// expecting `'x` to work.
     pub fn eval_source(&mut self, src: &str, env: EnvId) -> EvalResult {
         let mut r = Reader::new(src);
         let mut last = NIL;
-        while let Some(form) = Reader::read(&mut r, &mut self.objects) {
+        while let Some(form) = self.read_form_from(&mut r)? {
             last = self.eval(form, env)?;
         }
         Ok(last)

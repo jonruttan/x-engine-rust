@@ -122,7 +122,7 @@ fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// `display` from. The reader's `analyse` and `read` are ordinary families, not
 /// a private arrangement, so a type built by `base make-tok` and one built by
 /// `type make` carry their handlers identically.
-fn handler(e: &mut Engine, ty: Obj, name: &str) -> Obj {
+pub(crate) fn handler(e: &mut Engine, ty: Obj, name: &str) -> Obj {
     e.objects.type_handler(ty, name)
 }
 
@@ -131,7 +131,12 @@ fn handler(e: &mut Engine, ty: Obj, name: &str) -> Obj {
 /// Answers the length it claims, or `None`. The score object is how acceptance
 /// is signalled — the analyser writes a length into it — so it is read after
 /// every character rather than inferred from what the analyser returned.
-fn score_one(e: &mut Engine, ty: Obj, text: Obj, from: u64) -> Result<Option<u64>, Cond> {
+pub(crate) fn score_one(
+    e: &mut Engine,
+    ty: Obj,
+    text: Obj,
+    from: u64,
+) -> Result<Option<u64>, Cond> {
     let analyse = handler(e, ty, "analyse");
     if analyse.is_nil() {
         return Ok(None);
@@ -145,6 +150,12 @@ fn score_one(e: &mut Engine, ty: Obj, text: Obj, from: u64) -> Result<Option<u64
     // Order is the library's and it means something — the catch-all is last on
     // purpose — so the FIRST handler that scores wins rather than the longest.
     for h in handler_list(e, analyse) {
+        // The captured tail may be nil — lib/x/reader/lit-reader.x ends its list
+        // with the engine's own analyser, and an engine that had none there
+        // contributes nothing rather than a call through nil.
+        if h.is_nil() {
+            continue;
+        }
         if let Some(n) = score_with(e, h, text, from)? {
             return Ok(Some(n));
         }
@@ -157,7 +168,7 @@ fn score_one(e: &mut Engine, ty: Obj, text: Obj, from: u64) -> Result<Option<u64
 /// The reference wraps the single case so its walk stays uniform, and says why:
 /// it lets the quote and quasiquote readers live on the symbol type beside the
 /// symbol reader.
-fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
+pub(crate) fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
     if e.objects.is_pair(slot) {
         e.objects.list(slot).collect()
     } else {
@@ -254,9 +265,20 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
 }
 
 /// `(tok read TB b)` — the same drive, over a buffer already positioned.
+/// `(tok read buffer)` — ONE FORM from the buffer, leaving its cursor after what
+/// was read.
+///
+/// ONE argument, the buffer. It was declared as taking two, `(tok read TB
+/// buffer)`, and read the second — so `lib/x/reader/lit-reader.x`'s
+/// `(%token-read buffer)` handed it a buffer it ignored and a nil it used, and
+/// `'x` came out as `(lit ())`.
+///
+/// This is what a reader macro calls to read the form it prefixes: `%lit-read`
+/// answers `(lit X)` by reading X through here. It used to re-tokenize the
+/// buffer's whole text and answer a LIST of every token in it, which is a
+/// different instruction entirely.
 fn read_tok(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let text = e.objects.buf_text(a[1]);
-    read_str(e, &[a[0], text])
+    e.read_form_at(a[0])
 }
 
 // --- registration ------------------------------------------------------------
@@ -283,7 +305,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::filed("buf", "append", 2, append),
     PrimDef::filed("buf", "read-text", 1, read_text),
     PrimDef::both_full("token-read-string", "tok", "read-str", 2, read_str),
-    PrimDef::filed_full("tok", "read", 2, read_tok),
+    PrimDef::filed_full("tok", "read", 1, read_tok),
     PrimDef::filed("base", "make-tok", 0, make_tok),
     PrimDef::filed("base", "make-type", 3, make_type),
 ];

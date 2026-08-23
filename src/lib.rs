@@ -97,6 +97,7 @@ pub mod diag;
 pub mod engine;
 pub mod env;
 pub mod eval;
+pub mod form;
 pub mod heap;
 pub mod obj;
 pub mod objects;

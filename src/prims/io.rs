@@ -17,7 +17,6 @@ use crate::obj::EnvId;
 use crate::obj::{Obj, NIL};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
-use crate::read::Reader;
 use std::io::Write;
 
 /// The OUT port: raw bytes of a string to the current output, and NIL rather
@@ -48,10 +47,7 @@ fn read_char(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// `()` and running out, and that is deliberate: a caller of `read` has no use
 /// for the distinction, and the reference folds it the same way.
 fn read_form(e: &mut Engine, _a: &[Obj]) -> EvalResult {
-    match Reader::read(&mut e.reader, &mut e.objects) {
-        Some(f) => Ok(f),
-        None => Ok(NIL),
-    }
+    Ok(e.read_form()?.unwrap_or(NIL))
 }
 
 /// `(io repl-read)` — the same act, but end of input arrives as `%token-eof`.
@@ -64,10 +60,7 @@ fn read_form(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// a REPL that cannot tell `()` from ctrl-d either exits on a valid form or
 /// never exits at all.
 fn repl_read(e: &mut Engine, _a: &[Obj]) -> EvalResult {
-    match Reader::read(&mut e.reader, &mut e.objects) {
-        Some(f) => Ok(f),
-        None => Ok(e.token_eof),
-    }
+    Ok(e.read_form()?.unwrap_or(e.token_eof))
 }
 
 /// `(include "path")` — read a file and evaluate its forms AT TOP LEVEL.
