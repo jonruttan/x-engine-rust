@@ -222,10 +222,44 @@ fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Opti
 /// `(tok read-str TB text)` — drive every registered type over the text, score
 /// them against each other, and answer the LIST of tokens produced.
 fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let tb = a[0];
     let text = a[1];
     let len = e.objects.bytes_of(text).len() as u64;
-    let types: Vec<Obj> = e.objects.list(e.objects.tokbase_types(tb)).collect();
+    // THE FIRST ARGUMENT IS A BASE, not a token base. x-lang calls this as
+    // `(tok read-str (%base) text)` — lib/x/reader/lit-reader.x's `chunk` does,
+    // to re-read an interpolation's literal piece through the ordinary string
+    // reader — so the types to drive are the BASE'S TYPE-ALIST, the same ones
+    // the reader consults.
+    //
+    // Reading them from a token base found nothing at all: every chunk of a
+    // `$"…"` came back nil, so the literal built a `(Str8 str …)` whose pieces
+    // were all nil and evaluated to nothing. The banner said `helium()`.
+    //
+    // A TOKBASE drives the scorer over the types registered in it. That is the
+    // protocol x-lang's conformance suite exercises, delimiting included: an
+    // undelimited `"42"` must yield no tokens at all.
+    if !e.objects.is_tokbase(a[0]) {
+        // A BASE reads the text as the engine reads any other source.
+        //
+        // It cannot go through the scorer here, and the reason is this engine's
+        // deviation rather than the caller's mistake: the reference expresses its
+        // BUILT-IN syntax as analyse/read handlers on the builtin types, so
+        // scoring plain text finds them. This engine keeps that syntax in Rust
+        // (see crate::form), so the scorer would find nothing registered and
+        // answer no tokens -- which is exactly what happened to every chunk of a
+        // `$"…"` literal.
+        let text = e.objects.str_val(text);
+        let mut r = crate::read::Reader::new(&text);
+        let mut forms: Vec<Obj> = Vec::new();
+        while let Some(f) = e.read_form_from(&mut r)? {
+            forms.push(f);
+        }
+        let mut list = NIL;
+        for &f in forms.iter().rev() {
+            list = e.objects.pair(f, list);
+        }
+        return Ok(list);
+    }
+    let types: Vec<Obj> = e.objects.list(e.objects.tokbase_types(a[0])).collect();
     let env = e.root_env();
 
     let mut tokens: Vec<Obj> = Vec::new();

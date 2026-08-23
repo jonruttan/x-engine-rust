@@ -21,7 +21,17 @@ fn main() {
         report(&engine, &diag::Cond::NoProgram);
     }
 
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // EVERY argv element, argv[0] included. x-lang's contract says "every argv
+    // element is bound as the `args` list", and the reference binds all of them
+    // -- its loop runs `for (i = argc - 1; i >= 0; i--)`.
+    //
+    // Skipping the program name looked tidier and made `args` NIL whenever the
+    // engine was invoked without arguments, which is how every harness invokes
+    // it. x-lang's compliance suite counts a bare name that evaluates to nil as
+    // MISSING, so the engine declared invoke/argv and failed it -- and the
+    // library's own `--batch` and `--quiet` scans never noticed, because a
+    // program name matches neither.
+    let argv: Vec<String> = std::env::args().collect();
     engine.bind_args(&argv);
     engine.set_input(&src);
 
