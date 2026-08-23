@@ -70,6 +70,11 @@ pub const ROUTES: &[&str] = &[
     "files",
     "profile",
     "false",
+    // The REPL's two: the fd currently being read, and the buffer being read
+    // from. lib/x/repl/loop.x snapshots the fd per read so a cancelled read can
+    // un-poison it, and resets the buffer when a form is abandoned.
+    "filein",
+    "buffer",
 ];
 
 /// Slots the heap instructions reach for by name.
@@ -83,6 +88,8 @@ pub const LINE: usize = 13;
 pub const FILES: usize = 14;
 pub const PROFILE: usize = 15;
 pub const FALSE: usize = 16;
+pub const FILEIN: usize = 17;
+pub const BUFFER: usize = 18;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -135,6 +142,14 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     // rest, so the object the route answers must be the one with the room.
     let f = o.false_obj();
     set_slot(o, spine, FALSE, f);
+    // A cell holding the fd, so `(%cell-int (first …))` reads it. 0 is stdin,
+    // which is where a bare engine's program arrives.
+    let fd = o.spair(zero, NIL);
+    set_slot(o, spine, FILEIN, fd);
+    // The buffer slot exists and is empty: the library resets what it finds
+    // here, and a route that walked off the end would answer nil either way —
+    // indistinguishable from a route this engine forgot.
+    set_slot(o, spine, BUFFER, NIL);
     spine
 }
 

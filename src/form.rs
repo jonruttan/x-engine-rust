@@ -37,11 +37,40 @@ use crate::vocabulary::Family;
 
 impl Engine {
     /// One form from the engine's own reader, or `None` at end of input.
+    /// One form from the CURRENT source — the innermost file being loaded, or
+    /// the program's own input when nothing is loading.
+    ///
+    /// Which source that is matters, and not only for tidiness: x-lang's reader
+    /// handlers call `(io read)` to read the rest of a literal they have begun,
+    /// and while an `include` is running the thing being read is the FILE.
     pub fn read_form(&mut self) -> Result<Option<Obj>, Cond> {
-        let mut r = std::mem::replace(&mut self.reader, crate::read::Reader::new(""));
-        let out = self.read_form_from(&mut r);
-        self.reader = r;
-        out
+        self.with_source(|e, r| e.read_form_from(r))
+    }
+
+    /// One byte from the current source.
+    pub fn read_byte(&mut self) -> Option<u8> {
+        self.with_source(|_, r| r.next_byte())
+    }
+
+    /// Run `f` against the source currently being read, and put it back.
+    ///
+    /// Taken out and returned rather than borrowed, because reading may EVALUATE
+    /// — a reader macro runs x-lang code, which can read further — and the
+    /// engine cannot be borrowed twice.
+    fn with_source<T>(&mut self, f: impl FnOnce(&mut Self, &mut crate::read::Reader) -> T) -> T {
+        match self.loading.pop() {
+            Some(mut r) => {
+                let out = f(self, &mut r);
+                self.loading.push(r);
+                out
+            }
+            None => {
+                let mut r = std::mem::replace(&mut self.reader, crate::read::Reader::new(""));
+                let out = f(self, &mut r);
+                self.reader = r;
+                out
+            }
+        }
     }
 
     pub(crate) fn read_form_from(

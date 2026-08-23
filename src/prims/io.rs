@@ -35,7 +35,7 @@ fn write_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// One byte from the input stream; nil at end of input. A NUL byte read from the
 /// stream is a char like any other, so exhaustion and a zero byte stay distinct.
 fn read_char(e: &mut Engine, _a: &[Obj]) -> EvalResult {
-    match e.reader.next_byte() {
+    match e.read_byte() {
         Some(b) => Ok(e.objects.char_new(b as u32)),
         None => Ok(NIL),
     }

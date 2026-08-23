@@ -71,12 +71,24 @@ impl Engine {
     /// through x-core.x, and everything after it — in the same file — is written
     /// expecting `'x` to work.
     pub fn eval_source(&mut self, src: &str, env: EnvId) -> EvalResult {
-        let mut r = Reader::new(src);
+        // PUSHED as the current source, so `io read` inside a reader handler
+        // reads from THIS text rather than from the process's input. The vector
+        // reader in lib/x/type/vector.x does exactly that, and reaching past the
+        // file ate a form off stdin — which is how the REPL launcher disappeared.
+        self.loading.push(Reader::new(src));
         let mut last = NIL;
-        while let Some(form) = self.read_form_from(&mut r)? {
-            last = self.eval(form, env)?;
-        }
-        Ok(last)
+        let out = loop {
+            match self.read_form() {
+                Ok(Some(form)) => match self.eval(form, env) {
+                    Ok(v) => last = v,
+                    Err(c) => break Err(c),
+                },
+                Ok(None) => break Ok(last),
+                Err(c) => break Err(c),
+            }
+        };
+        self.loading.pop();
+        out
     }
 }
 

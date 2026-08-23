@@ -194,7 +194,23 @@ fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Opti
         let next = e.call_with_values(state, &[buf, score, chr], env)?;
         let claimed = e.objects.as_int(score);
         if claimed != 0 {
-            return Ok(Some(claimed.unsigned_abs()));
+            // THE LENGTH IS WHAT WAS CONSUMED, and the score only carries its
+            // SIGN. The reference computes `(score < 0 ? -1 : 1) * consumed`,
+            // and consumed is the buffer's own span — retain to cursor, after
+            // any `%buffer-unread` the acceptor performed.
+            //
+            // Taking the score's MAGNITUDE as the length happens to agree for an
+            // acceptor that sets it from `%buffer-len` — `%lit-accept` does — and
+            // is wrong for one that sets a bare sign.
+            //
+            // This is closer to the reference and it is NOT yet enough:
+            // `$"a{1}b"` still reads with nil parts, so something else about
+            // that analyser's drive is wrong too. Recorded rather than claimed.
+            let consumed = e
+                .objects
+                .buf_cursor(buf)
+                .saturating_sub(e.objects.buf_retain(buf));
+            return Ok(Some(consumed.max(1)));
         }
         if !e.objects.truthy(next) {
             return Ok(None);

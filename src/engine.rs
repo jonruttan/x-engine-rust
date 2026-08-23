@@ -40,6 +40,18 @@ pub struct Engine {
     /// what `io read-char` should answer is whatever is left after the form being
     /// evaluated, which a reader living in main could not be asked.
     pub reader: Reader,
+    /// Sources being LOADED, innermost last.
+    ///
+    /// `io read` and `io read-char` must answer from the source currently being
+    /// read, not from the process's stdin. x-lang's reader handlers depend on
+    /// it: `lib/x/type/vector.x` reads a `#(…)` literal's elements by calling
+    /// `(io read)` from inside the reader, and while an `include` is running the
+    /// thing being read is the FILE.
+    ///
+    /// Without this the vector handler reached past the file and ate a form off
+    /// stdin — so the first form after `(include "lib/x-core.x")` silently
+    /// vanished, and the REPL launcher was the form that vanished.
+    pub(crate) loading: Vec<Reader>,
     /// An escape in flight: which continuation is unwinding, and with what.
     ///
     /// A raise carries a value; this says the unwind is an ESCAPE rather than a
@@ -102,6 +114,7 @@ impl Engine {
             catalog: NIL,
             prim_bindings: Vec::new(),
             reader: Reader::new(""),
+            loading: Vec::new(),
             escaping: None,
             next_cont: 1,
             base_syms: HashMap::new(),

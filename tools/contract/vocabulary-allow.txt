@@ -27,6 +27,8 @@
 "prims"	base route, checked against base-paths.x
 "profile"	base route, checked against base-paths.x
 "type-alist"	base route, checked against base-paths.x
+"filein"	base route, checked against base-paths.x
+"buffer"	base route, checked against base-paths.x
 #
 # --- not x-lang at all --------------------------------------------------------
 "operatives return early"	a Rust unreachable! message; never reaches x-lang

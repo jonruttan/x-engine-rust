@@ -57,6 +57,9 @@
   ; The false SINGLETON, whose REST x-lang uses as scratch (module.x hangs the
   ; include list there), so this answers the object itself rather than a cell.
   (false   base r r r r r r r r r r r r r r r r)
+  ; The REPL's pair: the fd being read, and the buffer being read from.
+  (filein  base r r r r r r r r r r r r r r r r r)
+  (buffer  base r r r r r r r r r r r r r r r r r r)
 
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
   ; A type is a TREE, and these steps are the REFERENCE ENGINE'S, chosen

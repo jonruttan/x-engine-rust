@@ -94,7 +94,7 @@ impl Reader {
         self.text
     }
 
-    pub(crate) fn pos(&self) -> usize {
+    pub fn pos(&self) -> usize {
         self.pos
     }
 
