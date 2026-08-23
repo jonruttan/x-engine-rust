@@ -164,29 +164,48 @@ impl Engine {
     /// type object itself; the reference keys by a separate sentinel. The alist
     /// shape is what matters to the library, not which of the two it holds.
     fn register_builtin_types(&mut self) {
-        // One representative value per kind the library files a handler for.
+        // One representative value per kind, and EVERY kind the library can
+        // name — not just the ones it files render handlers for. A missing entry
+        // does not surface where it is missing: `lib/x/type/convert.x` looks the
+        // PTR type up, gets nil, and writes a conversion alist through it, after
+        // which an unrelated `def-class` fails hundreds of lines later naming a
+        // symbol that has nothing to do with it.
+        let one = self.objects.int(1);
         let samples = [
             self.objects.int(0),
             self.objects.str_new(""),
             self.objects.sym("q"),
             self.objects.char_new(65),
             self.objects.false_obj(),
+            self.objects.pair(one, NIL),
+            self.objects.ptr(crate::obj::Addr::new(0)),
+            self.objects.foreign(0),
+            self.objects.env_obj(EnvId::new(0)),
         ];
-        let pair = {
-            let one = self.objects.int(1);
-            self.objects.pair(one, NIL)
-        };
-        let base = self.base;
-        for v in samples.into_iter().chain(std::iter::once(pair)) {
+        for v in samples {
             let t = self.objects.type_of(v);
-            if t.is_nil() {
-                continue;
+            if !t.is_nil() {
+                self.file_type(t);
             }
-            let entry = self.objects.pair(t, t);
-            let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
-            let cell = self.objects.pair(entry, head);
-            crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);
         }
+    }
+
+    /// File a type in the base's `type-alist`, where the library looks it up.
+    ///
+    /// EVERY type goes here, the ones `type make` builds at runtime as much as
+    /// the builtins. `(type by-atom …)` in lib/x/type/struct.x walks this table
+    /// and answers nil for anything absent — and its callers do not check:
+    /// `lib/x/type/promise.x` pushes a call handler straight into what it gets
+    /// back, so an unfiled type turned into a write through nil.
+    ///
+    /// Handle and tree are the same object here; the reference keys by a
+    /// separate sentinel. The library only cares about the alist's shape.
+    pub(crate) fn file_type(&mut self, t: Obj) {
+        let base = self.base;
+        let entry = self.objects.pair(t, t);
+        let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
+        let cell = self.objects.pair(entry, head);
+        crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);
     }
 
     /// Build the catalog: `((ns . ((method . prim) ...)) ...)`, the shape x-lang

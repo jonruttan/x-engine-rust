@@ -131,14 +131,71 @@ impl std::error::Error for Diagnostic<'_> {}
 /// Public because a raised value's text is wanted in places other than a
 /// diagnostic line — the same rendering, without the prefix.
 pub fn value_text(a: &Objects, v: Obj) -> String {
+    render(a, v, 0)
+}
+
+/// Render a raised value well enough to NAME the problem.
+///
+/// The printer proper is x-lang's — `lib/x/boot/printer.x` renders over the
+/// `io write-str` door — and a bare engine has not loaded it. What this owes the
+/// reader is not fidelity but IDENTIFICATION: an error is the last thing a run
+/// says, and it is the only channel a bare engine has.
+///
+/// It used to answer the empty string for anything that was not a string, a
+/// symbol or an integer, so a raise carrying a pair — which is how x-lang's
+/// library raises, `(error (pair (lit unsupported-platform) x-machine))` — came
+/// out as `*** ERROR:` and nothing else. Three separate investigations here
+/// started by having to find out what an empty error meant.
+///
+/// Depth-bounded because a raised structure may be cyclic, and an error handler
+/// that hangs is worse than one that truncates.
+fn render(a: &Objects, v: Obj, depth: usize) -> String {
     if v.is_nil() {
-        String::new()
-    } else if a.is_str(v) || a.is_sym(v) {
-        a.str_val(v)
-    } else if a.is_int(v) {
-        format!("{}", a.int_val(v))
+        return "()".to_string();
+    }
+    if a.is_str(v) || a.is_sym(v) {
+        return a.str_val(v);
+    }
+    if a.is_int(v) {
+        return format!("{}", a.int_val(v));
+    }
+    if a.is_char(v) {
+        return match char::from_u32(a.as_char(v)) {
+            Some(c) => format!("#\\{}", c),
+            None => "#\\?".to_string(),
+        };
+    }
+    if depth >= 4 {
+        return "...".to_string();
+    }
+    if a.is_pair(v) {
+        let mut parts = Vec::new();
+        let mut at = v;
+        while a.is_pair(at) && parts.len() < 8 {
+            parts.push(render(a, a.first(at), depth + 1));
+            at = a.rest(at);
+        }
+        if !at.is_nil() {
+            parts.push(".".to_string());
+            parts.push(render(a, at, depth + 1));
+        } else if a.is_pair(v) && parts.len() == 8 {
+            parts.push("...".to_string());
+        }
+        return format!("({})", parts.join(" "));
+    }
+    // Everything else: say WHAT it was rather than nothing at all.
+    kind_name(a, v).to_string()
+}
+
+/// A one-word name for a value with no printed form, so an error can still say
+/// what it was handed.
+fn kind_name(a: &Objects, v: Obj) -> &'static str {
+    if a.is_env(v) {
+        "#<env>"
+    } else if a.is_prim(v) || a.is_foreign(v) {
+        "#<prim>"
     } else {
-        String::new()
+        "#<obj>"
     }
 }
 

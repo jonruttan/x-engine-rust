@@ -1,6 +1,8 @@
 //! Objects: identity, pairs, and the type registry.
 
 use crate::diag::Cond;
+use crate::engine::Engine;
+use crate::eval::EvalResult;
 use crate::obj::Obj;
 use crate::objects::Objects;
 use crate::prim::PrimDef;
@@ -12,9 +14,30 @@ use crate::prim::PrimDef;
 /// x-engine-c was asked rather than guessed at, and it draws the line in a
 /// specific place: `(eq? 1 1)` holds and `(eq? "a" "a")` does NOT. Numbers
 /// compare by value; strings, which are mutable, by identity.
+/// `(obj eq?)` — by VALUE for numbers and characters, by identity otherwise.
+///
+/// The character half was missing, and it is not a nicety: `%str-ref` answers a
+/// freshly made character, so every string comparison in x-lang's library comes
+/// down to `(eq? (%str-ref hay i) (%str-ref needle j))`. With identity those are
+/// never equal, and `lib/x/platform/syscall.x` could not find "darwin" inside
+/// "aarch64-apple-darwin" — the whole posix layer refused to load with
+/// `(unsupported-platform . aarch64-apple-darwin)`.
+///
+/// Asked of x-engine-c rather than assumed:
+///
+/// ```text
+/// (def %ic (prim-ref 'int '->char))
+/// (match ((eq? (%ic 100) (%ic 100)) 'EQ) (#t 'NOT-EQ))   =>  'EQ
+/// ```
+///
+/// Strings stay identity-compared, which the same interrogation confirmed
+/// earlier: `(eq? "a" "a")` does not hold. The reference reads slot 0 either
+/// way — for an atom that is its value, and for a string it is the pointer.
 fn eq(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let same = if a_.is_int(a[0]) && a_.is_int(a[1]) {
         a_.int_val(a[0]) == a_.int_val(a[1])
+    } else if a_.is_char(a[0]) && a_.is_char(a[1]) {
+        a_.as_char(a[0]) == a_.as_char(a[1])
     } else {
         a[0] == a[1]
     };
@@ -48,8 +71,17 @@ fn pair(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.pair(a[0], a[1]))
 }
 
-fn type_make(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.type_new(a[0], a[1]))
+/// `(type make name parent)` — a new type, FILED where the library can find it.
+///
+/// Registration is not optional and not a courtesy. `lib/x/type/struct.x`'s
+/// `type by-atom` is the only way the library reaches a type's tree, and it
+/// walks the base's type-alist; a type that never lands there answers nil, and
+/// callers write into what they get back rather than checking. That is how
+/// `lib/x/type/promise.x` came to push a call handler through nil.
+fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let t = e.objects.type_new(a[0], a[1]);
+    e.file_type(t);
+    Ok(t)
 }
 
 fn type_of(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
@@ -92,7 +124,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::bare("first", 1, first),
     PrimDef::bare("rest", 1, rest),
     PrimDef::bare("pair", 2, pair),
-    PrimDef::filed("type", "make", 2, type_make),
+    PrimDef::both_full("make-type", "type", "make", 2, type_make),
     PrimDef::both("type-of", "type", "of", 1, type_of),
     PrimDef::both("type?", "type", "?", 2, type_is),
     PrimDef::filed("type", "make-instance", 2, make_instance),

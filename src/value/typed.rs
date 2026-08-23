@@ -39,11 +39,25 @@ pub const OPS_FAMILIES: &[&str] = &["ops"];
 const TYPE_GROUPS: usize = 8;
 
 impl Objects {
-    /// A spine of `n` nil cells.
-    fn nil_spine(&mut self, n: usize) -> Obj {
+    /// A group: `n` cells, each holding a STACK that is empty but PRESENT.
+    ///
+    /// A family's stack is born as a one-cell list holding nil, never as nil
+    /// itself. The two look the same through `type-X` — the active handler is
+    /// the head either way, and nil means "none installed" — but they are not
+    /// the same to a WRITER, and the library writes here constantly.
+    ///
+    /// `lib/x/type/struct.x` derives every `*-cell` accessor as the PARENT of
+    /// the value route, which for `type-from` is the stack list itself; then
+    /// `%set-first!` on it installs a handler. With a nil stack that write goes
+    /// through nil, and this engine's first attempt corrupted the heap on
+    /// `(%type-set-from! (%type-by-atom %int) …)` — after which an unrelated
+    /// `def-class` failed, several hundred lines away, naming a symbol that had
+    /// nothing to do with it.
+    fn group(&mut self, n: usize) -> Obj {
         let mut spine = NIL;
         for _ in 0..n {
-            spine = self.pair(NIL, spine);
+            let stack = self.pair(NIL, NIL);
+            spine = self.pair(stack, spine);
         }
         spine
     }
@@ -62,19 +76,20 @@ impl Objects {
     pub fn type_new(&mut self, name: Obj, handlers: Obj) -> Obj {
         // Each group is a spine with one cell per family; each family's cell
         // holds its STACK, and a stack starts empty.
-        let heap = self.nil_spine(HEAP_FAMILIES.len());
-        let proc = self.nil_spine(PROC_FAMILIES.len());
-        let cvt = self.nil_spine(CVT_FAMILIES.len());
-        let io = self.nil_spine(IO_FAMILIES.len());
-        let iter = self.nil_spine(ITER_FAMILIES.len());
-        let ops = self.nil_spine(OPS_FAMILIES.len());
+        let heap = self.group(HEAP_FAMILIES.len());
+        let proc = self.group(PROC_FAMILIES.len());
+        let cvt = self.group(CVT_FAMILIES.len());
+        let io = self.group(IO_FAMILIES.len());
+        let iter = self.group(ITER_FAMILIES.len());
+        let ops = self.group(OPS_FAMILIES.len());
 
         // The name is a STACK too, so that `type-name` — its head — is the name
         // itself. The reference does the same, and reflect.x reads the head.
         let name_stack = self.pair(name, NIL);
 
         let mut spine = NIL;
-        for slot in [ops, iter, io, cvt, proc, heap, NIL, name_stack]
+        let data = self.pair(NIL, NIL);
+        for slot in [ops, iter, io, cvt, proc, heap, data, name_stack]
             .into_iter()
             .take(TYPE_GROUPS)
         {
@@ -260,6 +275,40 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 10, "only {} stack routes checked", checked);
+    }
+
+    /// A family's stack is PRESENT but empty: the route resolves to a real cell
+    /// whose head is nil.
+    ///
+    /// The distinction has no effect on reading — `type-X` answers nil either
+    /// way, meaning no handler — and decides everything about WRITING. Every
+    /// `*-cell` accessor in lib/x/type/struct.x is the parent of a value route,
+    /// which IS the stack, and the library installs handlers with `%set-first!`
+    /// on it. A nil stack sends that write through nil.
+    #[test]
+    fn every_family_stack_is_present_though_empty() {
+        let mut o = Objects::new();
+        let name = o.str_new("T");
+        let ty = o.type_new(name, NIL);
+
+        let mut checked = 0;
+        for (route, steps) in declared_type_routes() {
+            if !route.ends_with("-stack") {
+                continue;
+            }
+            let mut at = ty;
+            for step in &steps {
+                assert!(!at.is_nil(), "route `{}` walks off the end", route);
+                at = if step == "f" { o.first(at) } else { o.rest(at) };
+            }
+            assert!(
+                !at.is_nil(),
+                "stack `{}` is nil; a handler install would write through it",
+                route
+            );
+            checked += 1;
+        }
+        assert!(checked > 10, "only {} stacks checked", checked);
     }
 
     /// The name is readable straight away: reflect.x reads `type-name` as the
