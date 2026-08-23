@@ -255,8 +255,19 @@ pub const STAMPED_KINDS: &[(Flags, &str)] = &[
     (FLAG_BUF, "BUFFER"),
     (FLAG_TOKBASE, "TOKENBASE"),
     (FLAG_CONT, "CONTINUATION"),
-    (FLAG_FOREIGN, "PRIMITIVE"),
 ];
+
+/// The kind a value REPORTS as, which is not always the one it carries.
+///
+/// See [`Objects::reported_flags`] — this is the same rule at the point of
+/// allocation, where there is no object to ask yet.
+pub fn reported_kind(flags: Flags) -> Flags {
+    if flags == FLAG_FOREIGN {
+        FLAG_PRIM
+    } else {
+        flags
+    }
+}
 
 /// The name a kind reports, or `BUILTIN` for one nobody has named.
 ///
@@ -318,23 +329,18 @@ impl Objects {
         // TREE before the library can print it, and `display` stays silent until
         // it does.
         //
-        // SPINES and HANDLES are stamped; VALUES are not. That is a halfway
-        // house and known to be one.
+        // A SPINE carries the tree tag, a HANDLE the atom tag, and everything
+        // else points at its own type TREE.
         //
-        // Stamping values was tried per kind: ints, strings, symbols,
-        // characters, primitives and closures are all fine. LIST PAIRS alone
-        // break `def-class` — its member key comes out nil and every class
-        // answers "no such static member".
-        //
-        // Three explanations were tried and all three were WRONG, which is worth
-        // recording so the next attempt does not repeat them:
-        //   * spine/list confusion — separating structural pairs did not fix it;
-        //   * handle/tree conflation — separating those tags did not either;
-        //   * lists becoming iterable — `%reflect-iter-new` answers nil on a
-        //     list either way, and `%filter` behaves identically.
-        // The cause is still unfound. It is somewhere in how `%flatten-class`
-        // builds its member rows, and it is reproducible in two lines: load
-        // x-core.x to line 187, define any class, read its static table.
+        // Stamping this word broke `def-class` for a long time, and the cause
+        // was not the stamping: `type make-instance` allocated ONE data slot
+        // where the reference allocates a PAIR, so `%class-hot`'s cache read
+        // `(rest class)` past the end of the object. A nil word made that
+        // garbage read as nil and the cache rebuilt correctly every time; a
+        // stamped word made it read a type tree, which came back AS the cached
+        // member table. Three structural theories were tried and discarded
+        // before the out-of-bounds read turned up, so: when a change "breaks"
+        // something, check what it EXPOSED before rearranging what it touched.
         //
         // A STRUCTURAL pair carries the tree tag; everything else keeps a nil
         // word for now.
@@ -343,7 +349,13 @@ impl Objects {
         } else if flags == FLAG_HANDLE {
             self.satom_marker
         } else {
-            NIL
+            // By the REPORTED kind, not the raw flags. A foreign callable is
+            // flagged apart so a dispatch cannot mistake a machine address for a
+            // table index, and that distinction stops at the engine's edge: to
+            // x-lang it IS a primitive, and `obj make-callable` is required to
+            // answer something of a primitive's type.
+            let key = reported_kind(flags);
+            self.builtin_types.get(&key).copied().unwrap_or(NIL)
         };
         self.heap.push(ty.word());
         self.heap.push(Word(flags.raw())); // flags

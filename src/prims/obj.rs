@@ -119,9 +119,24 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// The handle is resolved to its TREE through the base, because the type word
 /// must hold the tree: the library dereferences it and checks the tree tag
 /// before walking.
+/// TWO slots, not one, and the second one matters.
+///
+/// The reference allocates a PAIR-SIZED instance — `X_OBJ_LENGTH_PAIR`, data in
+/// the first slot and NULL in the second — and x-lang uses that second slot:
+/// `%class-hot` in lib/x/type/class.x caches a class's flattened member table
+/// there with `(rest class)` and `%set-rest!`.
+///
+/// With one slot, `rest` read PAST THE END of the object — into the next
+/// allocation's header. That was invisible while type words were nil: the
+/// garbage read as nil, so `%class-hot` saw an empty cache and rebuilt it
+/// correctly every time. Stamping the type word made the same read return a type
+/// TREE, which `%class-hot` then returned AS the cached table, and every class
+/// answered "no such static member".
+///
+/// The stamping did not cause that. It exposed it.
 fn make_instance(e: &mut Engine, a: &[Obj]) -> EvalResult {
     let tree = e.resolve_tree(a[0]);
-    let o = e.objects.instance(tree, 1);
+    let o = e.objects.instance(tree, 2);
     e.objects.set_data(o, 0, a[1].word());
     Ok(o)
 }
