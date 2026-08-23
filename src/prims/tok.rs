@@ -116,16 +116,14 @@ fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 // --- the tokenizer -----------------------------------------------------------
 
-/// One entry from a handler alist.
+/// A reader type's handler for one family.
+///
+/// Read from the TYPE TREE, the same place the library reads `write` and
+/// `display` from. The reader's `analyse` and `read` are ordinary families, not
+/// a private arrangement, so a type built by `base make-tok` and one built by
+/// `type make` carry their handlers identically.
 fn handler(e: &mut Engine, ty: Obj, name: &str) -> Obj {
-    let key = e.objects.sym(name);
-    let handlers = e.objects.type_handlers_of(ty);
-    for entry in e.objects.list(handlers).collect::<Vec<Obj>>() {
-        if e.objects.first(entry) == key {
-            return e.objects.rest(entry);
-        }
-    }
-    NIL
+    e.objects.type_handler(ty, name)
 }
 
 /// Run one type's analyser from the buffer's current position.

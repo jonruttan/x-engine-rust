@@ -70,9 +70,16 @@ impl Objects {
     /// that walks off the end answers nil too — and the library cannot tell "no
     /// handler" from "no such route", so it would take the nil either way.
     ///
-    /// `handlers` is this ENGINE's own pair, parked past the committed tree
-    /// where no route addresses it. The reader needs analyse and read before the
-    /// library exists to install anything.
+    /// `handlers` is an ALIST the library hands over — `((call . fn) (write . fn)
+    /// …)` — and each entry is installed as the initial handler of its family,
+    /// which is the head of that family's stack.
+    ///
+    /// Fifteen keys, and they are the reference's: it distributes exactly this
+    /// set in `x_prim_type_build_struct`. Ignoring the alist and parking it
+    /// somewhere private, as this engine first did, means `(make-type "VECTOR"
+    /// ((call . fn) …))` builds a type whose call handler is nowhere — and the
+    /// failure surfaces later and elsewhere, when something tries to install
+    /// into a stack that was never there.
     pub fn type_new(&mut self, name: Obj, handlers: Obj) -> Obj {
         // Each group is a spine with one cell per family; each family's cell
         // holds its STACK, and a stack starts empty.
@@ -95,32 +102,97 @@ impl Objects {
         {
             spine = self.pair(slot, spine);
         }
-        // The engine's own handlers sit one past the committed tree.
-        self.append_cell(spine, handlers)
+        self.install_handlers(spine, handlers);
+        spine
     }
 
-    /// Add one cell to the end of a spine, answering the head.
-    fn append_cell(&mut self, spine: Obj, v: Obj) -> Obj {
-        let mut at = spine;
-        loop {
-            let next = self.rest(at);
-            if next.is_nil() {
-                let tail = self.pair(v, NIL);
-                self.set_data(at, 1, tail.word());
-                return spine;
-            }
-            at = next;
-        }
+    /// Where each handler key lives: (group slot from the type, family index).
+    ///
+    /// The names are the library's, so they are not this engine's to choose.
+    /// `make` and `clone` are absent deliberately — the reference does not let
+    /// x-lang set them either.
+    fn handler_slot(key: &str) -> Option<(usize, usize)> {
+        // Group slots, in the order type_new builds them.
+        const DATA: usize = 1;
+        const HEAP: usize = 2;
+        const PROC: usize = 3;
+        const CVT: usize = 4;
+        const IO: usize = 5;
+        const ITER: usize = 6;
+        const OPS: usize = 7;
+        let group = |g: usize, fams: &[&str]| fams.iter().position(|f| *f == key).map(|i| (g, i));
+        group(HEAP, HEAP_FAMILIES)
+            .or_else(|| group(PROC, PROC_FAMILIES))
+            .or_else(|| group(CVT, CVT_FAMILIES))
+            .or_else(|| group(IO, IO_FAMILIES))
+            .or_else(|| group(ITER, ITER_FAMILIES))
+            .or_else(|| group(OPS, OPS_FAMILIES))
+            .or_else(|| if key == "data" { Some((DATA, 0)) } else { None })
     }
 
-    /// The engine's own handlers — `analyse` and `read` for the reader — kept
-    /// past the routes the library walks.
-    pub fn type_handlers_of(&self, o: Obj) -> Obj {
-        let mut at = o;
-        for _ in 0..TYPE_GROUPS {
+    /// Install each `(key . handler)` as the head of its family's stack.
+    ///
+    /// An unknown key is SKIPPED rather than refused: which keys exist is
+    /// x-lang's vocabulary, and an engine that raised here would be ruling on a
+    /// question one layer up.
+    fn install_handlers(&mut self, ty: Obj, handlers: Obj) {
+        let mut at = handlers;
+        while self.is_pair(at) {
+            let entry = self.first(at);
             at = self.rest(at);
+            if !self.is_pair(entry) {
+                continue;
+            }
+            let key = self.first(entry);
+            if !self.is_sym(key) {
+                continue;
+            }
+            let Some((group, family)) = Self::handler_slot(&self.str_val(key)) else {
+                continue;
+            };
+            let handler = self.rest(entry);
+            // The group node, then the family's cell, then its stack.
+            let mut node = ty;
+            for _ in 0..group {
+                node = self.rest(node);
+            }
+            let mut fam = self.first(node);
+            for _ in 0..family {
+                fam = self.rest(fam);
+            }
+            let stack = self.first(fam);
+            if self.is_pair(stack) {
+                self.set_data(stack, 0, handler.word());
+            }
         }
-        self.first(at)
+    }
+
+    /// A type's installed handler for one family, or nil.
+    ///
+    /// The ACTIVE handler is the head of the family's stack, which is what the
+    /// `type-X` routes address. The reader asks for `analyse` and `read` by the
+    /// same door the library uses for `write` and `display` — there is no second
+    /// mechanism, and there was one until the handler alist started being
+    /// distributed into the tree where it belongs.
+    pub fn type_handler(&self, o: Obj, family: &str) -> Obj {
+        let Some((group, index)) = Self::handler_slot(family) else {
+            return NIL;
+        };
+        let mut node = o;
+        for _ in 0..group {
+            node = self.rest(node);
+            if node.is_nil() {
+                return NIL;
+            }
+        }
+        let mut fam = self.first(node);
+        for _ in 0..index {
+            fam = self.rest(fam);
+            if fam.is_nil() {
+                return NIL;
+            }
+        }
+        self.first(self.first(fam))
     }
 
     /// An instance of a custom type: `n` data words, and a header type word
@@ -332,36 +404,6 @@ mod tests {
         panic!("no type-name route declared");
     }
 
-    /// The engine's own handlers stay past the committed tree, where no route
-    /// addresses them — otherwise the library would find them by walking.
-    #[test]
-    fn the_engines_handlers_are_not_addressable_by_any_route() {
-        let mut o = Objects::new();
-        let name = o.str_new("T");
-        let handlers = o.str_new("ENGINE-PRIVATE");
-        let ty = o.type_new(name, handlers);
-        assert_eq!(
-            o.type_handlers_of(ty),
-            handlers,
-            "the engine can still read them"
-        );
-
-        for (route, steps) in declared_type_routes() {
-            let mut at = ty;
-            for step in &steps {
-                if at.is_nil() {
-                    break;
-                }
-                at = if step == "f" { o.first(at) } else { o.rest(at) };
-            }
-            assert_ne!(
-                at, handlers,
-                "route `{}` reaches the engine's handlers",
-                route
-            );
-        }
-    }
-
     /// The type routes this engine commits to, parsed from its own contract.
     fn declared_type_routes() -> Vec<(String, Vec<String>)> {
         let paths = std::fs::read_to_string("tools/contract/base-paths.x")
@@ -383,18 +425,5 @@ mod tests {
             ));
         }
         out
-    }
-
-    /// The engine's own handlers sit PAST the routes the library walks, so
-    /// adding a route does not silently shift them into a library slot.
-    #[test]
-    fn the_engines_handlers_sit_past_the_declared_routes() {
-        let mut o = Objects::new();
-        let name = o.str_new("T");
-        let key = o.sym("analyse");
-        let entry = o.pair(key, NIL);
-        let handlers = o.pair(entry, NIL);
-        let ty = o.type_new(name, handlers);
-        assert_eq!(o.type_handlers_of(ty), handlers);
     }
 }
