@@ -25,6 +25,13 @@ W="${TMPDIR:-/tmp}/vocab.$$"; mkdir -p "$W"; trap 'rm -rf "$W"' EXIT INT TERM
 
 # Literals that LOOK like x-lang: lowercase words, `%`-privates, `#`-forms.
 # Rust's own strings are capitalised, punctuation, or format fragments.
+#
+# NOTHING FILTERS awk's OUTPUT HERE. A `grep -oE '^[^\t]*\t.*'` used to sit
+# between the two, and it was worse than useless: awk already emits exactly
+# `FILENAME <tab> line`, so it could only ever discard. BSD grep reads `\t` as a
+# literal `t` rather than a tab, so on macOS it discarded most files' lines and
+# this gate passed on a fraction of the source -- a vacuous pass that only showed
+# up when Linux CI, with GNU grep, reported five literals macOS had never seen.
 for f in $(find src -name '*.rs' | grep -v 'src/vocabulary.rs' | sort); do
 	awk '
 		/^[ \t]*\/\// { next }
@@ -33,7 +40,7 @@ for f in $(find src -name '*.rs' | grep -v 'src/vocabulary.rs' | sort); do
 		/PrimDef::/ { next }
 		{ print FILENAME "\t" $0 }
 	' "$f"
-done | grep -oE '^[^\t]*\t.*' | while IFS="$(printf '\t')" read -r file line; do
+done | while IFS="$(printf '\t')" read -r file line; do
 	printf '%s' "$line" | grep -oE '"[^"]*"' | grep -E '^"[a-z#%]' | while read -r lit; do
 		printf '%s\t%s\n' "$file" "$lit"
 	done
@@ -45,6 +52,18 @@ if [ -f "$ALLOW" ]; then
 else
 	: > "$W/allow"
 fi
+# THE SCAN MUST HAVE SEEN SOMETHING. An extraction that silently produces
+# nothing passes this gate perfectly, which is how the non-portable grep above
+# went unnoticed for as long as it did: a broken scan and a clean repo are
+# indistinguishable from the exit status alone. This repo has x-lang literals
+# outside src/vocabulary.rs by design -- base.rs alone carries the route names --
+# so an empty scan is a broken scan, not a clean one.
+if [ ! -s "$W/found" ]; then
+	echo "vocabulary: the scan found NO literals at all in src/**.rs." >&2
+	echo "  That is this gate failing, not passing -- the extraction is broken." >&2
+	exit 1
+fi
+
 cut -f2 "$W/found" | sort -u > "$W/lits"
 comm -23 "$W/lits" "$W/allow" > "$W/bad"
 

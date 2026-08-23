@@ -36,3 +36,8 @@
 "collect: freed {} objects, {} live; {} of {} frames free"	engine telemetry on stderr under X_HEAP_STATS; x-lang never sees it
 "heap words={} ({} MB)  objects={}  frames={}"	same -- a measurement hook, not language output
 "environment {} used after it was reclaimed"	panic message for the reclaimed-frame trap; an engine bug, never reachable from x-lang
+"expected a string from: {}"	test-assertion message in testkit; never reaches x-lang
+"expected an integer from: {}"	test-assertion message in testkit; never reaches x-lang
+"object"	fallback in the poison trap's description of an unreadable heap word
+"raw:{}"	same -- a word that is not a plausible object, rendered for the trap
+"read of a FREED {} at {:?}\n  still held by: {:?}\n  -- a root is missing"	poison-trap panic; an engine bug, never reachable from x-lang
