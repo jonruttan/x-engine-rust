@@ -111,11 +111,25 @@ const PRIMS_SLOT: usize = 0;
 fn cell_spine(o: &mut Objects, n: usize) -> Obj {
     let mut spine = NIL;
     for _ in 0..n {
-        let zero = o.int(0);
-        let cell = o.spair(zero, NIL);
+        let cell = raw_cell(o, 0);
         spine = o.spair(cell, spine);
     }
     spine
+}
+
+/// A cell whose first data word IS the number, not a pointer to one.
+///
+/// `%cell-int` in lib/x/boot/data.x is a RAW WORD READ —
+/// `(%ptr-ref-word (%obj->ptr x) %data-off-0)` — so a cell holding an int
+/// OBJECT answers that object's ADDRESS. A fresh base's line counter came back
+/// as 27021584 instead of 1, and every fd read the same way.
+///
+/// The library WRITES these too, with `%set-cell-int!`, so the slot has to be a
+/// place a bare integer lives rather than a reference to one.
+fn raw_cell(o: &mut Objects, n: i64) -> Obj {
+    let cell = o.spair(NIL, NIL);
+    o.set_data(cell, 0, crate::obj::Word(n as u64));
+    cell
 }
 
 pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
@@ -128,8 +142,9 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     set_slot(o, spine, ENV_SLOT, env_obj);
 
     // The library's own slots, shaped the way it reads them.
-    let zero = o.int(0);
-    let line = o.spair(zero, NIL);
+    // A fresh base's line counter reads 1: the first line of the source is
+    // line one, and x-lang's own spec says so.
+    let line = raw_cell(o, 1);
     set_slot(o, spine, LINE, line);
     // stdin, stdout, stderr: the library indexes the second and third.
     let files = cell_spine(o, 3);
@@ -144,7 +159,7 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     set_slot(o, spine, FALSE, f);
     // A cell holding the fd, so `(%cell-int (first …))` reads it. 0 is stdin,
     // which is where a bare engine's program arrives.
-    let fd = o.spair(zero, NIL);
+    let fd = raw_cell(o, 0);
     set_slot(o, spine, FILEIN, fd);
     // The buffer slot exists and is empty: the library resets what it finds
     // here, and a route that walked off the end would answer nil either way —

@@ -42,9 +42,13 @@ use std::collections::HashMap;
 // Header shape. These MUST agree with tools/contract/obj-layout.x: x-lang reads
 // that file and computes offsets from it, so a disagreement here is not a Rust
 // bug that Rust can catch — it is the engine lying about itself.
-pub const SLOT_TYPE: u64 = 0;
-pub const SLOT_FLAGS: u64 = 1;
-pub const META_LEN: u64 = 2;
+/// The collector's chain link: every object is threaded here at birth.
+pub const SLOT_HEAP: u64 = 0;
+pub const SLOT_TYPE: u64 = 1;
+pub const SLOT_FLAGS: u64 = 2;
+/// Header words before the data. Committed in `tools/contract/obj-layout.x` as
+/// `%obj-meta-len`, which is where the library reads it from.
+pub const META_LEN: u64 = 3;
 
 // Simple-type codes, held in the flags word. Same values as x-engine-c uses: the
 // layout is this engine's to choose, but these bits are read by name from
@@ -230,6 +234,11 @@ pub struct Objects {
     /// x-lang probes it off `(type of 0)` and uses it to tell a handle from a
     /// thing that merely has a type. The two must not be equal.
     pub(crate) satom_marker: Obj,
+    /// The newest allocation; every object links to the one before it.
+    ///
+    /// The C engine keeps the same chain in header word 0, and for the same
+    /// reason: a flat heap has no other enumeration.
+    pub(crate) heap_chain: Obj,
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -297,6 +306,7 @@ impl Objects {
             builtin_types: HashMap::new(),
             spair_marker: NIL,
             satom_marker: NIL,
+            heap_chain: NIL,
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with
@@ -357,12 +367,18 @@ impl Objects {
             let key = reported_kind(flags);
             self.builtin_types.get(&key).copied().unwrap_or(NIL)
         };
+        // THREADED ON THE CHAIN at birth. The collector has no other way to
+        // find an object: the heap is a flat Vec of words with no object table,
+        // so sweeping means walking this link from the newest allocation back.
+        self.heap.push(self.heap_chain.word());
         self.heap.push(ty.word());
         self.heap.push(Word(flags.raw())); // flags
         for _ in 0..n {
             self.heap.push(NIL.word());
         }
-        at.as_obj()
+        let o = at.as_obj();
+        self.heap_chain = o;
+        o
     }
 
     // --- header ----------------------------------------------------------------

@@ -398,13 +398,20 @@ mod tests {
     /// asserted here.
     #[test]
     fn a_token_must_be_delimited() {
+        // The data offset is DERIVED, not written in. It is
+        // `%obj-meta-len * word-size` and the engine's own contract says what
+        // that is; a literal 16 here was right only while the header was two
+        // words, and adding the collector's chain link made it silently read
+        // the flags word instead.
+        let off = crate::objects::META_LEN * 8;
+        let p = P.replace("{OFF}", &off.to_string());
         const P: &str = r#"
             (def %digit? (fn (_ c) (match ((< c 48) ()) ((< 57 c) ()) (#t 1))))
             (def %o2p (%coord (lit obj) (lit ->ptr)))
             (def %refw (%coord (lit ptr) (lit ref-word)))
             (def %setw (%coord (lit ptr) (lit set-word!)))
-            (def %cellint (fn (_ x) (%refw (%o2p x) 16)))
-            (def %setcell (fn (_ p v) (%setw (%o2p p) 16 v) p))
+            (def %cellint (fn (_ x) (%refw (%o2p x) {OFF})))
+            (def %setcell (fn (_ p v) (%setw (%o2p p) {OFF} v) p))
             (def %buflen (fn (_ b) (- (%cellint (rest b)) (%cellint b))))
             (def %unread (fn (_ b) (%setcell (rest b) (- (%cellint (rest b)) 1))))
             (def %scoreset (fn (_ s b) (%setcell s (%buflen b))))
@@ -419,12 +426,12 @@ mod tests {
             (def %rs (%coord (lit tok) (lit read-str)))
         "#;
         assert_eq!(
-            crate::testkit::int_of(&format!("{} (first (%rs tb \"42 \"))", P)),
+            crate::testkit::int_of(&format!("{} (first (%rs tb \"42 \"))", p)),
             7,
             "a delimited token is read"
         );
         assert!(
-            crate::testkit::truthy(&format!("{} (eq? (%rs tb \"42\") ())", P)),
+            crate::testkit::truthy(&format!("{} (eq? (%rs tb \"42\") ())", p)),
             "an undelimited one is not"
         );
     }

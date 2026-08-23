@@ -4,7 +4,17 @@
 ; object header words at committed offsets, and under decision L1 those offsets
 ; come from the ENGINE, not from the language.  x-lang includes whichever engine
 ; it is paired with, so these values are the contract this implementation must
-; keep — and they are deliberately NOT the C engine's.
+; keep.
+;
+; They now MATCH the C engine's — heap link at 0, type at 1, flags at 2, data at
+; 3 — and that is a change from what this file used to say. The header was two
+; words while the engine had no collector: with nothing to sweep there was no
+; chain to thread, so the slot was reserved and left out of the count.
+;
+; Giving the engine a collector makes the slot real. Nothing in the library
+; needed editing for it: `%data-off-0` is computed from `%obj-meta-len`, so the
+; offsets follow from here. That is decision L1 working -- the layout travels
+; with the engine, and the one place it is written down is this file.
 ;
 ; Units are words; multiply by %word-size for byte offsets.
 ;
@@ -30,13 +40,13 @@
 ;   (def %obj-<name> <decimal integer>)
 
 ; --- header slots (words, relative to the object pointer) ---
-(def %obj-units-heap 0)   ; NO collector chain -- see above
+(def %obj-units-heap 1)   ; the collector's chain link
 (def %obj-units-type 1)   ; pointer to the type object (nil for none)
 (def %obj-units-flags 1)  ; the flags bitfield, held as an integer
-(def %obj-slot-heap 0)    ; unused; kept so the descriptor's shape matches
-(def %obj-slot-type 0)
-(def %obj-slot-flags 1)
-(def %obj-meta-len 2)     ; header length = the word where data begins
+(def %obj-slot-heap 0)    ; every object is threaded here when allocated
+(def %obj-slot-type 1)
+(def %obj-slot-flags 2)
+(def %obj-meta-len 3)     ; header length = the word where data begins
 
 ; --- data shapes (words, relative to data start) ---
 (def %obj-units-atom 1)   ; atom: the value word (int / str offset / char)
