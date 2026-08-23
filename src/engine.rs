@@ -183,7 +183,7 @@ impl Engine {
             self.objects.env_obj(EnvId::new(0)),
         ];
         for v in samples {
-            let _ = self.objects.type_of(v);
+            let _ = self.objects.type_tree_of(v);
         }
         // The callables and the reader's own kinds too. A type made only when
         // something first asks for it leaves every object allocated BEFORE that
@@ -191,7 +191,7 @@ impl Engine {
         // directly — so the ask has to happen here, before any of them exist.
         for (flags, text) in crate::objects::STAMPED_KINDS {
             if !self.objects.builtin_types.contains_key(flags) {
-                let name = self.objects.str_new(text);
+                let name = self.objects.handle(text);
                 let t = self.objects.type_new(name, NIL);
                 self.objects.builtin_types.insert(*flags, t);
                 self.objects.unfiled_types.push(t);
@@ -201,6 +201,29 @@ impl Engine {
         for t in self.objects.take_unfiled_types() {
             self.file_type(t);
         }
+    }
+
+    /// The TREE a handle names, resolved through the base's type-alist.
+    ///
+    /// The alist is the library's index and the only complete one: a type
+    /// `make-type` built lives there and nowhere else. A value that is already a
+    /// tree passes through, so callers need not know which they hold.
+    pub(crate) fn resolve_tree(&mut self, t: Obj) -> Obj {
+        if !self.objects.is_handle(t) {
+            return t;
+        }
+        let alist = crate::base::get(&self.objects, self.base, crate::base::TYPE_ALIST);
+        let mut at = alist;
+        while self.objects.is_cell(at) {
+            let entry = self.objects.first(at);
+            if self.objects.is_cell(entry) && self.objects.first(entry) == t {
+                return self.objects.rest(entry);
+            }
+            at = self.objects.rest(at);
+        }
+        // Unknown handle: hand it back rather than nil, so a caller storing it
+        // keeps what it was given instead of silently losing the type.
+        t
     }
 
     /// File a type in the base's `type-alist`, where the library looks it up.
@@ -215,7 +238,11 @@ impl Engine {
     /// separate sentinel. The library only cares about the alist's shape.
     pub(crate) fn file_type(&mut self, t: Obj) {
         let base = self.base;
-        let entry = self.objects.spair(t, t);
+        // Keyed by the HANDLE, valued by the TREE — the shape x-lang walks:
+        // `type by-atom` is handed what `type of` answered and expects the tree
+        // back.
+        let handle = self.objects.type_handle_of_tree(t);
+        let entry = self.objects.spair(handle, t);
         let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
         let cell = self.objects.spair(entry, head);
         crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);

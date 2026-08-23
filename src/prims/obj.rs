@@ -79,9 +79,15 @@ fn pair(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// callers write into what they get back rather than checking. That is how
 /// `lib/x/type/promise.x` came to push a call handler through nil.
 fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let t = e.objects.type_new(a[0], a[1]);
+    // The NAME arrives as a string; the handle is made from it here, and the
+    // handle is what comes back. x-lang keeps the type-alist keyed by it and
+    // passes it to `make-instance`, so answering the tree would hand the library
+    // something its own accessors do not expect.
+    let text = e.objects.str_val(a[0]);
+    let name = e.objects.handle(&text);
+    let t = e.objects.type_new(name, a[1]);
     e.file_type(t);
-    Ok(t)
+    Ok(name)
 }
 
 /// `(type of v)` — the type handle, FILING it if this is the first sight of it.
@@ -108,17 +114,24 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.truth(!t.is_nil() && got == t))
 }
 
-fn make_instance(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let o = a_.instance(a[0], 1);
-    a_.set_data(o, 0, a[1].word());
+/// `(type make-instance handle data)` — an instance of a registered type.
+///
+/// The handle is resolved to its TREE through the base, because the type word
+/// must hold the tree: the library dereferences it and checks the tree tag
+/// before walking.
+fn make_instance(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let tree = e.resolve_tree(a[0]);
+    let o = e.objects.instance(tree, 1);
+    e.objects.set_data(o, 0, a[1].word());
     Ok(o)
 }
 
 /// The type word is written from the operand, whatever it is. Whether that
 /// operand is a REGISTERED type is x-lang's question to ask.
-fn obj_make(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let n = a_.as_int(a[1]).max(0) as usize;
-    Ok(a_.instance(a[0], n))
+fn obj_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let tree = e.resolve_tree(a[0]);
+    let n = e.objects.as_int(a[1]).max(0) as usize;
+    Ok(e.objects.instance(tree, n))
 }
 
 /// `(obj make-callable p)` — a raw address dressed as callable.
@@ -141,8 +154,8 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::both_full("make-type", "type", "make", 2, type_make),
     PrimDef::both_full("type-of", "type", "of", 1, type_of),
     PrimDef::both("type?", "type", "?", 2, type_is),
-    PrimDef::filed("type", "make-instance", 2, make_instance),
-    PrimDef::filed("obj", "make", 2, obj_make),
+    PrimDef::both_full("make-instance", "type", "make-instance", 2, make_instance),
+    PrimDef::filed_full("obj", "make", 2, obj_make),
     PrimDef::filed("obj", "make-callable", 1, make_callable),
 ];
 

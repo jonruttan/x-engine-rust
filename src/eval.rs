@@ -195,7 +195,8 @@ impl Engine {
 
     /// The `call` handler installed on a value's type, if any.
     fn call_handler_for(&mut self, callee: Obj) -> Option<Obj> {
-        let ty = self.objects.type_of(callee);
+        // The TREE, not the handle: handlers live in the tree.
+        let ty = self.objects.type_tree_of(callee);
         if ty.is_nil() {
             return None;
         }

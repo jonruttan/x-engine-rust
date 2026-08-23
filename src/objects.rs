@@ -86,6 +86,20 @@ pub const FLAG_PAIR: Flags = Flags::new(0x0100);
 /// Same layout as a list pair — `first` and `rest` work on both — so this costs
 /// nothing but the tag.
 pub const FLAG_SPAIR: Flags = Flags::new(0x0101);
+
+/// A type HANDLE: the atom `type of` answers and the type-alist is keyed by.
+///
+/// NOT an ordinary symbol, and the difference is one x-lang reads.
+/// `lib/x/boot/reflect.x` says it plainly: "The static-ATOM sentinel tag marks
+/// type HANDLES (the name atoms `type of` returns) and other raw atoms. It is
+/// NOT what #t/#f carry (nil-typed, tag 0) and NOT what interned symbols carry
+/// (the SYMBOL type tree)."
+///
+/// So a handle carries the atom tag while a symbol points at the SYMBOL tree,
+/// and the library derives both tags by probing a real handle and a real tree.
+/// With `type of` answering the TREE instead, this engine made the two tags
+/// identical — and its own base then read as a type handle.
+pub const FLAG_HANDLE: Flags = Flags::new(0x0102);
 pub const FLAG_SYM: Flags = Flags::new(0x0200);
 
 /// `#f`. x-lang's falsy set is exactly {nil, #f} and that model is SETTLED — it
@@ -211,6 +225,11 @@ pub struct Objects {
     /// the type word of the first type-alist entry's tree — and then uses it to
     /// check that a word really points at a tree before walking one.
     pub(crate) spair_marker: Obj,
+    /// The tag every type HANDLE carries, distinct from [`Objects::spair_marker`].
+    ///
+    /// x-lang probes it off `(type of 0)` and uses it to tell a handle from a
+    /// thing that merely has a type. The two must not be equal.
+    pub(crate) satom_marker: Obj,
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -266,14 +285,17 @@ impl Objects {
             sym_t: NIL,
             builtin_types: HashMap::new(),
             spair_marker: NIL,
+            satom_marker: NIL,
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with
         // (%set-rest! %false-stack …). With no room for it the write ran off the
         // end of the object and made `#f` itself truthy — the boot then took
         // every wrong branch, silently.
-        // The tree tag, before any type exists to be tagged.
+        // The two tags, before anything exists to be tagged. Distinct objects:
+        // the library compares against both and behaves differently.
         a.spair_marker = a.alloc(Flags::new(0), 1);
+        a.satom_marker = a.alloc(Flags::new(0), 1);
 
         a.false_obj = a.alloc(FLAG_FALSE, 2);
         a.sym_t = a.sym("t");
@@ -296,23 +318,30 @@ impl Objects {
         // TREE before the library can print it, and `display` stays silent until
         // it does.
         //
-        // SPINES are stamped and VALUES are not, which is a halfway house and
-        // known to be one. Stamping values was tried per kind: ints, strings,
-        // symbols, characters, primitives and closures are all fine. LIST PAIRS
-        // alone break `def-class` — its member key comes out nil and every class
-        // answers "no such static member" — and that survived separating spines
-        // from lists, so it is not the spine confusion this commit fixes.
+        // SPINES and HANDLES are stamped; VALUES are not. That is a halfway
+        // house and known to be one.
         //
-        // What it looks like: with a word to follow, `%reflect-iter-new` and
-        // friends now dereference a list pair's type tree where they used to
-        // stop at 0, so the library reaches machinery this engine had been
-        // starving. That is the library working as designed against an engine
-        // that is not ready for it, rather than a bug in the stamping.
+        // Stamping values was tried per kind: ints, strings, symbols,
+        // characters, primitives and closures are all fine. LIST PAIRS alone
+        // break `def-class` — its member key comes out nil and every class
+        // answers "no such static member".
+        //
+        // Three explanations were tried and all three were WRONG, which is worth
+        // recording so the next attempt does not repeat them:
+        //   * spine/list confusion — separating structural pairs did not fix it;
+        //   * handle/tree conflation — separating those tags did not either;
+        //   * lists becoming iterable — `%reflect-iter-new` answers nil on a
+        //     list either way, and `%filter` behaves identically.
+        // The cause is still unfound. It is somewhere in how `%flatten-class`
+        // builds its member rows, and it is reproducible in two lines: load
+        // x-core.x to line 187, define any class, read its static table.
         //
         // A STRUCTURAL pair carries the tree tag; everything else keeps a nil
         // word for now.
         let ty = if flags == FLAG_SPAIR {
             self.spair_marker
+        } else if flags == FLAG_HANDLE {
+            self.satom_marker
         } else {
             NIL
         };

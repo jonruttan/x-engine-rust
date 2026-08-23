@@ -202,11 +202,34 @@ impl Objects {
     }
 
     /// An instance of a custom type: `n` data words, and a header type word
-    /// pointing at the type object.
+    /// pointing at the type TREE.
+    ///
+    /// `t` may arrive as a HANDLE — which is what x-lang passes, since that is
+    /// what `type of` and `make-type` answer — so it is resolved here. The word
+    /// must hold the TREE: the library dereferences it and checks the tree tag
+    /// before walking, and a handle there would fail that check.
     pub fn instance(&mut self, t: Obj, n: usize) -> Obj {
+        let tree = self.tree_for(t);
         let o = self.alloc(Flags::new(0), n.max(1));
-        self.set_type_word(o, t);
+        self.set_type_word(o, tree);
         o
+    }
+
+    /// Resolve a handle to its tree; a tree passes through unchanged.
+    pub fn tree_for(&mut self, t: Obj) -> Obj {
+        if !self.is_handle(t) {
+            return t;
+        }
+        for &tree in self.builtin_types.values() {
+            if self.first(self.first(tree)) == t {
+                return tree;
+            }
+        }
+        // A library-made type: the engine keeps no reverse index, and the base's
+        // type-alist is the one the library maintains. Callers that own a base
+        // resolve through it; here a handle with no builtin behind it stays as it
+        // is rather than becoming nil.
+        t
     }
 
     pub fn iter(&mut self, step: Obj, state: Obj) -> Obj {
@@ -227,12 +250,38 @@ impl Objects {
     /// The type object of a value. A custom instance carries one in its header;
     /// everything else is keyed by flags, so repeated asks answer the same
     /// object — `(same? (type of 1) (type of 2))` must hold.
+    /// The TYPE HANDLE of a value — what `type of` answers.
+    ///
+    /// A handle, not the tree. x-lang's `Type of` is documented as returning
+    /// "the type's handle atom", the type-alist is keyed by it, and
+    /// `%reflect-satom-tw` is probed off `(type of 0)` to learn what tag a
+    /// HANDLE carries. Answering the tree instead made that probe find the
+    /// TREE's tag, so handle-tag and tree-tag became the same value and this
+    /// engine's own base read as a type handle.
     pub fn type_of(&mut self, o: Obj) -> Obj {
+        let tree = self.type_tree_of(o);
+        if tree.is_nil() {
+            return NIL;
+        }
+        self.type_handle_of_tree(tree)
+    }
+
+    /// The handle stored in a tree's name slot.
+    pub fn type_handle_of_tree(&self, tree: Obj) -> Obj {
+        if tree.is_nil() {
+            return NIL;
+        }
+        self.first(self.first(tree))
+    }
+
+    /// The type TREE of a value: what the engine dispatches on, and what a
+    /// value's type word points at.
+    pub fn type_tree_of(&mut self, o: Obj) -> Obj {
         if o.is_nil() {
             return NIL;
         }
         let carried = self.type_of_word(o);
-        if !carried.is_nil() {
+        if !carried.is_nil() && carried != self.spair_marker && carried != self.satom_marker {
             return carried;
         }
         let flags = self.reported_flags(o);
@@ -242,7 +291,7 @@ impl Objects {
         // The REFERENCE's name for this kind. It is read: with the type word
         // stamped, `%reflect-type-name` dereferences the tree and answers what
         // it finds there.
-        let name = self.str_new(crate::objects::kind_name(flags));
+        let name = self.handle(crate::objects::kind_name(flags));
         let t = self.type_new(name, NIL);
         self.builtin_types.insert(flags, t);
         // A type nobody filed is a type the library cannot reach: `type by-atom`
