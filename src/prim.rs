@@ -233,6 +233,25 @@ impl PrimDef {
         }
     }
 
+    /// A VARIADIC evaluator-reaching instruction bound BOTH ways.
+    ///
+    /// `ptr call` and `ffi call` are filed AND bare in the reference, and the
+    /// library reaches them by their bare spellings.
+    pub const fn var_both(
+        bare: &'static str,
+        ns: &'static str,
+        method: &'static str,
+        min: usize,
+        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+    ) -> Self {
+        PrimDef {
+            bare: Some(bare),
+            coord: Some((ns, method)),
+            arity: (min, None),
+            body: Body::Applicative(f),
+        }
+    }
+
     /// A VARIADIC evaluator-reaching instruction bound bare.
     pub const fn var_bare(
         bare: &'static str,

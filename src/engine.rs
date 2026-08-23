@@ -142,7 +142,51 @@ impl Engine {
         // The engine's own base is made the same way as any other. It differs
         // only in being the one the read-eval loop uses.
         e.base = e.make_base();
+        e.register_builtin_types();
         e
+    }
+
+    /// File every builtin type in the base's `type-alist`, keyed by the handle
+    /// `type of` answers.
+    ///
+    /// The library reaches a type's tree ONLY through this table:
+    /// `lib/x/boot/printer.x` looks a handle up with
+    /// `(%registry-assoc-rest handle (first %reflect-type-alist-cell))` and then
+    /// pushes its render handler into the tree it gets back.
+    ///
+    /// An empty table does not fail politely. The lookup answers nil,
+    /// `%reflect-step` nil-propagates as designed, and `%set-first!` then writes
+    /// through NIL — so booting printer.x corrupted the heap and `#f` itself came
+    /// out truthy, which sent every later branch the wrong way with nothing
+    /// raised. The table has to be populated before any library loads.
+    ///
+    /// Handle and tree are the SAME object here, because `type of` answers the
+    /// type object itself; the reference keys by a separate sentinel. The alist
+    /// shape is what matters to the library, not which of the two it holds.
+    fn register_builtin_types(&mut self) {
+        // One representative value per kind the library files a handler for.
+        let samples = [
+            self.objects.int(0),
+            self.objects.str_new(""),
+            self.objects.sym("q"),
+            self.objects.char_new(65),
+            self.objects.false_obj(),
+        ];
+        let pair = {
+            let one = self.objects.int(1);
+            self.objects.pair(one, NIL)
+        };
+        let base = self.base;
+        for v in samples.into_iter().chain(std::iter::once(pair)) {
+            let t = self.objects.type_of(v);
+            if t.is_nil() {
+                continue;
+            }
+            let entry = self.objects.pair(t, t);
+            let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
+            let cell = self.objects.pair(entry, head);
+            crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);
+        }
     }
 
     /// Build the catalog: `((ns . ((method . prim) ...)) ...)`, the shape x-lang

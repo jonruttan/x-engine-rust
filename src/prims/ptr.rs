@@ -144,12 +144,12 @@ fn mem_free(_a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed("obj", "->ptr", 1, obj_to_ptr),
+    PrimDef::both("obj->ptr", "obj", "->ptr", 1, obj_to_ptr),
     PrimDef::filed("ptr", "->obj", 1, ptr_to_obj),
     PrimDef::filed("ptr", "->int", 1, ptr_to_int),
-    PrimDef::filed("int", "->ptr", 1, int_to_ptr),
-    PrimDef::filed("str", "->ptr", 1, str_to_ptr),
-    PrimDef::filed("ptr", "->str", 1, ptr_to_str),
+    PrimDef::both("int->ptr", "int", "->ptr", 1, int_to_ptr),
+    PrimDef::both("str->ptr", "str", "->ptr", 1, str_to_ptr),
+    PrimDef::both("ptr->str", "ptr", "->str", 1, ptr_to_str),
     PrimDef::filed("ptr", "ref", 3, ptr_ref),
     PrimDef::filed("ptr", "set!", 4, ptr_set),
     PrimDef::filed("ptr", "ref-word", 2, ptr_ref_word),

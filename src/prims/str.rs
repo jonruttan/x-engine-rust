@@ -82,13 +82,13 @@ fn bytes_to_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 pub const TABLE: &[PrimDef] = &[
     PrimDef::filed("str", "make", 1, make),
-    PrimDef::filed("str", "byte-len", 1, byte_len),
-    PrimDef::filed("str", "byte-ref", 2, byte_ref),
-    PrimDef::filed("str", "byte-sub", 3, byte_sub),
-    PrimDef::filed("str", "append", 2, append),
+    PrimDef::both("str-byte-len", "str", "byte-len", 1, byte_len),
+    PrimDef::both("str-byte-ref", "str", "byte-ref", 2, byte_ref),
+    PrimDef::both("str-byte-sub", "str", "byte-sub", 3, byte_sub),
+    PrimDef::both("str-append", "str", "append", 2, append),
     PrimDef::filed("str", "->sym", 1, to_sym),
-    PrimDef::filed("sym", "->str", 1, sym_to_str),
-    PrimDef::filed("bytes", "->str", 1, bytes_to_str),
+    PrimDef::both("symbol->str", "sym", "->str", 1, sym_to_str),
+    PrimDef::both("bytes->str", "bytes", "->str", 1, bytes_to_str),
 ];
 
 #[cfg(test)]

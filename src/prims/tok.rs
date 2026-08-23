@@ -240,7 +240,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::filed("buf", "reset", 1, reset),
     PrimDef::filed("buf", "append", 2, append),
     PrimDef::filed("buf", "read-text", 1, read_text),
-    PrimDef::filed_full("tok", "read-str", 2, read_str),
+    PrimDef::both_full("token-read-string", "tok", "read-str", 2, read_str),
     PrimDef::filed_full("tok", "read", 2, read_tok),
     PrimDef::filed("base", "make-tok", 0, make_tok),
     PrimDef::filed("base", "make-type", 3, make_type),

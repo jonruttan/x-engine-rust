@@ -198,7 +198,12 @@ impl Objects {
             sym_t: NIL,
             builtin_types: HashMap::new(),
         };
-        a.false_obj = a.alloc(FLAG_FALSE, 0);
+        // TWO data words, not zero. x-lang's boot uses the false singleton's
+        // REST as scratch: lib/x/boot/module.x hangs the include list there with
+        // (%set-rest! %false-stack …). With no room for it the write ran off the
+        // end of the object and made `#f` itself truthy — the boot then took
+        // every wrong branch, silently.
+        a.false_obj = a.alloc(FLAG_FALSE, 2);
         a.sym_t = a.sym("t");
         a
     }

@@ -135,8 +135,8 @@ fn syscall(e: &mut Engine, a: &[Obj]) -> EvalResult {
 pub const TABLE: &[PrimDef] = &[
     PrimDef::filed_full("ffi", "dlopen", 2, dlopen),
     PrimDef::filed_full("ffi", "dlsym", 2, dlsym),
-    PrimDef::var_full("ptr", "call", 1, ptr_call),
-    PrimDef::var_full("ffi", "call", 2, ffi_call),
+    PrimDef::var_both("ptr-call", "ptr", "call", 1, ptr_call),
+    PrimDef::var_both("ffi-call", "ffi", "call", 2, ffi_call),
     PrimDef::var_bare("syscall", 1, syscall),
 ];
 

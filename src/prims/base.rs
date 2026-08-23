@@ -42,7 +42,7 @@ fn base_bind(e: &mut Engine, a: &[Obj]) -> EvalResult {
 }
 
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed_full("base", "make", 0, base_make),
+    PrimDef::both_full("make-base", "base", "make", 0, base_make),
     PrimDef::filed_full("base", "eval", 2, base_eval),
     PrimDef::filed_full("base", "bind", 3, base_bind),
 ];

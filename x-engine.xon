@@ -8,7 +8,7 @@
 (engine-name "x-engine-rust")
 (binary "x-engine")
 (isa "sha256:1829b596a007280ffe075ca95de2f012b680bef8c3b180decee30cd472aee904")
-(layout "sha256:ba874ea67f0612364736c8a2e035288cb5d1fb3ca9da56e670ccc68497b082a0")
+(layout "sha256:c5bd271e6f9d3453705c9f5e231d36e11b84ad028dadfba5677d7215e1c5904f")
 (profile core)
 (profile gc)
 (profile posix)

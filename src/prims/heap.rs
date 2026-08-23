@@ -115,7 +115,7 @@ fn alloc_limit(e: &mut Engine, a: &[Obj]) -> EvalResult {
 
 pub const TABLE: &[PrimDef] = &[
     PrimDef::filed_full("heap", "count", 0, count),
-    PrimDef::filed_full("heap", "collect", 0, collect),
+    PrimDef::both_full("heap-collect", "heap", "collect", 0, collect),
     PrimDef::filed_full("heap", "mark", 0, mark),
     PrimDef::filed_full("heap", "sweep", 0, sweep),
     PrimDef::filed_full("heap", "pin!", 1, pin),

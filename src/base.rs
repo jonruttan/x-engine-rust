@@ -62,14 +62,27 @@ pub const ROUTES: &[&str] = &[
     "heap-mark-roots",
     "alloc-limit",
     "alloc-count",
+    // --- routes the LIBRARY walks, rooted at the base ---
+    // Each is a cell the library reads or writes by name. They are here rather
+    // than folded into the engine's own state because the library resolves them
+    // at runtime and would die on the first one missing.
+    "line",
+    "files",
+    "profile",
+    "false",
 ];
 
 /// Slots the heap instructions reach for by name.
+pub const TYPE_ALIST: usize = 1;
 pub const MARK_HOOKS: usize = 8;
 pub const FREE_HOOKS: usize = 9;
 pub const MARK_ROOTS: usize = 10;
 pub const ALLOC_LIMIT: usize = 11;
 pub const ALLOC_COUNT: usize = 12;
+pub const LINE: usize = 13;
+pub const FILES: usize = 14;
+pub const PROFILE: usize = 15;
+pub const FALSE: usize = 16;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -82,6 +95,22 @@ const PRIMS_SLOT: usize = 0;
 /// nothing would be indistinguishable from a route the engine forgot, and the
 /// library's walk would answer nil rather than failing — which is the quiet
 /// half of the bug this replaces.
+/// A spine of `n` cells, each holding a fresh one-word cell the library can read
+/// with `%cell-int` and write with `%set-cell-int!`.
+///
+/// The library treats these slots as CELLS, not as values: `lib/x/sys/stream.x`
+/// reads the current output fd with `(first (first (rest (%files))))`, so the
+/// slot has to contain something with a `first` to read.
+fn cell_spine(o: &mut Objects, n: usize) -> Obj {
+    let mut spine = NIL;
+    for _ in 0..n {
+        let zero = o.int(0);
+        let cell = o.pair(zero, NIL);
+        spine = o.pair(cell, spine);
+    }
+    spine
+}
+
 pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     let mut spine = NIL;
     for _ in 0..ROUTES.len() {
@@ -90,6 +119,22 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     let env_obj = o.env_obj(env);
     set_slot(o, spine, PRIMS_SLOT, catalog);
     set_slot(o, spine, ENV_SLOT, env_obj);
+
+    // The library's own slots, shaped the way it reads them.
+    let zero = o.int(0);
+    let line = o.pair(zero, NIL);
+    set_slot(o, spine, LINE, line);
+    // stdin, stdout, stderr: the library indexes the second and third.
+    let files = cell_spine(o, 3);
+    set_slot(o, spine, FILES, files);
+    // Counters, read through %cell-int. Nine, which is what lib/x/tool/profile.x
+    // names; unused ones simply stay zero.
+    let profile = cell_spine(o, 9);
+    set_slot(o, spine, PROFILE, profile);
+    // The false SINGLETON itself, not a cell holding it: x-lang writes into its
+    // rest, so the object the route answers must be the one with the room.
+    let f = o.false_obj();
+    set_slot(o, spine, FALSE, f);
     spine
 }
 

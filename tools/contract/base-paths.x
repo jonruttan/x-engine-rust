@@ -47,6 +47,17 @@
   (alloc-limit base r r r r r r r r r r r)
   (alloc-count base r r r r r r r r r r r r)
 
+  ; --- routes the LIBRARY walks by name ---
+  ; Not engine state: cells x-lang reads and writes. They used to be reached by
+  ; literal first/rest chains in lib/, which assumed x-engine-c's layout; the
+  ; library now resolves them by name, which is what decision L1 requires.
+  (line    base r r r r r r r r r r r r r)
+  (files   base r r r r r r r r r r r r r r)
+  (profile base r r r r r r r r r r r r r r r)
+  ; The false SINGLETON, whose REST x-lang uses as scratch (module.x hangs the
+  ; include list there), so this answers the object itself rather than a cell.
+  (false   base r r r r r r r r r r r r r r r r)
+
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
   ; A type is a TREE, and these steps are the REFERENCE ENGINE'S, chosen
   ; deliberately rather than invented.  Decision L1 leaves the steps to the

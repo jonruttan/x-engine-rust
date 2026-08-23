@@ -71,8 +71,8 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::int2("%", "int", "%", rem),
     // The char door has no bare spelling in either direction: it is reachable
     // only through the catalog, which is the reference engine's arrangement.
-    PrimDef::filed("char", "->int", 1, char_to_int),
-    PrimDef::filed("int", "->char", 1, int_to_char),
+    PrimDef::both("char->integer", "char", "->int", 1, char_to_int),
+    PrimDef::both("integer->char", "int", "->char", 1, int_to_char),
 ];
 
 #[cfg(test)]
