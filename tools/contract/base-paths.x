@@ -48,15 +48,65 @@
   (alloc-count base r r r r r r r r r r r r)
 
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
-  ; A type is a spine for the same reason the base is: the library walks it by
-  ; name.  Every cell exists; most are nil until the library fills them.
-  (type-name type)
-  (type-cvt type r)
-  (type-display type r r)
-  (type-display-stack type r r r)
-  (type-io type r r r r)
-  (type-iter type r r r r r)
-  (type-proc type r r r r r r)
-  (type-write type r r r r r r r)
-  (type-write-stack type r r r r r r r r)
+  ; A type is a TREE, and these steps are the REFERENCE ENGINE'S, chosen
+  ; deliberately rather than invented.  Decision L1 leaves the steps to the
+  ; engine -- only the names are the contract -- so a flat spine would have been
+  ; permitted.  It would also have been a fresh set of decisions about a
+  ; structure whose real ones are already paid for, and this engine has been
+  ; wrong about a spine before by inventing one.
+  ;
+  ; The shape: eight top-level cells -- name, data, heap, proc, cvt, io, iter,
+  ; ops -- each group holding one cell per family.  A family's cell holds a
+  ; STACK (a list), so `type-X-stack` addresses the list and `type-X`, one `f`
+  ; deeper, addresses its head: the ACTIVE handler.  The library pushes and pops
+  ; by writing the PARENT of the stack route, which is what %reflect-path-parent
+  ; in lib/x/boot/registry.x derives.
+  ;
+  ; Every cell exists from birth though nearly all are nil, for the same reason
+  ; the base's do: a route that walks off the end answers nil, and the library
+  ; cannot tell that from "no handler installed".
+  (type-name-stack type f)
+  (type-name type f f)
+  (type-data-stack type r f)
+  (type-data type r f f)
+  (type-heap type r r f)
+  (type-mark-stack type r r f f)
+  (type-mark type r r f f f)
+  (type-make-stack type r r f r f)
+  (type-make type r r f r f f)
+  (type-free-stack type r r f r r f)
+  (type-free type r r f r r f f)
+  (type-clone-stack type r r f r r r f)
+  (type-clone type r r f r r r f f)
+  (type-units-stack type r r f r r r r f)
+  (type-units type r r f r r r r f f)
+  (type-length-stack type r r f r r r r r f)
+  (type-length type r r f r r r r r f f)
+  (type-proc type r r r f)
+  (type-call-stack type r r r f f)
+  (type-call type r r r f f f)
+  (type-eval-stack type r r r f r f)
+  (type-eval type r r r f r f f)
+  (type-cvt type r r r r f)
+  (type-from-stack type r r r r f f)
+  (type-from type r r r r f f f)
+  (type-to-stack type r r r r f r f)
+  (type-to type r r r r f r f f)
+  (type-io type r r r r r f)
+  (type-analyse-stack type r r r r r f f)
+  (type-analyse type r r r r r f f f)
+  (type-delimit-stack type r r r r r f r f)
+  (type-delimit type r r r r r f r f f)
+  (type-read-stack type r r r r r f r r f)
+  (type-read type r r r r r f r r f f)
+  (type-write-stack type r r r r r f r r r f)
+  (type-write type r r r r r f r r r f f)
+  (type-display-stack type r r r r r f r r r r f)
+  (type-display type r r r r r f r r r r f f)
+  (type-iter-group type r r r r r r f)
+  (type-iter-stack type r r r r r r f f)
+  (type-iter type r r r r r r f f f)
+  (type-ops-group type r r r r r r r f)
+  (type-ops-stack type r r r r r r r f f)
+  (type-ops type r r r r r r r f f f)
 )))

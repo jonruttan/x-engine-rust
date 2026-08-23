@@ -70,20 +70,48 @@ fn repl_read(e: &mut Engine, _a: &[Obj]) -> EvalResult {
     }
 }
 
-/// `(include "path")` — read a file and evaluate its forms in the CURRENT
-/// environment, so an included file's definitions land where the includer can
-/// see them. The path resolves against the working directory, which is the
-/// convention x-lang's harnesses rely on: they chdir to the engine root so a
-/// prelude can include the engine's own committed base paths.
+/// `(include "path")` — read a file and evaluate its forms AT TOP LEVEL.
+///
+/// The caller's environment is deliberately NOT used, and this is the contract
+/// rather than a shortcut. Every form in a loaded file is a top-level form, so:
+///
+/// * its `def`s must bind GLOBALLY. x-lang's own loader wraps `include` in a
+///   `fn` (lib/x/boot/module.x makes the bare `include` relative-aware), so the
+///   caller's env is that wrapper's activation frame — and a file's definitions
+///   would land there and vanish when it returned. The symptom is not an error:
+///   the include succeeds and the names are simply Unbound afterwards.
+/// * a CLOSURE the file defines must not capture the includer's frames. The
+///   reference engine records what that costs — a closure captures the env head,
+///   so the loader wrapper's own formals (`path`, `name`) would shadow the
+///   global env inside every loaded function forever.
+///
+/// The path resolves against the working directory, which is the convention
+/// x-lang's harnesses rely on: they chdir to the engine root so a prelude can
+/// include the engine's own committed base paths.
 fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let form = e.nth(args, 0);
+    // The PATH is evaluated in the caller's env — it is an ordinary argument,
+    // and a caller computing one from a local is entitled to.
     let p = e.eval(form, env)?;
     let path = e.objects.str_val(p);
     let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => return Err(Cond::CannotInclude(path)),
     };
-    e.eval_source(&src, env)
+    let top = e.root_env();
+    // HIDE what is pending, so every form in the file sees tail position exactly
+    // as it would at the true top level. The reference does the same thing to
+    // its save stack and says why: each form read from a file IS a top-level
+    // form, and its `def`s must bind globally rather than as locals of whatever
+    // was being evaluated when the load was triggered.
+    //
+    // Without this an included file's definitions land in the includer's frame
+    // and vanish with it — and since x-lang's own loader wraps `include` in a
+    // `fn`, that is every file the library loads.
+    let outer = e.hide_pending();
+    let r = e.eval_source(&src, top);
+    e.restore_pending(outer);
+    r
 }
 
 pub const TABLE: &[PrimDef] = &[

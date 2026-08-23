@@ -44,6 +44,11 @@ impl Reader {
         self.src.get(self.pos).copied()
     }
 
+    /// The byte `n` ahead, for the one-byte lookahead `#\` needs.
+    fn at(&self, n: usize) -> Option<u8> {
+        self.src.get(self.pos + n).copied()
+    }
+
     fn skip_blanks(&mut self) {
         loop {
             match self.peek() {
@@ -79,6 +84,10 @@ impl Reader {
             b'"' => {
                 self.pos += 1;
                 Some(self.read_string(a))
+            }
+            b'#' if self.at(1) == Some(b'\\') => {
+                self.pos += 2;
+                Some(self.read_char(a))
             }
             _ => Some(self.read_atom(a)),
         }
@@ -162,6 +171,86 @@ impl Reader {
             }
         }
         a.str_new(&s)
+    }
+
+    /// The nine named characters, which are the reference engine's list and not
+    /// a choice: `lib/` writes `#\newline` and expects a character back.
+    const CHAR_NAMES: &'static [(&'static str, u32)] = &[
+        ("alarm", 7),
+        ("backspace", 8),
+        ("delete", 127),
+        ("escape", 27),
+        ("newline", 10),
+        ("null", 0),
+        ("return", 13),
+        ("space", 32),
+        ("tab", 9),
+    ];
+
+    /// A character literal, with `#\` already consumed.
+    ///
+    /// ENGINE SYNTAX, not a library reader macro. docs/syntax.md's dialect
+    /// matrix puts `#\` chars in the `bare x` column and says the bare column
+    /// "is normative for every implementation of the reader" — so an engine that
+    /// leaves this to the library is not reading x-lang. Without it `#\A` reads
+    /// as a SYMBOL and the failure surfaces far away, as `Unbound SYMBOL '#\A`.
+    ///
+    /// Three forms, following the reference's reader:
+    ///   * a UTF-8 multi-byte character, taken whole;
+    ///   * a single byte — ANY byte, including `(` and `\`;
+    ///   * a NAME, but only where the first byte is a letter, because a
+    ///     non-letter scores immediately. That is what makes `#\(` and `#\;`
+    ///     readable at all.
+    fn read_char(&mut self, a: &mut Objects) -> Obj {
+        let Some(first) = self.peek() else {
+            // `#\` at end of input: nothing to name a character with.
+            return NIL;
+        };
+        self.pos += 1;
+
+        if first >= 0x80 {
+            // A multi-byte character: take its continuation bytes too.
+            let start = self.pos - 1;
+            while let Some(c) = self.peek() {
+                if c & 0xc0 != 0x80 {
+                    break;
+                }
+                self.pos += 1;
+            }
+            let text = String::from_utf8_lossy(&self.src[start..self.pos]).to_string();
+            let cp = text.chars().next().map(|c| c as u32).unwrap_or(0);
+            return a.char_new(cp);
+        }
+
+        if !first.is_ascii_alphabetic() {
+            // Scores immediately, so `#\(` is the open paren and not a list.
+            return a.char_new(first as u32);
+        }
+
+        // A letter: gather the rest of the name. One letter alone is the
+        // character itself.
+        let start = self.pos - 1;
+        while let Some(c) = self.peek() {
+            if !c.is_ascii_alphabetic() {
+                break;
+            }
+            self.pos += 1;
+        }
+        let name = String::from_utf8_lossy(&self.src[start..self.pos]).to_string();
+        if name.len() == 1 {
+            return a.char_new(first as u32);
+        }
+        for (n, cp) in Self::CHAR_NAMES {
+            if *n == name {
+                return a.char_new(*cp);
+            }
+        }
+        // An unknown name is the reference's error. This engine has no channel
+        // to raise from inside the reader, so it answers the leading letter and
+        // leaves the name — which a caller sees as a wrong character rather than
+        // silence.
+        self.pos = start + 1;
+        a.char_new(first as u32)
     }
 
     fn read_atom(&mut self, a: &mut Objects) -> Obj {
@@ -328,5 +417,72 @@ mod tests {
             seen.push(o.as_int(f));
         }
         assert_eq!(seen, vec![1, 2, 3]);
+    }
+
+    /// ENGINE SYNTAX per docs/syntax.md's dialect matrix, where `#\` chars sit
+    /// in the `bare x` column and the bare column "is normative for every
+    /// implementation of the reader".
+    #[test]
+    fn a_character_literal_reads_as_a_character_not_a_symbol() {
+        let (o, v) = read_one(r"#\A");
+        assert!(o.is_char(v), "#\\A must read as a character");
+        assert_eq!(o.as_char(v), 65);
+    }
+
+    /// The nine names are the reference's, and `lib/` writes them.
+    #[test]
+    fn the_named_characters_are_the_references_nine() {
+        for (src, want) in [
+            (r"#\newline", 10u32),
+            (r"#\space", 32),
+            (r"#\tab", 9),
+            (r"#\return", 13),
+            (r"#\null", 0),
+            (r"#\alarm", 7),
+            (r"#\backspace", 8),
+            (r"#\delete", 127),
+            (r"#\escape", 27),
+        ] {
+            let (o, v) = read_one(src);
+            assert!(o.is_char(v), "{} must read as a character", src);
+            assert_eq!(o.as_char(v), want, "for {}", src);
+        }
+    }
+
+    /// A NON-LETTER scores immediately, which is what makes the delimiters
+    /// readable at all: `#\(` is an open paren, not the start of a list.
+    #[test]
+    fn a_non_letter_scores_immediately() {
+        for (src, want) in [(r"#\(", 40u32), (r"#\)", 41), (r"#\;", 59), (r"#\ ", 32)] {
+            let (o, v) = read_one(src);
+            assert!(o.is_char(v), "{} must read as a character", src);
+            assert_eq!(o.as_char(v), want, "for {}", src);
+        }
+    }
+
+    /// A single letter is the letter, even though letters otherwise gather into
+    /// a name.
+    #[test]
+    fn a_lone_letter_is_itself_and_a_name_needs_more_than_one() {
+        let (o, v) = read_one(r"#\n");
+        assert_eq!(o.as_char(v), b'n' as u32, "#\\n is the letter, not newline");
+    }
+
+    /// Multi-byte characters travel whole rather than as their lead byte.
+    #[test]
+    fn a_multibyte_character_is_taken_whole() {
+        let (o, v) = read_one("#\\\u{e9}");
+        assert!(o.is_char(v));
+        assert_eq!(o.as_char(v), 0xe9);
+    }
+
+    /// And it still DELIMITS: a character in a list does not swallow the rest.
+    #[test]
+    fn a_character_delimits_inside_a_list() {
+        let (o, v) = read_one(r"(#\A 1)");
+        let items: Vec<_> = o.list(v).collect();
+        assert_eq!(items.len(), 2, "the character must not swallow the list");
+        assert_eq!(o.as_char(items[0]), 65);
+        assert_eq!(o.int_val(items[1]), 1);
     }
 }

@@ -64,6 +64,8 @@ pub struct Engine {
     /// `tco-expr` and `tco-env`, which is what makes tail calls not grow the
     /// stack.
     pub(crate) tail: Option<(Obj, EnvId)>,
+    /// How many evaluations are stacked. See [`Engine::nothing_pending`].
+    pub(crate) eval_depth: usize,
     /// The one end-of-input sentinel, bound to every base as `%token-eof`.
     ///
     /// SHARED across bases, like the reference's static — asked and confirmed:
@@ -81,6 +83,15 @@ pub struct Engine {
     pub(crate) sigint_flag: Obj,
 }
 
+/// The EXPRESSION LAYER's version, which `x-version` reports.
+///
+/// Not this crate's version, and the distinction is the reference engine's:
+/// x-version is "ext/x-expr's X_VERSION, '0.1.0' and rightly stable", while
+/// which release of x-lang an engine belongs to is `x-release`. This engine has
+/// no separate expression crate, so the number it reports is the one the layer
+/// has always reported rather than a second thing to keep in step.
+pub const X_EXPR_VERSION: &str = "0.1.0";
+
 impl Engine {
     pub fn new() -> Self {
         let mut e = Engine {
@@ -96,6 +107,7 @@ impl Engine {
             base_syms: HashMap::new(),
             alloc_limit: None,
             tail: None,
+            eval_depth: 0,
             token_eof: NIL,
             sigint_flag: NIL,
         };
@@ -173,12 +185,34 @@ impl Engine {
         let env = self.envs.push_root();
 
         // `#t` and `#f` are instruction-level too: a form read in the host and
-        // evaluated in a child must find them.
+        // evaluated in a child must find them. They are `%isa-values` rows in
+        // their own right, which is why they are declared and not merely bound.
         let t = self.objects.sym_shared("#t");
         self.envs.bind(env, t, t);
         let f = self.objects.sym_shared("#f");
         let fo = self.objects.false_obj();
         self.envs.bind(env, f, fo);
+
+        // --- the identity values -------------------------------------------
+        // x-lang's `meta/identity` capability, and it is CORE: an engine that
+        // cannot say which release it is cannot be pinned against, and a pinned
+        // amalgam from one release booting on another is the segfault (#435)
+        // that put these here.
+        //
+        // `x-version` is the EXPRESSION LAYER's version and rightly stable;
+        // `x-release` is which release of x-lang this engine is, stamped from
+        // the environment at build time. They are deliberately different
+        // numbers: before the reference engine separated them, two releases
+        // whose sources never changed reported identically.
+        for (name, text) in [
+            ("x-machine", env!("X_MACHINE")),
+            ("x-version", X_EXPR_VERSION),
+            ("x-release", env!("X_RELEASE")),
+        ] {
+            let sym = self.objects.sym_shared(name);
+            let v = self.objects.str_new(text);
+            self.envs.bind(env, sym, v);
+        }
         // The `%isa-values` rows: names an engine binds to OBJECTS rather than
         // to callables. They belong here, with the rest of the instruction set,
         // because the reference binds them into every base — asked directly, and

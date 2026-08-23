@@ -50,6 +50,8 @@ pub enum Cond {
     Unbound(Obj),
     /// `include` could not read a file.
     CannotInclude(String),
+    /// `tail-eval` was handed something that is not an environment.
+    NotAnEnvironment(Obj),
     /// The program could not be read from stdin at all.
     NoProgram,
     /// The armed allocation ceiling was passed.
@@ -66,6 +68,7 @@ impl Cond {
             Cond::Raised(v) => value_text(a, *v),
             Cond::Unbound(sym) => format!("Unbound SYMBOL '{}", a.sym_name(*sym)),
             Cond::CannotInclude(path) => format!("cannot include {}", path),
+            Cond::NotAnEnvironment(_) => "tail-eval: not an environment".to_string(),
             Cond::NoProgram => "cannot read program from stdin".to_string(),
             Cond::AllocLimit => "allocation limit exceeded".to_string(),
         }

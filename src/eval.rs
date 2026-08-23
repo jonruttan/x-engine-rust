@@ -37,7 +37,40 @@ impl Engine {
     /// evaluated by recursing; it is PARKED in `self.tail` and this loop picks
     /// it up. x-engine-c parks it in the base's `tco-expr` and `tco-env` slots
     /// for exactly the same reason.
+    /// Evaluate, tracking whether anything is PENDING.
+    ///
+    /// The depth is not bookkeeping for its own sake: it is how this engine
+    /// answers the question the reference answers with "is the save stack
+    /// empty?", and the answer decides where a `def` binds. A nested `eval` is
+    /// an evaluation something is waiting on — an argument, an `(eval form env)`
+    /// — so a `def` inside one is local. At depth 1 nothing is waiting, the form
+    /// is in tail position from the top level, and a `def` is global.
     pub fn eval(&mut self, form: Obj, env: EnvId) -> EvalResult {
+        self.eval_depth += 1;
+        let r = self.eval_pending(form, env);
+        self.eval_depth -= 1;
+        r
+    }
+
+    /// Hide what is pending for the duration of a LOAD, answering what was
+    /// hidden. See `include`.
+    pub fn hide_pending(&mut self) -> usize {
+        std::mem::replace(&mut self.eval_depth, 0)
+    }
+
+    pub fn restore_pending(&mut self, outer: usize) {
+        self.eval_depth = outer;
+    }
+
+    /// True when nothing is waiting on the current evaluation.
+    ///
+    /// `def` asks this to decide global-vs-local, exactly as the reference asks
+    /// whether its save stack is empty.
+    pub fn nothing_pending(&self) -> bool {
+        self.eval_depth <= 1
+    }
+
+    fn eval_pending(&mut self, form: Obj, env: EnvId) -> EvalResult {
         let (mut form, mut env) = (form, env);
         loop {
             // The armed ceiling. A heap that never frees is exactly the kind

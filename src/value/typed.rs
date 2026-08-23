@@ -11,46 +11,98 @@
 use crate::obj::{Flags, Obj, NIL};
 use crate::objects::{Objects, FLAG_FOREIGN, FLAG_ITER, FLAG_PRIM};
 
-/// The routes a type object commits to, in order. Names come from the library:
-/// it resolves them by name, so they are not this engine's to choose.
-pub const TYPE_ROUTES: &[&str] = &[
-    "type-name",
-    "type-cvt",
-    "type-display",
-    "type-display-stack",
-    "type-io",
-    "type-iter",
-    "type-proc",
-    "type-write",
-    "type-write-stack",
-];
+/// The families a type object carries, grouped as the reference engine groups
+/// them.
+///
+/// A type is a TREE, not a flat spine, and mirroring the reference's shape is
+/// deliberate. Decision L1 leaves the STEPS to the engine — only the NAMES are
+/// the contract — so a flat layout would have been permitted. It would also have
+/// been a fresh set of decisions about a structure whose real ones are already
+/// paid for, and this engine has been wrong about a spine before by inventing
+/// one. Same steps as the reference, and the whole class of off-by-one goes away.
+///
+/// Each family owns a STACK: the slot holds a list, and the active handler is
+/// its head. That is why every family has two committed routes —
+/// `type-X-stack` addressing the list, and `type-X` one `f` deeper addressing
+/// the head. The library pushes and pops by writing the PARENT of the stack
+/// route, which is why `%reflect-path-parent` exists.
+///
+/// The groups, in top-level order: name, data, heap, proc, cvt, io, iter, ops.
+pub const HEAP_FAMILIES: &[&str] = &["mark", "make", "free", "clone", "units", "length"];
+pub const PROC_FAMILIES: &[&str] = &["call", "eval"];
+pub const CVT_FAMILIES: &[&str] = &["from", "to"];
+pub const IO_FAMILIES: &[&str] = &["analyse", "delimit", "read", "write", "display"];
+pub const ITER_FAMILIES: &[&str] = &["iter"];
+pub const OPS_FAMILIES: &[&str] = &["ops"];
+
+/// How many top-level cells a type spine has before the engine's own handlers.
+const TYPE_GROUPS: usize = 8;
 
 impl Objects {
-    /// A type object, as a SPINE.
-    ///
-    /// Not a two-word record. x-lang walks a type by name — `type-name`,
-    /// `type-iter`, `type-display` and six more, all rooted at the type object
-    /// itself and reached by `rest` steps — so a type must be a pair spine with
-    /// one cell per committed route, exactly like a base.
-    ///
-    /// The order is the contract; it is declared in
-    /// `tools/contract/base-paths.x` and checked by
-    /// [`crate::base::tests`]-style route tests below.
-    pub fn type_new(&mut self, name: Obj, handlers: Obj) -> Obj {
-        let mut spine = self.pair(handlers, NIL);
-        // slots 8..1, filled nil; slot 0 is the name.
-        for _ in 1..crate::value::typed::TYPE_ROUTES.len() {
+    /// A spine of `n` nil cells.
+    fn nil_spine(&mut self, n: usize) -> Obj {
+        let mut spine = NIL;
+        for _ in 0..n {
             spine = self.pair(NIL, spine);
         }
-        spine = self.pair(name, spine);
         spine
+    }
+
+    /// A type object, as a TREE.
+    ///
+    /// Not a two-word record: x-lang walks a type BY NAME, and there are
+    /// forty-odd committed names rooted at the type object itself. Every cell
+    /// exists from birth even though almost all of them are nil, because a route
+    /// that walks off the end answers nil too — and the library cannot tell "no
+    /// handler" from "no such route", so it would take the nil either way.
+    ///
+    /// `handlers` is this ENGINE's own pair, parked past the committed tree
+    /// where no route addresses it. The reader needs analyse and read before the
+    /// library exists to install anything.
+    pub fn type_new(&mut self, name: Obj, handlers: Obj) -> Obj {
+        // Each group is a spine with one cell per family; each family's cell
+        // holds its STACK, and a stack starts empty.
+        let heap = self.nil_spine(HEAP_FAMILIES.len());
+        let proc = self.nil_spine(PROC_FAMILIES.len());
+        let cvt = self.nil_spine(CVT_FAMILIES.len());
+        let io = self.nil_spine(IO_FAMILIES.len());
+        let iter = self.nil_spine(ITER_FAMILIES.len());
+        let ops = self.nil_spine(OPS_FAMILIES.len());
+
+        // The name is a STACK too, so that `type-name` — its head — is the name
+        // itself. The reference does the same, and reflect.x reads the head.
+        let name_stack = self.pair(name, NIL);
+
+        let mut spine = NIL;
+        for slot in [ops, iter, io, cvt, proc, heap, NIL, name_stack]
+            .into_iter()
+            .take(TYPE_GROUPS)
+        {
+            spine = self.pair(slot, spine);
+        }
+        // The engine's own handlers sit one past the committed tree.
+        self.append_cell(spine, handlers)
+    }
+
+    /// Add one cell to the end of a spine, answering the head.
+    fn append_cell(&mut self, spine: Obj, v: Obj) -> Obj {
+        let mut at = spine;
+        loop {
+            let next = self.rest(at);
+            if next.is_nil() {
+                let tail = self.pair(v, NIL);
+                self.set_data(at, 1, tail.word());
+                return spine;
+            }
+            at = next;
+        }
     }
 
     /// The engine's own handlers — `analyse` and `read` for the reader — kept
     /// past the routes the library walks.
     pub fn type_handlers_of(&self, o: Obj) -> Obj {
         let mut at = o;
-        for _ in 0..crate::value::typed::TYPE_ROUTES.len() {
+        for _ in 0..TYPE_GROUPS {
             at = self.rest(at);
         }
         self.first(at)
@@ -161,31 +213,127 @@ mod tests {
     /// The same check as the base's, for the same reason: a spine shorter than
     /// its route list walks off the end and answers nil, which reads as "no
     /// value" rather than "no such route" — and the library would take the nil.
+    /// Every committed type route is REACHABLE, walked from this engine's own
+    /// base-paths.x rather than from a list retyped here.
+    ///
+    /// "Reachable" is not "non-nil". `%reflect-step` nil-propagates on purpose —
+    /// lib/x/boot/registry.x says why: paths address OPTIONAL slots, and an
+    /// empty handler stack is absent rather than broken. The reference engine
+    /// would fail a test that demanded a value at every route.
+    ///
+    /// What must hold is that every STACK route has a parent: the cell whose
+    /// `first` is the stack. That is where the library writes to push a handler,
+    /// and a spine too short to reach it fails silently — the walk answers nil,
+    /// which reads as "no handler" rather than "no such route".
+    ///
+    /// The VALUE routes are excluded deliberately, and the exclusion is the
+    /// point rather than a convenience: `type-X` is one `f` past `type-X-stack`,
+    /// so its parent IS the stack, and an empty stack is nil. Demanding a parent
+    /// there would demand a handler be installed at birth, which the reference
+    /// does not do either.
     #[test]
-    fn every_type_route_resolves() {
+    fn every_declared_stack_route_has_a_parent_to_write_to() {
         let mut o = Objects::new();
         let name = o.str_new("T");
         let ty = o.type_new(name, NIL);
-        let mut at = ty;
-        for (n, route) in TYPE_ROUTES.iter().enumerate() {
-            assert!(
-                !at.is_nil(),
-                "route `{}` at {} steps walks off the end",
-                route,
-                n
+
+        let mut checked = 0;
+        for (route, steps) in declared_type_routes() {
+            if !route.ends_with("-stack") {
+                continue;
+            }
+            // The parent: every step but the last.
+            let mut at = ty;
+            for (n, step) in steps[..steps.len() - 1].iter().enumerate() {
+                assert!(
+                    !at.is_nil(),
+                    "route `{}` has no parent to write to: nil at step {}",
+                    route,
+                    n
+                );
+                at = match step.as_str() {
+                    "f" => o.first(at),
+                    _ => o.rest(at),
+                };
+            }
+            assert!(!at.is_nil(), "route `{}` has no parent to write to", route);
+            checked += 1;
+        }
+        assert!(checked > 10, "only {} stack routes checked", checked);
+    }
+
+    /// The name is readable straight away: reflect.x reads `type-name` as the
+    /// head of the name stack, so the stack cannot start empty.
+    #[test]
+    fn the_name_is_the_head_of_the_name_stack() {
+        let mut o = Objects::new();
+        let name = o.str_new("T");
+        let ty = o.type_new(name, NIL);
+        for (route, steps) in declared_type_routes() {
+            if route != "type-name" {
+                continue;
+            }
+            let mut at = ty;
+            for step in &steps {
+                at = if step == "f" { o.first(at) } else { o.rest(at) };
+            }
+            assert_eq!(at, name, "type-name must resolve to the name itself");
+            return;
+        }
+        panic!("no type-name route declared");
+    }
+
+    /// The engine's own handlers stay past the committed tree, where no route
+    /// addresses them — otherwise the library would find them by walking.
+    #[test]
+    fn the_engines_handlers_are_not_addressable_by_any_route() {
+        let mut o = Objects::new();
+        let name = o.str_new("T");
+        let handlers = o.str_new("ENGINE-PRIVATE");
+        let ty = o.type_new(name, handlers);
+        assert_eq!(
+            o.type_handlers_of(ty),
+            handlers,
+            "the engine can still read them"
+        );
+
+        for (route, steps) in declared_type_routes() {
+            let mut at = ty;
+            for step in &steps {
+                if at.is_nil() {
+                    break;
+                }
+                at = if step == "f" { o.first(at) } else { o.rest(at) };
+            }
+            assert_ne!(
+                at, handlers,
+                "route `{}` reaches the engine's handlers",
+                route
             );
-            at = o.rest(at);
         }
     }
 
-    /// `type-name` is the first cell, so the name is what a walk of zero steps
-    /// finds.
-    #[test]
-    fn type_name_is_the_first_route() {
-        let mut o = Objects::new();
-        let name = o.str_new("CONFORM");
-        let ty = o.type_new(name, NIL);
-        assert_eq!(o.first(ty), name);
+    /// The type routes this engine commits to, parsed from its own contract.
+    fn declared_type_routes() -> Vec<(String, Vec<String>)> {
+        let paths = std::fs::read_to_string("tools/contract/base-paths.x")
+            .expect("the engine's own committed paths");
+        let mut out = Vec::new();
+        for line in paths.lines() {
+            let Some(body) = line.trim().strip_prefix('(') else {
+                continue;
+            };
+            let body = body.split(';').next().unwrap_or("");
+            let body = body.trim().trim_end_matches(')').trim();
+            let mut words = body.split_whitespace();
+            let (Some(route), Some("type")) = (words.next(), words.next()) else {
+                continue;
+            };
+            out.push((
+                route.to_string(),
+                words.map(str::to_string).collect::<Vec<_>>(),
+            ));
+        }
+        out
     }
 
     /// The engine's own handlers sit PAST the routes the library walks, so

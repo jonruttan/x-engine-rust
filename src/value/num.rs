@@ -40,6 +40,10 @@ impl Objects {
     }
 
     /// The operand word, read as a character code.
+    pub fn is_char(&self, o: Obj) -> bool {
+        self.is(o, FLAG_CHAR)
+    }
+
     pub fn as_char(&self, o: Obj) -> u32 {
         self.data(o, 0).raw() as u32
     }

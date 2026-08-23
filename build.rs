@@ -18,6 +18,15 @@
 
 use std::io::Write;
 
+/// `unknown` rather than an empty string, so a missing fact reads as missing.
+fn unknown_or(s: &str) -> String {
+    if s.is_empty() {
+        "unknown".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let path = std::path::Path::new(&dir).join("x-engine-build.xon");
@@ -30,6 +39,24 @@ fn main() {
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let triple = std::env::var("TARGET").unwrap_or_default();
+
+    // --- the identity values -------------------------------------------------
+    // `x-machine` is the build TRIPLE as x-lang's platform layer reads it:
+    // lib/x/platform/syscall.x scans it for "darwin"/"linux" and for
+    // "arm64"/"aarch64"/"x86_64" to pick a syscall table. A Rust target triple
+    // carries all of those, so it is handed over unchanged.
+    println!("cargo:rustc-env=X_MACHINE={}", unknown_or(&triple));
+
+    // `x-release` is WHICH RELEASE OF X-LANG this engine is, and it is not the
+    // crate version. The reference engine learned this the hard way (#435):
+    // before it existed, two releases whose C never changed produced the same
+    // bytes reporting the same version, so a pinned amalgam from one could boot
+    // on the other and segfault. It comes from the environment at BUILD time,
+    // exactly as the reference's Makefile passes X_RELEASE, and defaults to
+    // "dev" for a tree nobody has released.
+    println!("cargo:rerun-if-env-changed=X_RELEASE");
+    let release = std::env::var("X_RELEASE").unwrap_or_else(|_| "dev".to_string());
+    println!("cargo:rustc-env=X_RELEASE={}", release);
 
     // Anything the compiler did not tell us is written as `unknown`, which the
     // consumers skip. A guessed value would be indistinguishable from a measured

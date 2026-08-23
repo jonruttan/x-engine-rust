@@ -258,4 +258,31 @@
   ; form, which arrives as a raise.  `io read` folds it to nil; `repl-read` does
   ; not, and that is the ONLY difference between them.
   (%token-eof)
+
+  ; --- the truth values ---
+  ; Bound from interned singletons, not from name literals: `#t` evaluates to
+  ; the symbol itself and `#f` to the false object, and a form read in the host
+  ; and evaluated in a CHILD base must find both.
+  (#t)
+  (#f)
+
+  ; --- the invocation ---
+  ; Every argv element, as a list of strings.  The engine parses NONE of it:
+  ; `--batch` is a string here, and an engine with opinions about it would be
+  ; implementing a protocol that belongs to the wrapper.
+  (args)
+
+  ; --- identity ---
+  ; x-machine is the build TRIPLE, and it is read rather than decorative:
+  ; lib/x/platform/syscall.x scans it for "darwin"/"linux" and for
+  ; "arm64"/"aarch64"/"x86_64" to choose a syscall table.
+  ;
+  ; x-version is the EXPRESSION LAYER's version and stays stable; x-release is
+  ; WHICH RELEASE of x-lang this engine is, stamped at build time.  They are two
+  ; values on purpose: before the reference separated them, two releases whose
+  ; sources never changed reported identically, and a pinned amalgam from one
+  ; could boot on the other and segfault (x-lang #435).
+  (x-machine)
+  (x-release)
+  (x-version)
 )))

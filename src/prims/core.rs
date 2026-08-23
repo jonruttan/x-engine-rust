@@ -79,14 +79,40 @@ fn atomic(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     e.eval_body_tail(args, env)
 }
 
-/// `(tail-eval expr env)` — the operative's door back into evaluation.
+/// `(tail-eval expr env)` — the operative's door back into evaluation, IN TAIL
+/// POSITION.
+///
+/// It PARKS the tail rather than evaluating nested, and the difference is
+/// visible in x-lang rather than being an optimisation. The reference decides
+/// whether a `def` binds globally or locally by asking whether its save stack is
+/// empty, and a tail-eval leaves nothing on it — so a `def` reached through a
+/// chain of tail-evals from the top level binds GLOBALLY, even though the env
+/// handed along was some inner operative's activation frame.
+///
+/// Asked directly of x-engine-c, since no document rules on it:
+///
+/// ```text
+/// (def myif (op (t th . el) e
+///   (match ((eval t e) (tail-eval th e)) (#t (tail-eval (first el) e)))))
+/// (def outer (op (x) e (myif #f 1 (def zz 7))))
+/// (outer 0)
+/// zz          =>  7
+/// ```
+///
+/// Nested evaluation here answered `Unbound SYMBOL 'zz`: the definition landed
+/// in `myif`'s caller frame and died with it. `lib/x/doc/doc.x` is built on this
+/// exact behaviour — its comment says the final tail-eval "must run in the op's
+/// own tail so it defines the symbol in the caller's env" — so `(doc (def or …))`
+/// defined nothing, and `or` was Unbound a hundred lines later with no error at
+/// the point of loss.
 fn tail_eval(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let target = if e.objects.is_env(a[1]) {
-        e.objects.env_id(a[1])
-    } else {
-        e.root_env()
-    };
-    e.eval(a[0], target)
+    // An env operand that is not an env is a caller error, not a licence to pick
+    // one. Falling back to the root used to hide exactly the bug above.
+    if !e.objects.is_env(a[1]) {
+        return Err(Cond::NotAnEnvironment(a[1]));
+    }
+    let target = e.objects.env_id(a[1]);
+    Ok(e.park_tail(a[0], target))
 }
 
 pub const TABLE: &[PrimDef] = &[
