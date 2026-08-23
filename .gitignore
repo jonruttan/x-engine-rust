@@ -2,3 +2,8 @@
 # The build's param declaration: a per-BINARY fact, regenerated on every build.
 # Committing it would assert whichever platform built last as the project's.
 x-engine-build.xon
+
+# The engine binary copied to the root, where x-lang's engine-directory
+# convention expects to find the file `(binary "x-engine")` names. Built
+# output either way -- the canonical copy is target/release/x-engine.
+/x-engine
