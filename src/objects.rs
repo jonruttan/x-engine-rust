@@ -189,6 +189,54 @@ pub struct Objects {
     /// answer the SAME object. Simple values carry no type word, so the
     /// stability x-lang requires comes from here rather than from the header.
     pub(crate) builtin_types: HashMap<Flags, Obj>,
+    /// The tag every registered type TREE carries in its own type word.
+    ///
+    /// x-lang derives this rather than being told it — `%reflect-spair-tw` is
+    /// the type word of the first type-alist entry's tree — and then uses it to
+    /// check that a word really points at a tree before walking one.
+    pub(crate) spair_marker: Obj,
+}
+
+/// The kinds whose type word is stamped at birth.
+///
+/// Every kind an ordinary value can be. The list is explicit rather than derived
+/// because the types must exist BEFORE the objects that carry them, and a kind
+/// left out does not fail where it is missing — it fails wherever something
+/// tries to print one.
+pub const STAMPED_KINDS: &[(Flags, &str)] = &[
+    (FLAG_INT, "INTEGER"),
+    (FLAG_CHAR, "CHARACTER"),
+    (FLAG_STR, "STRING"),
+    (FLAG_SYM, "SYMBOL"),
+    (FLAG_PAIR, "PAIR"),
+    (FLAG_PTR, "POINTER"),
+    (FLAG_PRIM, "PRIMITIVE"),
+    (FLAG_FN, "PROCEDURE"),
+    (FLAG_OP, "OPERATIVE"),
+    (FLAG_WRAP, "PROCEDURE"),
+    (FLAG_ENV, "ENVIRONMENT"),
+    (FLAG_TYPE, "TYPE"),
+    (FLAG_ITER, "ITER"),
+    (FLAG_BUF, "BUFFER"),
+    (FLAG_TOKBASE, "TOKENBASE"),
+    (FLAG_CONT, "CONTINUATION"),
+    (FLAG_FOREIGN, "PRIMITIVE"),
+];
+
+/// The name a kind reports, or `BUILTIN` for one nobody has named.
+///
+/// These are the REFERENCE's names, and they are reachable from x-lang rather
+/// than decorative: once a value carries a pointer to its type tree,
+/// `%reflect-type-name` dereferences it and answers what it finds. Naming every
+/// builtin type the same thing made every type-name comparison in the library
+/// agree, which is worse than answering nothing at all — a name of "BUILTIN"
+/// for both INTEGER and SYMBOL is not a missing answer, it is a wrong one.
+pub fn kind_name(flags: Flags) -> &'static str {
+    STAMPED_KINDS
+        .iter()
+        .find(|(f, _)| *f == flags)
+        .map(|(_, n)| *n)
+        .unwrap_or("BUILTIN")
 }
 
 impl Objects {
@@ -201,12 +249,16 @@ impl Objects {
             unfiled_types: Vec::new(),
             sym_t: NIL,
             builtin_types: HashMap::new(),
+            spair_marker: NIL,
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with
         // (%set-rest! %false-stack …). With no room for it the write ran off the
         // end of the object and made `#f` itself truthy — the boot then took
         // every wrong branch, silently.
+        // The tree tag, before any type exists to be tagged.
+        a.spair_marker = a.alloc(Flags::new(0), 1);
+
         a.false_obj = a.alloc(FLAG_FALSE, 2);
         a.sym_t = a.sym("t");
         a
@@ -222,7 +274,27 @@ impl Objects {
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
         let at = self.heap.frontier();
-        self.heap.push(NIL.word()); // type
+        // THE TYPE WORD, and it is NOT stamped yet. The reason is worth keeping.
+        //
+        // x-lang reads this word directly — `%reflect-type-word` is a raw word
+        // read — and lib/x/boot/printer.x renders NOTHING for a word of 0. So a
+        // value must carry a pointer to its type TREE before the library can
+        // print it, and `display` stays silent until it does.
+        //
+        // Stamping every kind was tried and reverted. It is right for ints,
+        // strings, symbols and characters; it breaks on PAIRS, and that is not a
+        // bug in the stamping. The reference has TWO pair kinds — LIST pairs
+        // carrying the pair/list type, and STRUCTURAL spairs carrying the spair
+        // tag — and the library tells them apart by exactly this word. The C's
+        // own ISA says so of `base bind`: it "allocates a STRUCTURAL spair for
+        // the env spine, which X pair cannot make."
+        //
+        // This engine has ONE pair kind, so stamping tells the library that every
+        // interpreter spine is a list. `def-class` then mis-walks its member rows
+        // and every class answers "no such static member".
+        //
+        // The next step is therefore the object model, not the printer.
+        self.heap.push(NIL.word());
         self.heap.push(Word(flags.raw())); // flags
         for _ in 0..n {
             self.heap.push(NIL.word());

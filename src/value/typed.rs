@@ -102,6 +102,12 @@ impl Objects {
         {
             spine = self.pair(slot, spine);
         }
+        // A type TREE carries the tree tag in its own word, which is how the
+        // library tells a real tree from any other word it might find: it probes
+        // the tag off the first type-alist entry and checks against it before
+        // walking.
+        let marker = self.spair_marker;
+        self.set_type_word(spine, marker);
         self.install_handlers(spine, handlers);
         spine
     }
@@ -233,10 +239,10 @@ impl Objects {
         if let Some(&t) = self.builtin_types.get(&flags) {
             return t;
         }
-        // Named after nothing in particular: x-lang's names for these types come
-        // from the library, which a bare engine has not loaded, and inventing one
-        // would put a name into the language nothing else agrees with.
-        let name = self.str_new("BUILTIN");
+        // The REFERENCE's name for this kind. It is read: with the type word
+        // stamped, `%reflect-type-name` dereferences the tree and answers what
+        // it finds there.
+        let name = self.str_new(crate::objects::kind_name(flags));
         let t = self.type_new(name, NIL);
         self.builtin_types.insert(flags, t);
         // A type nobody filed is a type the library cannot reach: `type by-atom`

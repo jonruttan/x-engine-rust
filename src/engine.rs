@@ -185,6 +185,18 @@ impl Engine {
         for v in samples {
             let _ = self.objects.type_of(v);
         }
+        // The callables and the reader's own kinds too. A type made only when
+        // something first asks for it leaves every object allocated BEFORE that
+        // ask carrying a nil type word, and the library reads that word
+        // directly — so the ask has to happen here, before any of them exist.
+        for (flags, text) in crate::objects::STAMPED_KINDS {
+            if !self.objects.builtin_types.contains_key(flags) {
+                let name = self.objects.str_new(text);
+                let t = self.objects.type_new(name, NIL);
+                self.objects.builtin_types.insert(*flags, t);
+                self.objects.unfiled_types.push(t);
+            }
+        }
         // Drained here and, from now on, by the `type of` instruction itself.
         for t in self.objects.take_unfiled_types() {
             self.file_type(t);
