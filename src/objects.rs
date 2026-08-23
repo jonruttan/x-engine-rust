@@ -251,7 +251,7 @@ pub struct Objects {
     /// Overwrite a swept object's flags, so a later read of it traps. Debug only.
     pub(crate) poison_freed: bool,
     /// What a poisoned object used to be, so the trap can name it.
-    pub(crate) freed_kind: HashMap<Obj, u64>,
+    pub(crate) freed_kind: HashMap<Obj, (u64, u64, u64)>,
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -406,20 +406,33 @@ impl Objects {
     // --- header ----------------------------------------------------------------
 
     pub fn flags(&self, o: Obj) -> Flags {
-        debug_assert!(
-            !self.poison_freed
-                || self
-                    .heap
-                    .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
-                    .raw()
-                    != crate::collect::POISON,
-            "read of a FREED {} at {:?} -- a root is missing",
-            self.freed_kind
+        #[cfg(debug_assertions)]
+        if self.poison_freed
+            && self
+                .heap
+                .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+                .raw()
+                == crate::collect::POISON
+        {
+            let what = self
+                .freed_kind
                 .get(&o)
-                .map(|f| crate::objects::kind_name(Flags::from_word(Word(*f))))
-                .unwrap_or("object"),
-            o
-        );
+                .map(|(f, a, b)| {
+                    format!(
+                        "{} first={} rest={}",
+                        kind_name(Flags::from_word(Word(*f))),
+                        self.describe_word(*a),
+                        self.describe_word(*b)
+                    )
+                })
+                .unwrap_or_else(|| "object".to_string());
+            panic!(
+                "read of a FREED {} at {:?}\n  still held by: {:?}\n  -- a root is missing",
+                what,
+                o,
+                self.holders_of(o)
+            );
+        }
         Flags::from_word(self.heap.word(o.addr().plus(SLOT_FLAGS * WORD as u64)))
     }
 
@@ -471,6 +484,30 @@ impl Objects {
     }
 
     pub fn set_data(&mut self, o: Obj, i: u64, v: Word) {
+        // TRAP THE STORE, not just the read. A freed object being written INTO a
+        // live one means something held it in Rust across a collection — and the
+        // backtrace here names that something, where the read-side trap only
+        // names whoever stumbled over the result later.
+        // Only where the slot really holds a REFERENCE. An environment object's
+        // word is a frame id and a primitive's is a table index; a raw number
+        // that happens to equal a freed address is not a use-after-free, and
+        // trapping on one sends the hunt somewhere there is nothing to find.
+        #[cfg(debug_assertions)]
+        if self.poison_freed
+            && self.freed_kind.contains_key(&v.as_obj())
+            && matches!(
+                self.flags(o),
+                f if f == FLAG_PAIR || f == FLAG_SPAIR
+            )
+        {
+            panic!(
+                "storing a FREED object {:?} into slot {} of a live {} -- it was \
+                 held across a collection",
+                v.as_obj(),
+                i,
+                kind_name(self.flags(o))
+            );
+        }
         self.heap.set_word(Self::slot(o, i), v)
     }
 
@@ -513,6 +550,59 @@ impl Objects {
         let mut out = self.symbols.all();
         out.extend(self.shared_symbols.all());
         out
+    }
+
+    /// Who still points at `o`? Walks the live chain looking for a data word
+    /// holding it.
+    ///
+    /// When a whole structure is collected, naming one lost cell says nothing —
+    /// the question is which live object was still holding the structure, since
+    /// that is the reference the tracer failed to follow.
+    #[cfg(debug_assertions)]
+    pub(crate) fn holders_of(&self, target: Obj) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut at = self.heap_chain;
+        while !at.is_nil() && out.len() < 4 {
+            let n = self.data_len(at);
+            for i in 0..n {
+                if self.data(at, i).as_obj() == target {
+                    out.push(format!("{} slot {}", kind_name(self.flags(at)), i));
+                    break;
+                }
+            }
+            at = self
+                .heap
+                .word(at.addr().plus(SLOT_HEAP * WORD as u64))
+                .as_obj();
+        }
+        out
+    }
+
+    /// A one-line description of a raw word, for the collector's trap.
+    #[cfg(debug_assertions)]
+    pub(crate) fn describe_word(&self, w: u64) -> String {
+        let o = Word(w).as_obj();
+        if o.is_nil() {
+            return "()".to_string();
+        }
+        if w % 8 != 0 || (w / 8) as usize + META_LEN as usize > self.heap.words_len() {
+            return format!("raw:{}", w);
+        }
+        let f = self
+            .heap
+            .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+            .raw();
+        if f == crate::collect::POISON {
+            return "<freed>".to_string();
+        }
+        let flags = Flags::from_word(Word(f));
+        if flags == FLAG_SYM || flags == FLAG_STR || flags == FLAG_HANDLE {
+            format!("{}:{}", kind_name(flags), self.str_val(o))
+        } else if flags == FLAG_INT {
+            format!("INT:{}", self.int_val(o))
+        } else {
+            kind_name(flags).to_string()
+        }
     }
 
     pub fn heap_words(&self) -> usize {

@@ -99,6 +99,14 @@ impl Engine {
     /// only at top level, which looks like working until the first quoted symbol
     /// inside a form.
     fn read_list_form(&mut self, r: &mut crate::read::Reader) -> Result<Obj, Cond> {
+        // ROOTED AS THEY ARE READ. Elements accumulate in a Rust vector, and
+        // reading a later one can run a READER MACRO — which is x-lang code,
+        // which evaluates, which can collect. Everything read so far is then
+        // reachable from nothing at all.
+        //
+        // This is the quiet one: it needs a macro inside a list, a collection
+        // during it, and the list to be used afterwards. A boot does all three.
+        let mark = self.root_mark();
         let mut items: Vec<Obj> = Vec::new();
         let mut tail = NIL;
         loop {
@@ -115,6 +123,7 @@ impl Engine {
                     r.bump();
                     if let Some(t) = self.read_form_from(r)? {
                         tail = t;
+                        self.root_push(tail);
                     }
                     r.skip_blanks();
                     if r.peek() == Some(b')') {
@@ -123,7 +132,10 @@ impl Engine {
                     break;
                 }
                 _ => match self.read_form_from(r)? {
-                    Some(o) => items.push(o),
+                    Some(o) => {
+                        self.root_push(o);
+                        items.push(o);
+                    }
                     None => break,
                 },
             }
@@ -131,7 +143,9 @@ impl Engine {
         let mut out = tail;
         for &o in items.iter().rev() {
             out = self.objects.pair(o, out);
+            self.root_push(out);
         }
+        self.root_truncate(mark);
         Ok(out)
     }
 

@@ -203,7 +203,12 @@ impl Objects {
                 let n = self.data_len(at);
                 if self.poison_freed {
                     let was = self.flags_word(at) & !MARK;
-                    self.freed_kind.insert(at, was);
+                    // Keep the first two data words as well: when the trap
+                    // fires, WHAT the lost object held identifies it far faster
+                    // than its address does.
+                    let d0 = if n > 0 { self.data(at, 0).raw() } else { 0 };
+                    let d1 = if n > 1 { self.data(at, 1).raw() } else { 0 };
+                    self.freed_kind.insert(at, (was, d0, d1));
                     self.set_flags_word(at, POISON);
                 }
                 self.free.entry(n).or_default().push(at);
