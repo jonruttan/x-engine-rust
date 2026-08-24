@@ -33,7 +33,9 @@ use crate::vocabulary::Family;
 
 /// `(buf make s)` — a buffer viewing a string's bytes, non-owning.
 fn make(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.buf(a[0], 0))
+    // A made buffer is EMPTY whatever its region holds: the region is capacity,
+    // not content, and `str make`'s space fill must never read back as input.
+    Ok(a_.buf_writable(a[0], 0, 0))
 }
 
 /// `(buf read b)` — the next character, advancing the cursor.
@@ -44,6 +46,11 @@ fn read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
     let text = a_.buf_text(b);
     let at = a_.buf_cursor(b);
+    // Bounded by the WRITE mark, not the region: unwritten capacity is not
+    // input. x_buffereof is `read >= write`.
+    if at >= a_.buf_write(b) {
+        return Ok(NIL);
+    }
     let bytes = a_.bytes_of(text);
     if at as usize >= bytes.len() {
         return Ok(NIL);
@@ -76,7 +83,9 @@ fn last_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     if at == 0 || at as usize > bytes.len() {
         return Ok(NIL);
     }
-    Ok(a_.char_new(bytes[at as usize - 1] as u32))
+    // The CODE, not a character — the reference answers "Integer character
+    // code", and the spec asserts 105 for #\i.
+    Ok(a_.int(bytes[at as usize - 1] as i64))
 }
 
 /// `(buf retain b)` — the retain mark catches up to the cursor.
@@ -85,9 +94,29 @@ fn last_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// span would still start at the beginning of the input, and the second `"43"`
 /// in `"42 43 "` would measure five bytes rather than two.
 fn retain(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let at = a_.buf_cursor(a[0]);
-    a_.set_buf_retain(a[0], at);
-    Ok(a[0])
+    let b = a[0];
+    let at = a_.buf_cursor(b);
+    if a_.buf_ro(b) {
+        // The tokenizer's case: a mark bump, never a copy (#354).
+        a_.set_buf_retain(b, at);
+        return Ok(b);
+    }
+    // A WRITABLE buffer compacts: the unread remainder moves to the front of
+    // the region, so the tail capacity is writable again. The spec observes the
+    // backing string directly — after reading one of "abc", byte 0 is 'b'.
+    let text = a_.buf_text(b);
+    let base = a_.str_bytes(text);
+    let w = a_.buf_write(b);
+    let mut i = 0u64;
+    while at + i < w {
+        let c = a_.heap.byte(base.plus(at + i));
+        a_.heap.set_byte(base.plus(i), c);
+        i += 1;
+    }
+    a_.set_buf_retain(b, 0);
+    a_.set_buf_cursor(b, 0);
+    a_.set_buf_write(b, w - at);
+    Ok(b)
 }
 
 /// `(buf reset b)` — the cursor goes back to the retain mark.
@@ -98,21 +127,42 @@ fn reset(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 /// `(buf append b s)` — extend the text being read.
+/// `(buf append b ch)` — ONE CHARACTER, written at the write mark INTO the
+/// region. This rebuilt the whole text as a fresh string instead — and read the
+/// character argument with `bytes_of`, which walks a str's bytes, so a CHAR
+/// contributed garbage. The region is shared state: writing in place is what
+/// makes the bytes visible to every view of it.
 fn append(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
-    let mut bytes = a_.bytes_of(a_.buf_text(b));
-    bytes.extend(a_.bytes_of(a[1]));
-    let text = a_.str_from_bytes(&bytes);
-    a_.set_data(b, 2, text.word());
+    let text = a_.buf_text(b);
+    let w = a_.buf_write(b);
+    // Clamp at the region's capacity rather than write past it.
+    if (w as usize) < a_.byte_len(text) {
+        let at = a_.str_bytes(text);
+        let ch = a_.as_char(a[1]) as u8;
+        a_.heap.set_byte(at.plus(w), ch);
+        a_.set_buf_write(b, w + 1);
+    }
     Ok(b)
 }
 
 /// `(buf read-text b)` — everything from the retain mark to the end.
+/// `(buf read-text b)` — read ONE character; nil at end of input OR on a NUL.
+///
+/// The reference is `x_type_buffer_read` plus one test: NUL is end. This
+/// engine had invented a different operation under the same coordinate — it
+/// answered the remaining text as a string — which nothing in the reference
+/// does and the Buf class does not document.
 fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
-    let bytes = a_.bytes_of(a_.buf_text(b));
-    let from = (a_.buf_retain(b) as usize).min(bytes.len());
-    Ok(a_.str_from_bytes(&bytes[from..]))
+    let got = read(a_, a)?;
+    if got.is_nil() {
+        return Ok(NIL);
+    }
+    if a_.as_char(got) == 0 {
+        return Ok(NIL);
+    }
+    Ok(b)
 }
 
 // --- the tokenizer -----------------------------------------------------------

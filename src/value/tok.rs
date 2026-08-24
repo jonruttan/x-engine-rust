@@ -9,13 +9,52 @@ use crate::objects::{Objects, FLAG_BUF, FLAG_TOKBASE, FLAG_TOKEOF};
 
 impl Objects {
     /// A buffer over `text`, with both marks at `at`.
+    /// A READING buffer over `text`: everything already there is readable, so
+    /// the WRITE mark sits at the end. This is the tokenizer's case.
     pub fn buf(&mut self, text: Obj, at: u64) -> Obj {
+        let end = self.byte_len(text) as u64;
+        let o = self.buf_writable(text, at, end);
+        // READ-ONLY: the tokenizer's kind. Its `retain` is a mark bump, where a
+        // writable buffer's retain COMPACTS — see `Objects::buf_ro`.
+        self.set_data(o, 4, Word(1));
+        o
+    }
+
+    /// The reference buffer is THREE marks over one region — `(val . (read .
+    /// write))` — and the third mark is not decoration: `buf make` on a fresh
+    /// region starts EMPTY (read stops at WRITE, not at the region's end), and
+    /// `buf append` writes at the write mark INTO the region. This engine kept
+    /// only val and read, so a made buffer read its region's `str make` fill —
+    /// eight spaces — as content, and append rebuilt the text somewhere else
+    /// entirely. lib/buffer.spec.md answered "  " where "hi" was appended.
+    pub fn buf_writable(&mut self, text: Obj, at: u64, write: u64) -> Obj {
         let cursor = self.int(at as i64);
-        let o = self.alloc(FLAG_BUF, 3);
+        let w = self.int(write as i64);
+        let o = self.alloc(FLAG_BUF, 5);
         self.set_data(o, 0, Word(at));
         self.set_data(o, 1, cursor.word());
         self.set_data(o, 2, text.word());
+        self.set_data(o, 3, w.word());
         o
+    }
+
+    /// Read-only: retain bumps the mark instead of compacting. The reference
+    /// tags this with X_OBJ_FLAG_RO and says why — an RO buffer never refills,
+    /// so compaction buys it nothing, and per-token memcpy made `tok read-str`
+    /// O(input²) (#354). A WRITABLE buffer compacts so its region's tail
+    /// capacity comes back.
+    pub fn buf_ro(&self, o: Obj) -> bool {
+        self.data(o, 4).raw() != 0
+    }
+
+    /// The write mark — how much of the region holds real content.
+    pub fn buf_write(&self, o: Obj) -> u64 {
+        self.data(self.data(o, 3).as_obj(), 0).raw()
+    }
+
+    pub fn set_buf_write(&mut self, o: Obj, at: u64) {
+        let cell = self.data(o, 3).as_obj();
+        self.set_data(cell, 0, Word(at))
     }
 
     pub fn is_buf(&self, o: Obj) -> bool {
