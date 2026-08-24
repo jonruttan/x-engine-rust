@@ -211,7 +211,8 @@ impl Engine {
         let samples = [
             self.objects.int(0),
             self.objects.str_new(""),
-            self.objects.sym(crate::vocabulary::TRUTH),
+            // A SYMBOL, and `#t` is one — the sample only has to have the type.
+            self.objects.true_obj(),
             self.objects.char_new(65),
             self.objects.false_obj(),
             self.objects.pair(one, NIL),

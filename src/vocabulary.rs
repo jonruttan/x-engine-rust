@@ -163,6 +163,7 @@ pub const CHAR_UNKNOWN: &str = "?";
 ///
 /// Declared in `tools/contract/isa.x` too, which is the manifest x-lang reads;
 /// `tools/check/isa.sh` proves the two agree by asking the built engine.
+/// The truth answer of every predicate, and the name that evaluates to it.
 pub const TRUE: &str = "#t";
 pub const FALSE: &str = "#f";
 pub const ARGS: &str = "args";
@@ -171,9 +172,6 @@ pub const SIGINT_FLAG: &str = "%sigint-flag";
 pub const X_MACHINE: &str = "x-machine";
 pub const X_VERSION: &str = "x-version";
 pub const X_RELEASE: &str = "x-release";
-
-/// The truth answer of a predicate: the symbol `t`, or nil.
-pub const TRUTH: &str = "t";
 
 /// The quoting operative, which the reader's `'` macro expands to.
 pub const LIT: &str = "lit";
