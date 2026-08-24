@@ -32,7 +32,7 @@
 use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::obj::{Obj, NIL};
-use crate::prims::tok::{handler, handler_list, score_one};
+use crate::prims::tok::{analyse, handler, handler_list};
 use crate::vocabulary::Family;
 
 impl Engine {
@@ -178,41 +178,21 @@ impl Engine {
         }
         let at = r.pos() as u64;
 
-        // SCORE EVERY TYPE, THEN READ WITH THE WINNER. This ran the reader of
-        // the first type that scored anything, which decides by ORDER where the
-        // reference decides by LENGTH — `x_token_analyse` carries `i_best`
-        // across every type before it picks. At `3.14` the int analyser claims
-        // one character and, going first, took the token; the literal came apart
-        // into separate tokens and `ext/float.spec.md` lost 35 checks to it.
-        let mut best: Option<i64> = None;
-        let mut winner = NIL;
-        for ty in &types {
-            let ty = *ty;
-            if ty.is_nil() || handler(self, ty, Family::Analyse).is_nil() {
-                continue;
-            }
-            match score_one(self, ty, text, at) {
-                Ok(Some(n)) => {
-                    if crate::prims::tok::better(n, best) {
-                        best = Some(n);
-                        winner = ty;
-                    }
-                }
-                Ok(None) => continue,
-                Err(c) => {
-                    self.root_truncate(mark);
-                    return Err(c);
-                }
-            }
-        }
-        {
-            let Some(claim) = best else {
+        // ONE CONTEST, then read with the winner. See `prims::tok::analyse`.
+        let (ty, claim) = match analyse(self, &types, text, at) {
+            Ok(Some(w)) => w,
+            Ok(None) => {
                 self.root_truncate(mark);
                 return Ok(None);
-            };
+            }
+            Err(c) => {
+                self.root_truncate(mark);
+                return Err(c);
+            }
+        };
+        {
             // The magnitude is the span; the sign only ordered the contest.
             let n = claim.unsigned_abs();
-            let ty = winner;
             if n == 0 {
                 self.root_truncate(mark);
                 return Ok(None);

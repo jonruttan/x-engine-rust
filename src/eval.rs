@@ -23,6 +23,99 @@ use crate::prim::{Body, PrimDef};
 pub type EvalResult = Result<Obj, Cond>;
 
 impl Engine {
+    /// GENERIC-OPERATOR DISPATCH — `x_type_op_try`, the ops half of the type
+    /// system's hot path.
+    ///
+    /// Every value carries a type tag, ints included, so "is it typed" is not
+    /// the test; CARRYING A HANDLER is. If either operand's type registers a
+    /// handler for `op` in its ops alist, that handler is called as
+    /// `(handler a b)` and owns any coercion. This is how the numeric tower
+    /// reaches the machine operators without wrapping their names: types
+    /// REGISTER ops, nothing wraps ambient `+`.
+    ///
+    /// Without it `(+ 2.0 2.0)` added the two floats' operand words and answered
+    /// a machine integer — every generic-arithmetic check in ext/float.spec.md
+    /// and the whole numeric-tower spec.
+    ///
+    /// When BOTH sides carry a handler, the tie is broken by the conversions the
+    /// types already declare rather than by an ordering invented here: the side
+    /// whose type declares a conversion FROM the other absorbs it (complex
+    /// declares from float, so complex wins). Neither declaring the other falls
+    /// through — an unrelated pair is not this layer's to decide.
+    ///
+    /// Ops-less types have a nil ops alist, so int/int arithmetic costs a couple
+    /// of slot reads and falls through.
+    pub(crate) fn op_try(&mut self, op: &str, a: Obj, b: Obj) -> Result<Option<Obj>, Cond> {
+        let ta = self.objects.type_tree_of(a);
+        let tb = self.objects.type_tree_of(b);
+        let ops_a = if ta.is_nil() {
+            NIL
+        } else {
+            crate::prims::tok::handler(self, ta, crate::vocabulary::Family::Ops)
+        };
+        let ops_b = if tb.is_nil() {
+            NIL
+        } else {
+            crate::prims::tok::handler(self, tb, crate::vocabulary::Family::Ops)
+        };
+        if ops_a.is_nil() && ops_b.is_nil() {
+            return Ok(None);
+        }
+        // Interned, so the alist walk compares by pointer as the reference's does.
+        let sym = self.objects.sym(op);
+        let ha = self.ops_lookup(ops_a, sym);
+        let hb = self.ops_lookup(ops_b, sym);
+        let handler = match (ha, hb) {
+            (None, None) => return Ok(None),
+            (Some(h), None) => h,
+            (None, Some(h)) => h,
+            (Some(h), Some(_)) if ta == tb => h,
+            (Some(h), Some(other)) => {
+                let name_b = self.objects.type_handle_of_tree(tb);
+                let name_a = self.objects.type_handle_of_tree(ta);
+                if self.declares_from(ta, name_b) {
+                    h
+                } else if self.declares_from(tb, name_a) {
+                    other
+                } else {
+                    return Ok(None);
+                }
+            }
+        };
+        let env = self.root_env();
+        Ok(Some(self.call_with_values(handler, &[a, b], env)?))
+    }
+
+    /// The handler `sym` names in an ops alist, compared by pointer.
+    fn ops_lookup(&mut self, ops: Obj, sym: Obj) -> Option<Obj> {
+        if ops.is_nil() {
+            return None;
+        }
+        for entry in self.objects.list(ops).collect::<Vec<_>>() {
+            if self.objects.first(entry) == sym {
+                return Some(self.objects.rest(entry));
+            }
+        }
+        None
+    }
+
+    /// Does `ty` declare a conversion FROM the type `name` handles?
+    ///
+    /// The from-alist's entries are `(type-handle . handler)` and the handle IS
+    /// the type's name atom, so this compares pointers.
+    fn declares_from(&mut self, ty: Obj, name: Obj) -> bool {
+        let from = crate::prims::tok::handler(self, ty, crate::vocabulary::Family::From);
+        if from.is_nil() {
+            return false;
+        }
+        for entry in self.objects.list(from).collect::<Vec<_>>() {
+            if self.objects.first(self.objects.first(entry)) == name {
+                return true;
+            }
+        }
+        false
+    }
+
     // --- evaluation ---------------------------------------------------------
 
     /// Evaluate, WITHOUT growing the stack in tail position.
@@ -360,6 +453,21 @@ impl Engine {
             // The pure kinds: unwrap, apply the operator, re-box. This preamble
             // was repeated in eleven primitive bodies before the operator became
             // the primitive.
+            // TOWER OPS: the registry gets first refusal, then the machine.
+            Body::TowerBinop(op, f) => match self.op_try(op, vals[0], vals[1])? {
+                Some(v) => Ok(v),
+                None => {
+                    let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
+                    Ok(self.objects.int(f(x, y)))
+                }
+            },
+            Body::TowerPred(op, f) => match self.op_try(op, vals[0], vals[1])? {
+                Some(v) => Ok(v),
+                None => {
+                    let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
+                    Ok(self.objects.truth(f(x, y)))
+                }
+            },
             Body::IntBinop(f) => {
                 let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
                 Ok(self.objects.int(f(x, y)))

@@ -56,19 +56,19 @@ fn int_to_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 pub const TABLE: &[PrimDef] = &[
     // Wrapping throughout: x-lang's fixnums are machine integers, and overflow
     // is a value here rather than a crash.
-    PrimDef::int2("+", "int", "+", i64::wrapping_add),
-    PrimDef::int2("-", "int", "-", i64::wrapping_sub),
-    PrimDef::int2("*", "int", "*", i64::wrapping_mul),
+    PrimDef::tower2("+", "int", "+", i64::wrapping_add),
+    PrimDef::tower2("-", "int", "-", i64::wrapping_sub),
+    PrimDef::tower2("*", "int", "*", i64::wrapping_mul),
     PrimDef::int2("&", "int", "&", |x, y| x & y),
     PrimDef::int2("|", "int", "|", |x, y| x | y),
     PrimDef::int2("^", "int", "^", |x, y| x ^ y),
     PrimDef::int2("<<", "int", "<<", shl),
     PrimDef::int2(">>", "int", ">>", shr),
     PrimDef::int1("~", "int", "~", |x| !x),
-    PrimDef::int_pred("<", "int", "<", |x, y| x < y),
-    PrimDef::int_pred("=", "int", "=", |x, y| x == y),
-    PrimDef::int2("/", "int", "/", div),
-    PrimDef::int2("%", "int", "%", rem),
+    PrimDef::tower_pred("<", "int", "<", |x, y| x < y),
+    PrimDef::tower_pred("=", "int", "=", |x, y| x == y),
+    PrimDef::tower2("/", "int", "/", div),
+    PrimDef::tower2("%", "int", "%", rem),
     // The char door has no bare spelling in either direction: it is reachable
     // only through the catalog, which is the reference engine's arrangement.
     PrimDef::both("char->integer", "char", "->int", 1, char_to_int),

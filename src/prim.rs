@@ -58,6 +58,16 @@ pub enum Body {
     /// `lit`, `def`, `fn`, `op`, `match`, `guard`, `set!` — everything whose
     /// whole purpose is to decide what gets evaluated.
     Operative(fn(&mut Engine, Obj, EnvId) -> EvalResult),
+    /// A TOWER operator: the same pure integer operation, but offered to the
+    /// type-ops registry first so a typed operand reaches its own handler. The
+    /// spelling travels with it because that is the alist key.
+    ///
+    /// Only `+ - * / %` and the comparisons carry this. The bitwise family
+    /// deliberately does not: ruling #52 says bitwise has no tower semantics —
+    /// there is no float `&` — so the dispatch is not offered there.
+    TowerBinop(&'static str, fn(i64, i64) -> i64),
+    /// The same, for a comparison.
+    TowerPred(&'static str, fn(i64, i64) -> bool),
 
     // The three below are PURE FUNCTIONS OF INTEGERS. They do not receive the
     // engine at all, which is the point: eleven of the thirteen machine
@@ -106,6 +116,36 @@ impl PrimDef {
             coord: Some((ns, method)),
             arity: (2, Some(2)),
             body: Body::IntBinop(f),
+        }
+    }
+
+    /// A tower operator: type-ops dispatch, then the integer operation.
+    pub const fn tower2(
+        bare: &'static str,
+        ns: &'static str,
+        method: &'static str,
+        f: fn(i64, i64) -> i64,
+    ) -> Self {
+        PrimDef {
+            bare: Some(bare),
+            coord: Some((ns, method)),
+            arity: (2, Some(2)),
+            body: Body::TowerBinop(bare, f),
+        }
+    }
+
+    /// A tower comparison: type-ops dispatch, then the integer comparison.
+    pub const fn tower_pred(
+        bare: &'static str,
+        ns: &'static str,
+        method: &'static str,
+        f: fn(i64, i64) -> bool,
+    ) -> Self {
+        PrimDef {
+            bare: Some(bare),
+            coord: Some((ns, method)),
+            arity: (2, Some(2)),
+            body: Body::TowerPred(bare, f),
         }
     }
 
