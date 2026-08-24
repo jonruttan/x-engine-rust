@@ -385,6 +385,9 @@ impl crate::engine::Engine {
             }
             seen[id.index()] = true;
             self.envs.bindings_of(id, &mut ostack);
+            // The frame's BASE is a reference like any binding: a live frame
+            // must keep the spine it serves.
+            ostack.push(self.envs.base_of(id));
             if let Some(p) = self.envs.parent_of(id) {
                 estack.push(p);
             }

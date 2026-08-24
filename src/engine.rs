@@ -389,6 +389,9 @@ impl Engine {
         }
 
         let base = crate::base::build(&mut self.objects, self.catalog, env);
+        // The root frame serves the spine just built — stamped after, because
+        // the spine cannot exist before its env does.
+        self.envs.set_base(env, base);
         // A fresh base interns for itself, from empty. NOT a snapshot of the
         // parent's table: x-engine-c was asked, and a symbol the host interned
         // before the child existed is still a different object inside it.

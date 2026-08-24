@@ -91,6 +91,13 @@ impl Bindings {
 struct Frame {
     vars: Bindings,
     parent: Option<EnvId>,
+    /// The base this frame belongs to. In the reference the env-alist hangs OFF
+    /// the base, so "which base does this environment serve" is structural; a
+    /// frame here carries it so the same question is answered from data rather
+    /// than from engine state. Children inherit it; only `push_root` sets it,
+    /// and the base spine is built AFTER its root frame exists, so the builder
+    /// stamps it via `set_base`.
+    base: crate::obj::Obj,
     /// Reclaimed by the collector and not yet handed out again.
     ///
     /// An `EnvId` is a bare INDEX, so a frame freed while something still named
@@ -213,12 +220,23 @@ impl Envs {
     /// inherited everything, which is the opposite of the capability model
     /// `base bind` exists to provide.
     pub fn push_root(&mut self) -> EnvId {
-        self.alloc(None)
+        self.alloc(None, crate::obj::NIL)
     }
 
-    /// A fresh frame whose parent is `parent`.
+    /// A fresh frame whose parent is `parent`, serving the parent's base.
     pub fn push(&mut self, parent: EnvId) -> EnvId {
-        self.alloc(Some(parent))
+        let base = self.frames[parent.index()].base;
+        self.alloc(Some(parent), base)
+    }
+
+    /// Stamp a root frame's base, once the spine it serves exists.
+    pub fn set_base(&mut self, id: EnvId, base: crate::obj::Obj) {
+        self.frames[id.index()].base = base;
+    }
+
+    /// The base `env` serves — read from the frame, not walked for.
+    pub fn base_of(&self, id: EnvId) -> crate::obj::Obj {
+        self.frame(id).base
     }
 
     /// Take a frame, REUSING a slot the collector reclaimed when there is one.
@@ -227,10 +245,11 @@ impl Envs {
     /// still named it — which is exactly what the sweep establishes it does not.
     /// Without reuse the frame vector grows for the life of the process even
     /// though its contents are being freed.
-    fn alloc(&mut self, parent: Option<EnvId>) -> EnvId {
+    fn alloc(&mut self, parent: Option<EnvId>, base: crate::obj::Obj) -> EnvId {
         let frame = Frame {
             vars: Bindings::Small(Vec::new()),
             parent,
+            base,
             dead: false,
         };
         match self.free.pop() {
