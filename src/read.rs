@@ -226,26 +226,58 @@ impl Reader {
         }
     }
 
+    /// A string literal is BYTES, and the accumulator must be too.
+    ///
+    /// This pushed onto a Rust `String` through `u8 as char`, which is Latin-1
+    /// promotion: the byte 0xC2 became U+00C2 and re-encoded as C3 82, so every
+    /// multi-byte literal in a source file DOUBLE-ENCODED — `"¢"` (C2 A2) read
+    /// as four bytes and `Str8 ref` answered 195 where the file held 194. The
+    /// utf8 and str-class specs fail wholesale on that.
+    ///
+    /// The escape set is the reference's (sexp/str.c): `\" \\ n t r 0` and
+    /// `\xNN` with exactly two hex digits. An UNKNOWN escape keeps the
+    /// backslash AND the character — this dropped the backslash, which is a
+    /// different string.
     pub(crate) fn read_string(&mut self, a: &mut Objects) -> Obj {
-        let mut s = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
         while let Some(c) = self.peek() {
             self.pos += 1;
             match c {
                 b'"' => break,
                 b'\\' => {
-                    if let Some(e) = self.peek() {
-                        self.pos += 1;
-                        s.push(match e {
-                            b'n' => '\n',
-                            b't' => '\t',
-                            other => other as char,
-                        });
+                    let Some(e) = self.peek() else { break };
+                    self.pos += 1;
+                    match e {
+                        b'"' => bytes.push(b'"'),
+                        b'\\' => bytes.push(b'\\'),
+                        b'n' => bytes.push(b'\n'),
+                        b't' => bytes.push(b'\t'),
+                        b'r' => bytes.push(b'\r'),
+                        b'0' => bytes.push(0),
+                        b'x' => {
+                            let h = self.src.get(self.pos).and_then(|b| hex_digit(*b));
+                            let l = self.src.get(self.pos + 1).and_then(|b| hex_digit(*b));
+                            match (h, l) {
+                                (Some(h), Some(l)) => {
+                                    bytes.push(h * 16 + l);
+                                    self.pos += 2;
+                                }
+                                _ => {
+                                    bytes.push(b'\\');
+                                    bytes.push(b'x');
+                                }
+                            }
+                        }
+                        other => {
+                            bytes.push(b'\\');
+                            bytes.push(other);
+                        }
                     }
                 }
-                other => s.push(other as char),
+                other => bytes.push(other),
             }
         }
-        a.str_new(&s)
+        a.str_from_bytes(&bytes)
     }
 
     /// The nine named characters, which are the reference engine's list and not
@@ -547,5 +579,37 @@ mod tests {
         assert_eq!(items.len(), 2, "the character must not swallow the list");
         assert_eq!(o.as_char(items[0]), 65);
         assert_eq!(o.int_val(items[1]), 1);
+    }
+}
+
+#[cfg(test)]
+mod string_tests {
+    use crate::testkit::eval;
+
+    /// A literal is BYTES. Pushing through `u8 as char` is Latin-1 promotion —
+    /// 0xC2 becomes U+00C2 and re-encodes as C3 82 — so every multi-byte
+    /// source literal doubled. `"¢"` is the two bytes C2 A2 and must stay them.
+    #[test]
+    fn a_multibyte_literal_keeps_its_bytes() {
+        let (e, v) = eval("\"¢\"");
+        assert_eq!(e.objects.bytes_of(v.unwrap()), vec![0xC2, 0xA2]);
+    }
+
+    /// The reference's escape set, including the rule that an UNKNOWN escape
+    /// keeps the backslash AND the character.
+    #[test]
+    fn escapes_decode_as_the_reference_decodes_them() {
+        let (e, v) = eval(r#""a\x41\r\q""#);
+        assert_eq!(e.objects.bytes_of(v.unwrap()), b"aA\r\\q".to_vec());
+    }
+}
+
+/// A hex digit's value, or None — the reference's hex_digit.
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
