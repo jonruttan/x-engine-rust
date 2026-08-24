@@ -190,6 +190,35 @@ mod tests {
         assert!(truthy("(eq? (lit a) (lit a))"), "symbols are interned");
     }
 
+    /// TRUTHINESS IS NOT ENOUGH — which is exactly how this went wrong.
+    ///
+    /// `truth` answered the symbol `t` and nil for a long time. Both branch
+    /// correctly, so the test above passed, 102 conformance checks passed and 18
+    /// compliance rows passed, while `(null? ())` PRINTED as nothing and
+    /// seventeen of x-lang's list specs failed on it. A predicate's answer is a
+    /// VALUE that gets displayed, not just something to branch on, so assert the
+    /// identity rather than the truthiness.
+    #[test]
+    fn a_predicate_answers_the_very_objects_hash_t_and_hash_f() {
+        assert!(truthy("(same? (eq? 1 1) #t)"));
+        assert!(truthy("(same? (eq? 1 2) #f)"));
+        assert!(
+            truthy("(same? (same? 1 1) #f)"),
+            "same? answers with them too"
+        );
+        assert!(truthy("(same? (< 1 2) #t)"));
+        assert!(truthy("(same? (< 2 1) #f)"));
+    }
+
+    /// FALSE IS `#f`, NOT NIL. The reference returns its base's false field from
+    /// every predicate; answering nil is a different value that merely behaves
+    /// the same in a conditional.
+    #[test]
+    fn a_false_answer_is_not_nil() {
+        assert!(!truthy("(eq? (eq? 1 2) ())"));
+        assert!(truthy("(same? (eq? 1 2) #f)"));
+    }
+
     /// same? is strictly identity, which is the whole of its difference from eq?.
     #[test]
     fn same_does_not_collapse_equal_numbers() {

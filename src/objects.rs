@@ -219,10 +219,9 @@ pub struct Objects {
     /// Builtin types made on demand and not yet filed in a base's type-alist.
     /// See [`Objects::take_unfiled_types`].
     pub(crate) unfiled_types: Vec<Obj>,
-    /// The symbol `t`. `eq?` answers with it rather than `#t` because nil is a
-    /// legitimate value to compare: a predicate answering nil for "equal" could
-    /// not say that `(eq? () ())` holds.
-    sym_t: Obj,
+    /// `#t` — the very object the name `#t` evaluates to, interned in the SHARED
+    /// table so a child base cannot mint a second one. See [`Objects::truth`].
+    true_obj: Obj,
     /// One type object per built-in shape, so `(type of 1)` and `(type of 2)`
     /// answer the SAME object. Simple values carry no type word, so the
     /// stability x-lang requires comes from here rather than from the header.
@@ -319,7 +318,7 @@ impl Objects {
             shared_symbols: Symbols::new(),
             false_obj: NIL,
             unfiled_types: Vec::new(),
-            sym_t: NIL,
+            true_obj: NIL,
             builtin_types: HashMap::new(),
             spair_marker: NIL,
             satom_marker: NIL,
@@ -340,7 +339,7 @@ impl Objects {
         a.satom_marker = a.alloc(Flags::new(0), 1);
 
         a.false_obj = a.alloc(FLAG_FALSE, 2);
-        a.sym_t = a.sym(crate::vocabulary::TRUTH);
+        a.true_obj = a.sym_shared(crate::vocabulary::TRUE);
         a
     }
 
@@ -524,12 +523,28 @@ impl Objects {
         self.false_obj
     }
 
-    /// x-lang's truth answer: the symbol `t`, or nil.
+    /// The one `#t` object, and what `#t` itself evaluates to.
+    pub fn true_obj(&self) -> Obj {
+        self.true_obj
+    }
+
+    /// x-lang's truth answer: `#t` or `#f`, NEVER a symbol and never nil.
+    ///
+    /// This answered the symbol `t` and nil for a while. Both are correctly
+    /// truthy and falsy, so nothing that merely BRANCHED on a predicate could
+    /// tell — 102 conformance checks and 18 compliance rows never noticed. What
+    /// notices is printing one: `(null? ())` rendered as nothing where x-lang's
+    /// spec suite expects `#t`, and seventeen list specs failed on it.
+    ///
+    /// The reference settles it. `x_prim_eq`, `x_prim_same`, `x_prim_lt` and
+    /// `type`'s predicates all answer `x_firstobj(x_eval_field_true(p_base))` or
+    /// the matching false field — base fields a child base INHERITS
+    /// (`x-prim/base.c`), never a symbol and never nil.
     pub fn truth(&self, b: bool) -> Obj {
         if b {
-            self.sym_t
+            self.true_obj
         } else {
-            NIL
+            self.false_obj
         }
     }
 
