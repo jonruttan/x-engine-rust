@@ -177,20 +177,45 @@ impl Engine {
             self.root_push(*t);
         }
         let at = r.pos() as u64;
-        for ty in types {
+
+        // SCORE EVERY TYPE, THEN READ WITH THE WINNER. This ran the reader of
+        // the first type that scored anything, which decides by ORDER where the
+        // reference decides by LENGTH — `x_token_analyse` carries `i_best`
+        // across every type before it picks. At `3.14` the int analyser claims
+        // one character and, going first, took the token; the literal came apart
+        // into separate tokens and `ext/float.spec.md` lost 35 checks to it.
+        let mut best: Option<i64> = None;
+        let mut winner = NIL;
+        for ty in &types {
+            let ty = *ty;
             if ty.is_nil() || handler(self, ty, Family::Analyse).is_nil() {
                 continue;
             }
-            let n = match score_one(self, ty, text, at) {
-                Ok(Some(n)) => n,
+            match score_one(self, ty, text, at) {
+                Ok(Some(n)) => {
+                    if crate::prims::tok::better(n, best) {
+                        best = Some(n);
+                        winner = ty;
+                    }
+                }
                 Ok(None) => continue,
                 Err(c) => {
                     self.root_truncate(mark);
                     return Err(c);
                 }
+            }
+        }
+        {
+            let Some(claim) = best else {
+                self.root_truncate(mark);
+                return Ok(None);
             };
+            // The magnitude is the span; the sign only ordered the contest.
+            let n = claim.unsigned_abs();
+            let ty = winner;
             if n == 0 {
-                continue;
+                self.root_truncate(mark);
+                return Ok(None);
             }
             // The reader runs with the buffer positioned on the claimed span:
             // retain at the start, cursor at the end, so `buf last-char` is the

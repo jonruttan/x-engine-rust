@@ -137,7 +137,7 @@ pub(crate) fn score_one(
     ty: Obj,
     text: Obj,
     from: u64,
-) -> Result<Option<u64>, Cond> {
+) -> Result<Option<i64>, Cond> {
     let analyse = handler(e, ty, Family::Analyse);
     if analyse.is_nil() {
         return Ok(None);
@@ -148,8 +148,14 @@ pub(crate) fn score_one(
     // symbol type, with the engine's handler captured as the catch-all TAIL.
     // Walking only a lone handler leaves `'x` reading as a symbol named `'x`.
     //
-    // Order is the library's and it means something — the catch-all is last on
-    // purpose — so the FIRST handler that scores wins rather than the longest.
+    // THE LONGEST MATCH WINS, not the first. This took the first handler that
+    // scored, on the reasoning that the library's order means something and its
+    // catch-all is last. Order does matter — it breaks TIES — but it does not
+    // decide between different lengths, and treating it as though it did is what
+    // shredded every float literal: at `3.14` the INT analyser scores 1 for `3`
+    // and, going first, took the token. `x_token_analyse` keeps `i_best` across
+    // every type and every handler.
+    let mut best: Option<i64> = None;
     for h in handler_list(e, analyse) {
         // The captured tail may be nil — lib/x/reader/lit-reader.x ends its list
         // with the engine's own analyser, and an engine that had none there
@@ -158,10 +164,27 @@ pub(crate) fn score_one(
             continue;
         }
         if let Some(n) = score_with(e, h, text, from)? {
-            return Ok(Some(n));
+            if better(n, best) {
+                best = Some(n);
+            }
         }
     }
-    Ok(None)
+    Ok(best)
+}
+
+/// Does `score` beat `best`, by the reference's comparison?
+///
+/// `x_token_analyse` writes it as
+/// `score >= i_best || (i_best < 1 && score <= i_best)`, with `i_best` starting
+/// at zero. Two things fall out of that shape and both matter: `>=` means a
+/// LATER handler takes a tie, which is how the library's ordering still decides
+/// between equal-length claims; and while nothing positive has matched, a MORE
+/// negative score wins, so the sign works as a deferral.
+pub(crate) fn better(score: i64, best: Option<i64>) -> bool {
+    match best {
+        None => true,
+        Some(b) => score >= b || (b < 1 && score <= b),
+    }
 }
 
 /// The handlers in a slot: a list walked directly, a lone handler on its own.
@@ -177,8 +200,24 @@ pub(crate) fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
     }
 }
 
-/// Run ONE analyser state machine from `from`, answering the length it claims.
-fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Option<u64>, Cond> {
+/// Run ONE analyser state machine from `from`, answering the claim it makes.
+///
+/// The shape is `x_token_analyse`'s inner loop, and its two exits are the whole
+/// of how a claim is measured:
+///
+///   * the analyser RETURNS THE SCORE OBJECT — an accept. The claim is the
+///     score's own value, which `%score-set` filled in from the buffer span.
+///   * the loop ends otherwise, at end of input, with a score already set. The
+///     claim is `sign(score) * consumed`, the reference's "EOF auto-score".
+///
+/// A NON-ZERO SCORE IS NOT AN ACCEPT. This used to return the moment the score
+/// went non-zero, which reads one state too early: `%float-first-frac` sets the
+/// score on the first fractional digit and then returns the NEXT state, so
+/// `3.14` was claimed as `3` after seeing `3.1`. The reader read `3.1` and left
+/// `4` behind as another token, which is why the spec — comparing the last line
+/// printed — reported `4`, and why every float check in `ext/float.spec.md`
+/// failed. The reference stops on `p_obj == p_score` and on nothing else.
+fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Option<i64>, Cond> {
     let mark = e.root_mark();
     e.root_push(text);
     e.root_push(analyse);
@@ -189,7 +228,7 @@ fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Opti
     let mut state = analyse;
     let env = e.root_env();
 
-    loop {
+    let claim = loop {
         let chr = match read(&mut e.objects, &[buf]) {
             Ok(v) => v,
             Err(c) => {
@@ -197,11 +236,11 @@ fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Opti
                 return Err(c);
             }
         };
+        // END OF INPUT. The reference breaks WITHOUT rewinding the cursor, which
+        // is what leaves a span for the auto-score below: an undelimited `3.14`
+        // at the end of a source is a token.
         if chr.is_nil() {
-            // END OF INPUT. No accept branch runs, so nothing is scored — a
-            // token must be delimited.
-            e.root_truncate(mark);
-            return Ok(None);
+            break None;
         }
         let next = match e.call_with_values(state, &[buf, score, chr], env) {
             Ok(v) => v,
@@ -210,34 +249,46 @@ fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Opti
                 return Err(c);
             }
         };
-        let claimed = e.objects.as_int(score);
-        if claimed != 0 {
-            // THE LENGTH IS WHAT WAS CONSUMED, and the score only carries its
-            // SIGN. The reference computes `(score < 0 ? -1 : 1) * consumed`,
-            // and consumed is the buffer's own span — retain to cursor, after
-            // any `%buffer-unread` the acceptor performed.
-            //
-            // Taking the score's MAGNITUDE as the length happens to agree for an
-            // acceptor that sets it from `%buffer-len` — `%lit-accept` does — and
-            // is wrong for one that sets a bare sign.
-            //
-            // This is closer to the reference and it is NOT yet enough:
-            // `$"a{1}b"` still reads with nil parts, so something else about
-            // that analyser's drive is wrong too. Recorded rather than claimed.
+        // NOT RECOGNISED. The reference rewinds to the token start here, so the
+        // auto-score sees nothing consumed and this analyser claims nothing.
+        if next.is_nil() {
+            let at = e.objects.buf_retain(buf);
+            e.objects.set_buf_cursor(buf, at);
+            break None;
+        }
+        // The analyser asked to be re-entered on the next character.
+        if next == buf {
+            continue;
+        }
+        // ACCEPT.
+        if next == score {
+            break Some(e.objects.as_int(score));
+        }
+        // Replace the analyser and carry on.
+        state = next;
+        e.roots[mark + 1] = state;
+    };
+
+    let out = match claim {
+        Some(n) if n != 0 => Some(n),
+        Some(_) => None,
+        // EOF AUTO-SCORE: `(score < 0 ? -1 : 1) * consumed`, and only when
+        // something was both consumed and scored.
+        None => {
             let consumed = e
                 .objects
                 .buf_cursor(buf)
-                .saturating_sub(e.objects.buf_retain(buf));
-            e.root_truncate(mark);
-            return Ok(Some(consumed.max(1)));
+                .saturating_sub(e.objects.buf_retain(buf)) as i64;
+            let scored = e.objects.as_int(score);
+            if consumed > 0 && scored != 0 {
+                Some(if scored < 0 { -consumed } else { consumed })
+            } else {
+                None
+            }
         }
-        if !e.objects.truthy(next) {
-            e.root_truncate(mark);
-            return Ok(None);
-        }
-        state = next;
-        e.roots[mark + 1] = state;
-    }
+    };
+    e.root_truncate(mark);
+    Ok(out)
 }
 
 /// `(tok read-str TB text)` — drive every registered type over the text, score
@@ -296,18 +347,22 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
         // EVERY type is tried at this position and the longest claim wins.
         // Taking the first that matches would make registration order decide
         // the language, which is the distinction between a scorer and a search.
-        let mut best: Option<(u64, Obj)> = None;
+        let mut best: Option<i64> = None;
+        let mut winner = NIL;
         for &ty in &types {
             if let Some(n) = score_one(e, ty, text, at)? {
-                // `map_or`, not `is_none_or`: the latter is stable since 1.82 and
-                // this crate's declared MSRV is 1.78. Raising the floor for one
-                // call would be the tail wagging the dog.
-                if n > 0 && best.map_or(true, |(b, _)| n > b) {
-                    best = Some((n, ty));
+                if better(n, best) {
+                    best = Some(n);
+                    winner = ty;
                 }
             }
         }
-        let Some((n, ty)) = best else { break };
+        let Some(claim) = best else { break };
+        // The sign ordered the contest; the span is the magnitude.
+        let (n, ty) = (claim.unsigned_abs(), winner);
+        if n == 0 {
+            break;
+        }
 
         // The winner's `read` runs against a buffer positioned on exactly the
         // span it claimed: retain at the start, cursor at the end.
