@@ -38,8 +38,8 @@
 
 use crate::obj::{EnvId, Flags, Obj, Word};
 use crate::objects::{
-    Objects, FLAG_BUF, FLAG_ENV, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR, FLAG_SPAIR,
-    FLAG_TOKBASE, FLAG_WRAP,
+    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_ENV, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR,
+    FLAG_SPAIR, FLAG_TOKBASE, FLAG_WRAP,
 };
 
 /// The mark, kept in a spare bit of the flags word.
@@ -165,11 +165,17 @@ impl Objects {
                         stack.push(self.data(o, i).as_obj());
                     }
                 }
-                // retain (raw), cursor CELL, text.
+                // val mark (raw), the marks pair, the text, the RO flag (raw).
+                // The MARKS pair is marked but its kind refuses traversal below
+                // — its words are raw offsets, exactly the slots the reference's
+                // buffer mark handler declines to walk.
                 f if f == FLAG_BUF => {
                     stack.push(self.data(o, 1).as_obj());
                     stack.push(self.data(o, 2).as_obj());
                 }
+                // Raw marks: an object with NO object slots. Marked, never
+                // traversed.
+                f if f == FLAG_BUFMARKS => {}
                 // Everything else: either a raw value (int, char, prim index,
                 // foreign address, string byte offset) or an INSTANCE whose words
                 // are x-lang's to use. The raw kinds have no references to miss;

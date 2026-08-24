@@ -163,6 +163,12 @@ pub const FLAG_FOREIGN: Flags = Flags::new(0x80000);
 /// suite reads it as a word. Word 1 must be an OBJECT, because the suite
 /// reaches it with `rest` and then reads ITS word 0.
 pub const FLAG_BUF: Flags = Flags::new(0x20000);
+/// A buffer's inner bookkeeping pair — `(read . write)`. Its slots are RAW
+/// MARKS, not objects, which is why it is its own kind: the tracer must mark
+/// the object and refuse to traverse its slots, exactly as the reference's
+/// buffer mark handler does ("don't traverse its slots since they're raw char
+/// pointers, not objects").
+pub const FLAG_BUFMARKS: Flags = Flags::new(0x20001);
 
 /// A TOKENIZER BASE: a base with no bindings, carrying registered reader types.
 pub const FLAG_TOKBASE: Flags = Flags::new(0x40000);

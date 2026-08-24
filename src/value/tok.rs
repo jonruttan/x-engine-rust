@@ -5,7 +5,7 @@
 //! have nothing else to do with each other.
 
 use crate::obj::{Obj, Word, NIL};
-use crate::objects::{Objects, FLAG_BUF, FLAG_TOKBASE, FLAG_TOKEOF};
+use crate::objects::{Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_TOKBASE, FLAG_TOKEOF};
 
 impl Objects {
     /// A buffer over `text`, with both marks at `at`.
@@ -14,53 +14,43 @@ impl Objects {
     pub fn buf(&mut self, text: Obj, at: u64) -> Obj {
         let end = self.byte_len(text) as u64;
         let o = self.buf_writable(text, at, end);
-        // READ-ONLY: the tokenizer's kind. Its `retain` is a mark bump, where a
-        // writable buffer's retain COMPACTS — see `Objects::buf_ro`.
-        self.set_data(o, 4, Word(1));
+        self.set_data(o, 3, Word(1));
         o
     }
 
-    /// The reference buffer is THREE marks over one region — `(val . (read .
-    /// write))` — and the third mark is not decoration: `buf make` on a fresh
-    /// region starts EMPTY (read stops at WRITE, not at the region's end), and
-    /// `buf append` writes at the write mark INTO the region. This engine kept
-    /// only val and read, so a made buffer read its region's `str make` fill —
-    /// eight spaces — as content, and append rebuilt the text somewhere else
-    /// entirely. lib/buffer.spec.md answered "  " where "hi" was appended.
+    /// TRANSCRIBED from the reference: a buffer is
+    /// `(val . (read . write))` — x-lang's own walks depend on the shape.
+    /// `lib/x/reader/intrinsics.x` computes `%buffer-len` as
+    /// `(- (%cell-int (rest buffer)) (%cell-int buffer))` and `%buffer-unread`
+    /// writes the rest-cell's word directly, so `first(buffer)` MUST be the
+    /// val mark and `rest(buffer)` MUST be the object whose first word is the
+    /// read mark. The previous layout satisfied that by slot-order accident;
+    /// this one satisfies it by being the reference's structure.
+    ///
+    /// Two deviations, both forced by running a COLLECTOR the reference does
+    /// not run under stress, both invisible to x-lang:
+    ///   * marks are OFFSETS into the text, not raw pointers — subtraction
+    ///     still works, and an offset survives any future heap growth;
+    ///   * the text OBJECT rides in slot 2 and the RO flag in slot 3, past
+    ///     `rest`'s reach — the reference leaves the region's lifetime to the
+    ///     caller, which is sound only when nothing collects mid-use.
     pub fn buf_writable(&mut self, text: Obj, at: u64, write: u64) -> Obj {
-        let cursor = self.int(at as i64);
-        let w = self.int(write as i64);
-        let o = self.alloc(FLAG_BUF, 5);
+        let marks = self.alloc(FLAG_BUFMARKS, 2);
+        self.set_data(marks, 0, Word(at));
+        self.set_data(marks, 1, Word(write));
+        let o = self.alloc(FLAG_BUF, 4);
         self.set_data(o, 0, Word(at));
-        self.set_data(o, 1, cursor.word());
+        self.set_data(o, 1, marks.word());
         self.set_data(o, 2, text.word());
-        self.set_data(o, 3, w.word());
+        self.set_data(o, 3, Word(0));
         o
-    }
-
-    /// Read-only: retain bumps the mark instead of compacting. The reference
-    /// tags this with X_OBJ_FLAG_RO and says why — an RO buffer never refills,
-    /// so compaction buys it nothing, and per-token memcpy made `tok read-str`
-    /// O(input²) (#354). A WRITABLE buffer compacts so its region's tail
-    /// capacity comes back.
-    pub fn buf_ro(&self, o: Obj) -> bool {
-        self.data(o, 4).raw() != 0
-    }
-
-    /// The write mark — how much of the region holds real content.
-    pub fn buf_write(&self, o: Obj) -> u64 {
-        self.data(self.data(o, 3).as_obj(), 0).raw()
-    }
-
-    pub fn set_buf_write(&mut self, o: Obj, at: u64) {
-        let cell = self.data(o, 3).as_obj();
-        self.set_data(cell, 0, Word(at))
     }
 
     pub fn is_buf(&self, o: Obj) -> bool {
         self.is(o, FLAG_BUF)
     }
 
+    /// The val mark — the token start. `first(buffer)` in x-lang.
     pub fn buf_retain(&self, o: Obj) -> u64 {
         self.data(o, 0).raw()
     }
@@ -69,15 +59,31 @@ impl Objects {
         self.set_data(o, 0, Word(at))
     }
 
-    /// The cursor lives in its own cell because the suite reaches it with
-    /// `rest` and reads that object's word.
+    /// The read mark, in the inner pair's first word — `(rest buffer)`'s cell.
     pub fn buf_cursor(&self, o: Obj) -> u64 {
-        self.data(self.data(o, 1).as_obj(), 0).raw()
+        let marks = self.data(o, 1).as_obj();
+        self.data(marks, 0).raw()
     }
 
     pub fn set_buf_cursor(&mut self, o: Obj, at: u64) {
-        let cell = self.data(o, 1).as_obj();
-        self.set_data(cell, 0, Word(at))
+        let marks = self.data(o, 1).as_obj();
+        self.set_data(marks, 0, Word(at))
+    }
+
+    /// The write mark, in the inner pair's second word.
+    pub fn buf_write(&self, o: Obj) -> u64 {
+        let marks = self.data(o, 1).as_obj();
+        self.data(marks, 1).raw()
+    }
+
+    pub fn set_buf_write(&mut self, o: Obj, at: u64) {
+        let marks = self.data(o, 1).as_obj();
+        self.set_data(marks, 1, Word(at))
+    }
+
+    /// Read-only: retain bumps the mark instead of compacting (#354).
+    pub fn buf_ro(&self, o: Obj) -> bool {
+        self.data(o, 3).raw() != 0
     }
 
     pub fn buf_text(&self, o: Obj) -> Obj {
