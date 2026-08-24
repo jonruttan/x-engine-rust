@@ -496,7 +496,19 @@ impl Engine {
             // Handed the object model and nothing else. It cannot evaluate, it
             // cannot see an environment, and it cannot read the input stream.
             Body::Value(f) => f(&mut self.objects, &vals),
-            Body::Applicative(f) => f(self, &vals),
+            // THE DYNAMIC BASE, as an argument. p_base in the reference is
+            // dynamic — it flows through the CALL, so a host-defined handler
+            // running under `(b eval …)` sees the child. Deriving it from the
+            // environment's frame was tried first and is WRONG: a closure's
+            // body frames chain to its definition env, which makes the derived
+            // value lexical, and logo's read handlers — host closures filing
+            // instances into the logo base — stamped unresolved handles again.
+            // The frame's base backpointer stays for the collector and for
+            // introspection; the RUNNING base is this value.
+            Body::Applicative(f) => {
+                let base = self.base;
+                f(self, base, &vals)
+            }
             // The pure kinds: unwrap, apply the operator, re-box. This preamble
             // was repeated in eleven primitive bodies before the operator became
             // the primitive.

@@ -47,7 +47,7 @@ fn peek(e: &mut Engine, it: Obj) -> Result<Option<(Obj, Obj)>, Cond> {
 }
 
 /// MUTATES the iterator's state word — the imperative door.
-fn next(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn next(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let it = a[0];
     match peek(e, it)? {
         None => Ok(NIL),
@@ -60,14 +60,14 @@ fn next(e: &mut Engine, a: &[Obj]) -> EvalResult {
 
 /// PEEKS. Asking whether an iterator is exhausted must not exhaust it, so the
 /// state word is left exactly as it was found.
-fn empty(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn empty(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let it = a[0];
     let done = peek(e, it)?.is_none();
     Ok(e.objects.truth(done))
 }
 
 /// The FUNCTIONAL door: `(value . next-ITERATOR)`, receiver untouched.
-fn step(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn step(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let it = a[0];
     match peek(e, it)? {
         None => Ok(NIL),

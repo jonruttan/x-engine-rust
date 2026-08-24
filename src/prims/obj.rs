@@ -93,7 +93,7 @@ fn pair(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// walks the base's type-alist; a type that never lands there answers nil, and
 /// callers write into what they get back rather than checking. That is how
 /// `lib/x/type/promise.x` came to push a call handler through nil.
-fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn type_make(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     // The NAME arrives as a string; the handle is made from it here, and the
     // handle is what comes back. x-lang keeps the type-alist keyed by it and
     // passes it to `make-instance`, so answering the tree would hand the library
@@ -101,7 +101,7 @@ fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
     let text = e.objects.str_val(a[0]);
     let name = e.objects.handle(&text);
     let t = e.objects.type_new(name, a[1]);
-    e.file_type(t);
+    e.file_type_in(base, t);
     Ok(name)
 }
 
@@ -115,10 +115,10 @@ fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// Filing here rather than at each construction site is deliberate: this
 /// instruction is the only door x-lang has to a type, so anything the library
 /// can name has passed through it.
-fn type_of(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn type_of(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     let t = e.objects.type_of(a[0]);
     for fresh in e.objects.take_unfiled_types() {
-        e.file_type(fresh);
+        e.file_type_in(base, fresh);
     }
     Ok(t)
 }
@@ -149,8 +149,8 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// answered "no such static member".
 ///
 /// The stamping did not cause that. It exposed it.
-fn make_instance(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let tree = e.resolve_tree(a[0]);
+fn make_instance(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let tree = e.resolve_tree_in(base, a[0]);
     let o = e.objects.instance(tree, 2);
     e.objects.set_data(o, 0, a[1].word());
     Ok(o)
@@ -158,7 +158,7 @@ fn make_instance(e: &mut Engine, a: &[Obj]) -> EvalResult {
 
 /// The type word is written from the operand, whatever it is. Whether that
 /// operand is a REGISTERED type is x-lang's question to ask.
-fn obj_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn obj_make(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let tree = e.resolve_tree(a[0]);
     let n = e.objects.as_int(a[1]).max(0) as usize;
     Ok(e.objects.instance(tree, n))

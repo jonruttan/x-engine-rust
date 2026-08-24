@@ -262,10 +262,16 @@ impl Engine {
     /// `make-type` built lives there and nowhere else. A value that is already a
     /// tree passes through, so callers need not know which they hold.
     pub(crate) fn resolve_tree(&mut self, t: Obj) -> Obj {
+        let base = self.base;
+        self.resolve_tree_in(base, t)
+    }
+
+    /// Resolve against a NAMED base — the threaded-`p_base` spelling.
+    pub(crate) fn resolve_tree_in(&mut self, base: Obj, t: Obj) -> Obj {
         if !self.objects.is_handle(t) {
             return t;
         }
-        let alist = crate::base::get(&self.objects, self.base, crate::base::TYPE_ALIST);
+        let alist = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
         let mut at = alist;
         while self.objects.is_cell(at) {
             let entry = self.objects.first(at);
@@ -291,6 +297,10 @@ impl Engine {
     /// separate sentinel. The library only cares about the alist's shape.
     pub(crate) fn file_type(&mut self, t: Obj) {
         let base = self.base;
+        self.file_type_in(base, t)
+    }
+
+    pub(crate) fn file_type_in(&mut self, base: Obj, t: Obj) {
         // Keyed by the HANDLE, valued by the TREE — the shape x-lang walks:
         // `type by-atom` is handed what `type of` answered and expects the tree
         // back.
@@ -416,6 +426,16 @@ impl Engine {
     /// The displaced base rides `base_stack`, which the collector roots — the
     /// host base may have no other reference while a child runs.
     pub fn in_base<T>(&mut self, base: Obj, f: impl FnOnce(&mut Self) -> T) -> T {
+        // IDENTITY ON THE CURRENT BASE. The active table lives on Objects, not
+        // in the map — the map holds only DISPLACED tables — so bracketing into
+        // the base that is already running would swap in an empty table and
+        // every symbol interned inside would be a different object. That broke
+        // `$"…"` interpolation wholesale the day read_str started bracketing
+        // its handlers: the host base re-entered itself and its own names went
+        // strange.
+        if base == self.base {
+            return f(self);
+        }
         let table = self.base_syms.remove(&base).unwrap_or_default();
         let outer = self.objects.swap_symbols(table);
         self.base_stack.push(self.base);

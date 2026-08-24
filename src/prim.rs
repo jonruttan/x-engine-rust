@@ -53,7 +53,10 @@ pub enum Body {
     Value(fn(&mut Objects, &[Obj]) -> Result<Obj, Cond>),
     /// Needs to reach back into EVALUATION or the input stream: iterators drive
     /// a step function, `io read` consumes the program's own text.
-    Applicative(fn(&mut Engine, &[Obj]) -> EvalResult),
+    /// The BASE arrives as the reference's `p_base` does — an argument, derived
+    /// from the running environment's frame, so `(b eval …)` needs no bracket
+    /// for these to see the right registry.
+    Applicative(fn(&mut Engine, Obj, &[Obj]) -> EvalResult),
     /// Arguments arrive AS WRITTEN, with the environment they were written in.
     /// `lit`, `def`, `fn`, `op`, `match`, `guard`, `set!` — everything whose
     /// whole purpose is to decide what gets evaluated.
@@ -230,7 +233,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         n: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),
@@ -245,7 +248,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         n: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: None,
@@ -263,7 +266,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         min: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: None,
@@ -282,7 +285,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         min: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),
@@ -296,7 +299,7 @@ impl PrimDef {
     pub const fn var_bare(
         bare: &'static str,
         min: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),
@@ -310,7 +313,7 @@ impl PrimDef {
     pub const fn bare_full(
         bare: &'static str,
         n: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),

@@ -20,7 +20,7 @@ use crate::prim::PrimDef;
 /// libc call. The conformance contract asks only that the number not go
 /// backwards, so the deviation cost nothing a test could see and everything a
 /// profile would: it attributed waiting to work.
-fn clock(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn clock(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.objects.int(crate::foreign::cpu_micros()))
 }
 
@@ -28,7 +28,7 @@ fn clock(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 ///
 /// BARE, like `alloc-limit!`, because the REPL arms it and the conformance suite
 /// reaches it without a library.
-fn sigint_install(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn sigint_install(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     crate::foreign::interrupt_install();
     let flag = e.sigint_flag;
     e.objects.set_data(flag, 0, crate::obj::Word(0));
@@ -36,7 +36,7 @@ fn sigint_install(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 }
 
 /// `(sigint-restore)` — the default disposition, so the process ends as it began.
-fn sigint_restore(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn sigint_restore(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     crate::foreign::interrupt_restore();
     Ok(NIL)
 }

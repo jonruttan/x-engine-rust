@@ -67,7 +67,7 @@ fn marshal(e: &Engine, o: Obj) -> u64 {
 }
 
 /// `(ffi dlopen path flags)` — nil path is the SELF handle.
-fn dlopen(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn dlopen(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let path = cstr(e, a[0]);
     let flags = e.objects.as_int(a[1]) as i32;
     let h = foreign::open(path.as_deref(), flags);
@@ -80,7 +80,7 @@ fn dlopen(e: &mut Engine, a: &[Obj]) -> EvalResult {
 
 /// `(ffi dlsym lib "name")` — nil when unresolvable, because the library
 /// branches on a nil handle rather than guarding every lookup.
-fn dlsym(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn dlsym(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let Some(name) = cstr(e, a[1]) else {
         return Ok(NIL);
     };
@@ -94,7 +94,7 @@ fn dlsym(e: &mut Engine, a: &[Obj]) -> EvalResult {
 }
 
 /// `(ptr call f args...)` — the integer convention, up to seven arguments.
-fn ptr_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn ptr_call(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let f = Foreign(marshal(e, a[0]));
     let args: Vec<u64> = a[1..].iter().map(|&o| marshal(e, o)).collect();
     let r = foreign::call_ints(f, &args);
@@ -113,7 +113,7 @@ fn ptr_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// most of these conventions do not call anything at all. `d+d` adds two
 /// doubles; only `d->d`, `dd->d` and `s0->d` reach through the pointer, and only
 /// those three touch [`crate::foreign`].
-fn ffi_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn ffi_call(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let conv = e.objects.str_val(a[0]);
     let bits: Vec<u64> = a[2..].iter().map(|&o| marshal(e, o)).collect();
     let arg = |n: usize| bits.get(n).copied().unwrap_or(0);
@@ -152,7 +152,7 @@ fn ffi_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
 }
 
 /// `(syscall n args...)` — bare, because `lib/x/sys/` reaches it by name.
-fn syscall(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn syscall(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let n = e.objects.as_int(a[0]);
     let args: Vec<u64> = a[1..].iter().map(|&o| marshal(e, o)).collect();
     Ok(e.objects.int(foreign::kernel(n, &args)))

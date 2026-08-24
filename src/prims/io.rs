@@ -34,7 +34,7 @@ fn write_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// One byte from the input stream; nil at end of input. A NUL byte read from the
 /// stream is a char like any other, so exhaustion and a zero byte stay distinct.
-fn read_char(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn read_char(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     match e.read_byte() {
         Some(b) => Ok(e.objects.char_new(b as u32)),
         None => Ok(NIL),
@@ -46,7 +46,7 @@ fn read_char(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// Folding end-of-input to nil loses the difference between reading the value
 /// `()` and running out, and that is deliberate: a caller of `read` has no use
 /// for the distinction, and the reference folds it the same way.
-fn read_form(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn read_form(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.read_form()?.unwrap_or(NIL))
 }
 
@@ -59,7 +59,7 @@ fn read_form(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// arrives as a raise. Folding the sentinel here would merge the first two, and
 /// a REPL that cannot tell `()` from ctrl-d either exits on a valid form or
 /// never exits at all.
-fn repl_read(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn repl_read(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.read_form()?.unwrap_or(e.token_eof))
 }
 

@@ -31,7 +31,7 @@ use crate::prim::PrimDef;
 /// Must INCREASE across an allocation, which is the whole of what the contract
 /// asks — so it counts allocations EVER and collection does not lower it. The
 /// live count is a different number and is not what x-lang asked for here.
-fn count(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn count(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let n = e.objects.alloc_count() as i64;
     Ok(e.objects.int(n))
 }
@@ -42,7 +42,7 @@ fn count(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// and that collecting twice looks the same as once. The first is what the mark
 /// phase is for; the second follows from the mark being computed fresh each
 /// time, so a second collection immediately after a first finds nothing new.
-fn collect(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn collect(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let freed = e.collect();
     if std::env::var("X_HEAP_STATS").is_ok() {
         eprintln!(
@@ -62,11 +62,11 @@ fn collect(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// x-lang leaves their call shapes undefined and says so; they are here because
 /// the capability is the whole group, and an engine that declared `isa/gc` while
 /// omitting two rows would be claiming a group it does not cover.
-fn mark(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn mark(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
-fn sweep(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn sweep(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
@@ -74,20 +74,20 @@ fn sweep(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
 ///
 /// Answers the object, so a caller can pin inline. Nothing to record: every
 /// object here already survives everything.
-fn pin(_e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn pin(_e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(a[0])
 }
 
 /// `(heap mark-hook! f)` — prepend to the base's mark-hook list.
-fn mark_hook(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let b = e.base;
+fn mark_hook(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let b = base;
     base::push(&mut e.objects, b, base::MARK_HOOKS, a[0]);
     Ok(a[0])
 }
 
 /// `(heap free-hook! f)` — prepend to the base's free-hook list.
-fn free_hook(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let b = e.base;
+fn free_hook(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let b = base;
     base::push(&mut e.objects, b, base::FREE_HOOKS, a[0]);
     Ok(a[0])
 }
@@ -98,8 +98,8 @@ fn free_hook(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// The engine's part is RECORDING it. Whether a later collection honours the
 /// list is the collector's behaviour, and this engine's collector is the empty
 /// one.
-fn mark_root(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let b = e.base;
+fn mark_root(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let b = base;
     base::push(&mut e.objects, b, base::MARK_ROOTS, a[0]);
     Ok(a[0])
 }
@@ -114,9 +114,9 @@ fn mark_root(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// It is ENFORCED, not merely recorded. Collection is EXPLICIT-ONLY, so nothing
 /// stands between a runaway loop and the machine except this — and unbounded
 /// allocation has taken this project's machine down before.
-fn alloc_limit(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn alloc_limit(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     let n = e.objects.as_int(a[0]);
-    let b = e.base;
+    let b = base;
     base::set(&mut e.objects, b, base::ALLOC_LIMIT, a[0]);
     e.alloc_limit = if n > 0 { Some(n as usize) } else { None };
     Ok(a[0])

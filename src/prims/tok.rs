@@ -341,7 +341,7 @@ pub(crate) fn analyse(
 
 /// `(tok read-str TB text)` — drive every registered type over the text, score
 /// them against each other, and answer the LIST of tokens produced.
-fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let text = a[1];
     let gmark = e.root_mark();
     e.root_push(text);
@@ -388,9 +388,8 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
     for t in &types {
         e.root_push(*t);
     }
-    let env = e.root_env();
-
     let target = a[0];
+    let env = e.root_env();
     let mut tokens: Vec<Obj> = Vec::new();
     let mut at = 0u64;
     while at < len {
@@ -485,7 +484,7 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// answers `(lit X)` by reading X through here. It used to re-tokenize the
 /// buffer's whole text and answer a LIST of every token in it, which is a
 /// different instruction entirely.
-fn read_tok(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn read_tok(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.read_form_at(a[0])
 }
 
@@ -515,7 +514,7 @@ fn make_tok(a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
 /// The HANDLE comes back, not the tree: `x_prim_base_make_type` builds the name
 /// atom, files the tree, and answers the atom, because the handle is what
 /// everything downstream compares.
-fn make_type(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn make_type(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let text = e.objects.str_val(a[1]);
     let name = e.objects.handle(&text);
     let ty = e.objects.type_new(name, a[2]);

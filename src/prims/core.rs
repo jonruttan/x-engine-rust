@@ -51,7 +51,7 @@ fn apply(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 /// The reflective root. Everything reflective starts here: the prelude walks the
 /// committed base paths from `(%base)` to reach the prims catalog, so an engine
 /// without it cannot even be asked what it provides.
-fn base(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn base(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.base)
 }
 
@@ -106,7 +106,7 @@ fn atomic(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 /// own tail so it defines the symbol in the caller's env" — so `(doc (def or …))`
 /// defined nothing, and `or` was Unbound a hundred lines later with no error at
 /// the point of loss.
-fn tail_eval(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn tail_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     // An env operand that is not an env is a caller error, not a licence to pick
     // one. Falling back to the root used to hide exactly the bug above.
     if !e.objects.is_env(a[1]) {

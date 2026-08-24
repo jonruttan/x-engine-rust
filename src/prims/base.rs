@@ -15,12 +15,12 @@ use crate::prim::PrimDef;
 /// The distinction is x-lang's isolation story: a child base is born with the
 /// instruction set and NOTHING of the host's, so `(+ 2 3)` works inside it while
 /// a name the host defined does not resolve.
-fn base_make(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn base_make(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.make_base())
 }
 
 /// `(base eval B expr)` — evaluate inside another base.
-fn base_eval(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn base_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let env = e.base_env(a[0]);
     let (base, form) = (a[0], a[1]);
     // The FORM is not translated. It carries whatever symbols the caller read,
@@ -35,7 +35,7 @@ fn base_eval(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// makes it a capability model rather than a naming convenience is that a name
 /// bound into one base is unbound in another: bases are rootless, so nothing is
 /// shared unless it was handed over.
-fn base_bind(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn base_bind(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let env = e.base_env(a[0]);
     e.envs.bind(env, a[1], a[2]);
     Ok(a[2])
