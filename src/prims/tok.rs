@@ -359,29 +359,30 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
     // A TOKBASE drives the scorer over the types registered in it. That is the
     // protocol x-lang's conformance suite exercises, delimiting included: an
     // undelimited `"42"` must yield no tokens at all.
-    if !e.objects.is_tokbase(a[0]) {
-        // A BASE reads the text as the engine reads any other source.
-        //
-        // It cannot go through the scorer here, and the reason is this engine's
-        // deviation rather than the caller's mistake: the reference expresses its
-        // BUILT-IN syntax as analyse/read handlers on the builtin types, so
-        // scoring plain text finds them. This engine keeps that syntax in Rust
-        // (see crate::form), so the scorer would find nothing registered and
-        // answer no tokens -- which is exactly what happened to every chunk of a
-        // `$"…"` literal.
-        let text = e.objects.str_val(text);
-        let mut r = crate::read::Reader::new(&text);
-        let mut forms: Vec<Obj> = Vec::new();
-        while let Some(f) = e.read_form_from(&mut r)? {
-            forms.push(f);
-        }
-        let mut list = NIL;
-        for &f in forms.iter().rev() {
-            list = e.objects.pair(f, list);
-        }
-        return Ok(list);
-    }
-    let types: Vec<Obj> = e.objects.list(e.objects.tokbase_types(a[0])).collect();
+    // THE FIRST ARGUMENT'S TYPE-ALIST IS THE TYPE LIST. For a token base that
+    // is its own list; for a REAL base it is the base's type-alist — the same
+    // registry `make-instance` and `type ?` read, which is what lets an app
+    // register a language on a child base and have every consumer agree
+    // (apps/logo). The whole drive runs IN that base, so a read handler's
+    // `%make-instance` resolves its handle where the type was filed.
+    //
+    // Types with no analyse handler cost one nil check, exactly as in the form
+    // reader. When NO type claims a position, a real base falls back to the
+    // engine's own reader for ONE form — this engine keeps its built-in syntax
+    // in Rust where the reference expresses it as handlers on the builtin
+    // types, so the fallback is the same implicit tail the reference gets by
+    // construction. That keeps `$"…"` interpolation working (a plain host base
+    // claims nothing and reads forms) while a registered language wins wherever
+    // its analysers claim.
+    let is_base_arg = !e.objects.is_tokbase(a[0]);
+    let types: Vec<Obj> = if is_base_arg {
+        let alist = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
+        let entries: Vec<Obj> = e.objects.list(alist).collect();
+        entries.iter().map(|&entry| e.objects.rest(entry)).collect()
+    } else {
+        e.objects.list(e.objects.tokbase_types(a[0])).collect()
+    };
+
     // The registered types are held in a Rust Vec for the whole drive, and the
     // handlers they carry are x-lang code that can collect.
     for t in &types {
@@ -389,11 +390,29 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
     }
     let env = e.root_env();
 
+    let target = a[0];
     let mut tokens: Vec<Obj> = Vec::new();
     let mut at = 0u64;
     while at < len {
         // The same contest the form reader runs. See `analyse`.
-        let Some((ty, claim)) = analyse(e, &types, text, at)? else {
+        let claim = if is_base_arg {
+            e.in_base(target, |e| analyse(e, &types, text, at))?
+        } else {
+            analyse(e, &types, text, at)?
+        };
+        let Some((ty, claim)) = claim else {
+            if is_base_arg {
+                // No registered type claims here: the engine's own reader takes
+                // one form, or the input is done.
+                let src = e.objects.bytes_of(text);
+                let mut r = crate::read::Reader::from_bytes(src, at as usize, text);
+                let form = e.in_base(target, |e| e.read_form_from(&mut r))?;
+                let Some(form) = form else { break };
+                e.root_push(form);
+                tokens.push(form);
+                at = r.pos() as u64;
+                continue;
+            }
             break;
         };
         // The sign ordered the contest; the span is the magnitude.
@@ -426,7 +445,11 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
                 let fmark = e.root_mark();
                 e.root_push(fresh);
                 e.root_push(r);
-                let got = e.call_with_values(r, &[fresh], env)?;
+                let got = if is_base_arg {
+                    e.in_base(target, |e| e.call_with_values(r, &[fresh], env))?
+                } else {
+                    e.call_with_values(r, &[fresh], env)?
+                };
                 e.root_truncate(fmark);
                 if !got.is_nil() {
                     token = got;
@@ -473,11 +496,38 @@ fn make_tok(a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.tokbase())
 }
 
-/// `(base make-type TB "NAME" handlers)` — register a reader type.
-fn make_type(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let ty = a_.type_new(a[1], a[2]);
-    a_.tokbase_add(a[0], ty);
-    Ok(ty)
+/// `(base make-type TARGET "NAME" handlers)` — register a type, ANSWERING ITS
+/// HANDLE.
+///
+/// THE TARGET'S TYPE-ALIST IS THE REGISTRY. In the reference the first argument
+/// is a real base and the type is filed in ITS type-alist — the same list
+/// `make-instance` resolves a handle through, `type ?` reads a name from, and
+/// the tokenizer contest iterates. One data structure, three consumers; apps
+/// depend on the identity (apps/logo makes a child base, prunes its alist with
+/// raw first/rest, and dispatches every token with `%type?`).
+///
+/// This engine kept a SEPARATE tokbase object for the scorer's types, so a type
+/// registered for reading was invisible to `make-instance` and `type ?` — logo
+/// tokenized its words and then recognised none of them. The tokbase path stays
+/// for the conformance suite's bare-protocol checks; a real base files where
+/// the reference files.
+///
+/// The HANDLE comes back, not the tree: `x_prim_base_make_type` builds the name
+/// atom, files the tree, and answers the atom, because the handle is what
+/// everything downstream compares.
+fn make_type(e: &mut Engine, a: &[Obj]) -> EvalResult {
+    let text = e.objects.str_val(a[1]);
+    let name = e.objects.handle(&text);
+    let ty = e.objects.type_new(name, a[2]);
+    if e.objects.is_tokbase(a[0]) {
+        e.objects.tokbase_add(a[0], ty);
+    } else {
+        let entry = e.objects.spair(name, ty);
+        let head = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
+        let cell = e.objects.spair(entry, head);
+        crate::base::set(&mut e.objects, a[0], crate::base::TYPE_ALIST, cell);
+    }
+    Ok(name)
 }
 
 pub const TABLE: &[PrimDef] = &[
@@ -492,7 +542,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::both_full("token-read-string", "tok", "read-str", 2, read_str),
     PrimDef::filed_full("tok", "read", 1, read_tok),
     PrimDef::filed("base", "make-tok", 0, make_tok),
-    PrimDef::filed("base", "make-type", 3, make_type),
+    PrimDef::filed_full("base", "make-type", 3, make_type),
 ];
 
 #[cfg(test)]

@@ -64,6 +64,8 @@ pub struct Engine {
     pub(crate) env_roots: Vec<EnvId>,
     /// Already collecting: a hook's own evaluation must not recurse on hooks.
     pub(crate) in_gc: bool,
+    /// Bases displaced by `in_base`, still live while their children run.
+    pub(crate) base_stack: Vec<Obj>,
     /// How many `guard` bodies are on the stack.
     ///
     /// The interrupt flag only becomes a STOP while a handler can catch it —
@@ -142,6 +144,7 @@ impl Engine {
             roots: Vec::new(),
             env_roots: Vec::new(),
             in_gc: false,
+            base_stack: Vec::new(),
             guard_depth: 0,
             gc_stress: std::env::var("X_GC_STRESS")
                 .ok()
@@ -397,10 +400,26 @@ impl Engine {
     ///
     /// Bracketed rather than assigned, because a base can evaluate into another
     /// base: the table that was running has to come back, not the engine's own.
+    /// ALSO THE CURRENT BASE, not just the table. The reference has no
+    /// equivalent bracket because it needs none: `p_base` is an ARGUMENT,
+    /// threaded through every call, so "which base is current" is data flowing
+    /// through the program. This engine keeps it in a field — and the bracket
+    /// used to swap the symbol table while leaving the field alone, so under
+    /// `(b eval …)` every prim that consults the base (`resolve_tree`,
+    /// `file_type`, `make-instance`) read the HOST's registry while running the
+    /// child's code. A type filed in a child base could never be found by the
+    /// code that filed it.
+    ///
+    /// The displaced base rides `base_stack`, which the collector roots — the
+    /// host base may have no other reference while a child runs.
     pub fn in_base<T>(&mut self, base: Obj, f: impl FnOnce(&mut Self) -> T) -> T {
         let table = self.base_syms.remove(&base).unwrap_or_default();
         let outer = self.objects.swap_symbols(table);
+        self.base_stack.push(self.base);
+        let prev = std::mem::replace(&mut self.base, base);
         let result = f(self);
+        self.base = prev;
+        self.base_stack.pop();
         let inner = self.objects.swap_symbols(outer);
         self.base_syms.insert(base, inner);
         result

@@ -289,6 +289,7 @@ impl crate::engine::Engine {
         }
 
         // The evaluator's live values.
+        r.extend(self.base_stack.iter().copied());
         r.extend(self.roots.iter().copied());
 
         // The library's OWN roots — `heap mark-root!`. The reference walks this
