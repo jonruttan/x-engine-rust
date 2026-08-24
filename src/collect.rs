@@ -290,6 +290,15 @@ impl crate::engine::Engine {
 
         // The evaluator's live values.
         r.extend(self.roots.iter().copied());
+
+        // The library's OWN roots — `heap mark-root!`. The reference walks this
+        // list as a third mark pass, beside the base tree and the root chain,
+        // because its tree walk descends only spair-typed pairs and the list is
+        // built from ordinary ones. This engine traces both kinds, so the list
+        // was reached incidentally through the base; naming it here makes the
+        // guarantee the instruction promises independent of that accident.
+        let roots_list = crate::base::get(&self.objects, self.base, crate::base::MARK_ROOTS);
+        r.extend(self.objects.list(roots_list));
         r
     }
 
@@ -318,6 +327,26 @@ impl crate::engine::Engine {
     /// and each pinned everything it had ever bound, so only 46% of the heap
     /// could be reclaimed.
     pub fn collect(&mut self) -> usize {
+        // HOOKS FIRST, BEFORE ANY MARKING. Not a detail — the reference paid for
+        // this with a use-after-free. Everything a hook allocates is born
+        // unmarked, so if the hooks ran after the mark passes, an allocation
+        // that ESCAPED into reachable state (a `heap mark-root!` spine cell, an
+        // int a hook stored through `set!`) would be freed by this same sweep,
+        // leaving a reachable dangling pointer for the NEXT collection's mark
+        // walk to follow. Usually silent, because the freed chunk is typically
+        // recycled and the walk just traverses a reinterpreted live object.
+        // Running them here means the later passes mark whatever escaped, while
+        // transient hook garbage is still swept — and a root registered from
+        // inside a hook counts in THIS cycle. See x_heap_mark_phase.
+        //
+        // Re-entrancy is the price: a hook evaluates x-lang, which allocates and
+        // can trip the stress counter. `in_gc` makes the nested call collect
+        // without re-running hooks rather than recursing on them.
+        if !self.in_gc {
+            self.in_gc = true;
+            self.run_gc_hooks(crate::base::MARK_HOOKS);
+        }
+
         let mut ostack = self.root_set();
         let mut estack = self.env_root_set();
         let mut seen = vec![false; self.envs.frame_count()];
@@ -335,10 +364,36 @@ impl crate::engine::Engine {
             }
         }
 
+        // Between mark and sweep, as the reference does it.
+        self.run_gc_hooks(crate::base::FREE_HOOKS);
+
         let freed_frames = self.envs.sweep(&seen);
         let freed = self.objects.sweep();
         let _ = freed_frames;
+        self.in_gc = false;
         freed
+    }
+
+    /// Invoke every callable on one of the base's hook lists, with NO arguments.
+    ///
+    /// The reference builds a one-cell call form per hook — `(hook)` — and runs
+    /// it through the trampoline, so a `fn` sees only its self parameter. These
+    /// lists are the library's, and an engine that merely COLLECTED registrations
+    /// without ever calling them would satisfy every spec that asks whether a
+    /// hook "survives a collect" while doing nothing at all. This engine did
+    /// exactly that, and the gc-hooks spec passed 13/13 throughout.
+    fn run_gc_hooks(&mut self, slot: usize) {
+        let list = crate::base::get(&self.objects, self.base, slot);
+        if list.is_nil() {
+            return;
+        }
+        let hooks: Vec<Obj> = self.objects.list(list).collect();
+        let env = self.root_env();
+        for h in hooks {
+            // A raising hook must not abort the collection.
+            // A raising hook must not abort the collection.
+            let _ = self.call_with_values(h, &[], env);
+        }
     }
 
     /// Hold `o` live across anything that might collect.

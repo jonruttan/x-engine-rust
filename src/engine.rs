@@ -62,6 +62,8 @@ pub struct Engine {
     /// discipline: an activation frame is named by a Rust local from the moment
     /// it is pushed until its body starts running.
     pub(crate) env_roots: Vec<EnvId>,
+    /// Already collecting: a hook's own evaluation must not recurse on hooks.
+    pub(crate) in_gc: bool,
     /// Collect every N evaluation steps. Zero — the default — never collects on
     /// its own, which is what `gc/explicit-only` promises.
     pub(crate) gc_stress: u32,
@@ -131,6 +133,7 @@ impl Engine {
             loading: Vec::new(),
             roots: Vec::new(),
             env_roots: Vec::new(),
+            in_gc: false,
             gc_stress: std::env::var("X_GC_STRESS")
                 .ok()
                 .and_then(|v| v.parse().ok())
