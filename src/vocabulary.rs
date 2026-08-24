@@ -164,6 +164,9 @@ pub const CHAR_UNKNOWN: &str = "?";
 /// Declared in `tools/contract/isa.x` too, which is the manifest x-lang reads;
 /// `tools/check/isa.sh` proves the two agree by asking the built engine.
 /// The truth answer of every predicate, and the name that evaluates to it.
+/// What an interrupt raises, so a guard can recognise it.
+pub const MSG_STOP: &str = "STOP";
+
 pub const TRUE: &str = "#t";
 pub const FALSE: &str = "#f";
 pub const ARGS: &str = "args";

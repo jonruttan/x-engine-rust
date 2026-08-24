@@ -205,6 +205,24 @@ impl Engine {
                 let flag = self.sigint_flag;
                 self.objects.set_data(flag, 0, crate::obj::Word(1));
             }
+            // AND THEN ACT ON IT — but only while a guard can catch it. The
+            // reference raises `STOP` here, clearing the flag first so a handler
+            // that returns does not re-trip immediately, and it checks that an
+            // error handler is active because an uncatchable raise would end the
+            // run instead of interrupting the computation.
+            //
+            // Publishing the flag without reading it is what this did before, so
+            // x-lang could set `%sigint-flag` by hand — which is exactly how
+            // core/signal.spec.md tests it, no signal involved — and nothing
+            // happened.
+            if self.guard_depth > 0 {
+                let flag = self.sigint_flag;
+                if self.objects.as_int(flag) != 0 {
+                    self.objects.set_data(flag, 0, crate::obj::Word(0));
+                    let v = self.objects.str_new(crate::vocabulary::MSG_STOP);
+                    break Err(Cond::Raised(v));
+                }
+            }
             // STRESS: collect far more often than x-lang ever would, to shake
             // out a root nobody remembered. A missing root frees something live,
             // and under normal use that might not surface for hours — here it
@@ -392,6 +410,35 @@ impl Engine {
             // complaint. Answering the callee keeps the two paths consistent.
             None => Ok(callee),
         }
+    }
+
+    /// Call a combiner with values already computed, IN TAIL POSITION.
+    ///
+    /// The difference from [`Engine::call_with_values`] is the whole of tail-call
+    /// elimination: that one `settle`s, running any parked tail to a value
+    /// because its callers — reader handlers, GC hooks, the class dispatcher —
+    /// want one. This lets the tail stay parked so the caller's trampoline
+    /// continues it, which is what `x_prim_apply` does when the callee is a
+    /// procedure: it binds the parameters and returns `x_eval_body_tco`.
+    ///
+    /// `apply` needs it because `let` is built on it — lib/x/core/control.x
+    /// expands `(let ...)` to `(apply (eval (fn ...)) vals)` — so settling here
+    /// made every `let` in a tail position grow the Rust stack. 50,000 frames of
+    /// `(let ((m (- n 1))) (self m))` overflowed it.
+    pub fn call_with_values_tail(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        let mark = self.root_mark();
+        self.root_push(callee);
+        for v in vals {
+            self.root_push(*v);
+        }
+        let spine = self.quote_values(vals);
+        self.root_push(spine);
+        let out = match self.combine(callee, spine, env) {
+            Some(r) => r,
+            None => Ok(callee),
+        };
+        self.root_truncate(mark);
+        out
     }
 
     /// Call a combiner with values already computed.

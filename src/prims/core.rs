@@ -44,7 +44,8 @@ fn apply(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let l_form = e.nth(args, 1);
     let list = e.eval(l_form, env)?;
     let vals: Vec<Obj> = e.objects.list(list).collect();
-    e.call_with_values(f, &vals, env)
+    // TAIL, not settled: `let` expands through here.
+    e.call_with_values_tail(f, &vals, env)
 }
 
 /// The reflective root. Everything reflective starts here: the prelude walks the

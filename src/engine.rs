@@ -64,6 +64,14 @@ pub struct Engine {
     pub(crate) env_roots: Vec<EnvId>,
     /// Already collecting: a hook's own evaluation must not recurse on hooks.
     pub(crate) in_gc: bool,
+    /// How many `guard` bodies are on the stack.
+    ///
+    /// The interrupt flag only becomes a STOP while a handler can catch it —
+    /// `x_eval_error` with no handler would take down the whole run, so the
+    /// reference tests `x_eval_field_error_handler` before raising. That field
+    /// is a base slot there; `guard` is Rust-side here, so the depth is the
+    /// same question asked of this stack.
+    pub(crate) guard_depth: u32,
     /// Collect every N evaluation steps. Zero — the default — never collects on
     /// its own, which is what `gc/explicit-only` promises.
     pub(crate) gc_stress: u32,
@@ -134,6 +142,7 @@ impl Engine {
             roots: Vec::new(),
             env_roots: Vec::new(),
             in_gc: false,
+            guard_depth: 0,
             gc_stress: std::env::var("X_GC_STRESS")
                 .ok()
                 .and_then(|v| v.parse().ok())
