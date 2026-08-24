@@ -77,8 +77,22 @@ impl Objects {
     /// The one end-of-input sentinel. Allocated once per engine, never compared
     /// by value: `lib/x/repl/loop.x` tests it with `(obj same?)` and says why --
     /// "eq? compares value words and could conflate a satom with an integer".
+    /// The end-of-input sentinel, whose slot 0 holds its OWN ADDRESS.
+    ///
+    /// Not decoration. `eq?` compares the operand word of both sides without
+    /// asking their types (see `prims::obj::eq`, and the reference's
+    /// `x_prim_eq`), so a sentinel whose word were 0 would be `eq?` to the
+    /// integer 0 — and `lib/x/repl/loop.x` reads a form, compares it against the
+    /// sentinel, and would treat a literal `0` in the input as end-of-file.
+    ///
+    /// The reference has the same comparison and does not have the problem,
+    /// because its sentinel is `x_token_eof_prim`, a prim whose word is a
+    /// function pointer. An address is the same answer: unique, and never a
+    /// small integer.
     pub fn token_eof(&mut self) -> Obj {
-        self.alloc(FLAG_TOKEOF, 1)
+        let o = self.alloc(FLAG_TOKEOF, 1);
+        self.set_data(o, 0, Word(o.word().raw()));
+        o
     }
 
     pub fn is_token_eof(&self, o: Obj) -> bool {

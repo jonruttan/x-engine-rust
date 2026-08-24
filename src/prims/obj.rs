@@ -34,13 +34,28 @@ use crate::prim::PrimDef;
 /// earlier: `(eq? "a" "a")` does not hold. The reference reads slot 0 either
 /// way — for an atom that is its value, and for a string it is the pointer.
 fn eq(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let same = if a_.is_int(a[0]) && a_.is_int(a[1]) {
-        a_.int_val(a[0]) == a_.int_val(a[1])
-    } else if a_.is_char(a[0]) && a_.is_char(a[1]) {
-        a_.as_char(a[0]) == a_.as_char(a[1])
-    } else {
-        a[0] == a[1]
-    };
+    // THE OPERAND WORD, NOT THE TYPE. The reference is one expression:
+    //
+    //     a == b || (!isnil(a) && !isnil(b) && x_intval(a) == x_intval(b))
+    //
+    // It reads slot 0 of BOTH operands and compares the words. It does not ask
+    // whether the two are the same kind — so a CHARACTER and the INTEGER of its
+    // code are `eq?`, which x-lang's printer depends on: `%print-str-esc?` and
+    // `%print-str-esc-byte` (lib/x/boot/printer.x) are handed
+    // `(str byte-ref s i)` — a character — and match it against 34, 92, 10, 9,
+    // 13. Type-gating the comparison made every one of those arms miss, so a
+    // quote printed unescaped, a newline came out `\x0a`, and a carriage return
+    // lost its backslash. That is the whole of the csv/json `parse` cluster.
+    //
+    // Strings stay identity-compared for free: slot 0 of a string is the address
+    // of its bytes, so two equal strings hold different words.
+    //
+    // It DOES conflate objects that merely share a first word — two distinct
+    // closures answer #t here. That is the reference's behaviour and x-lang knows
+    // it: tower-compiled.x warns that an `eq?`-keyed analyser swap "stamped the
+    // first compiled handler over every seat", and uses `obj same?` instead.
+    let same = a[0] == a[1]
+        || (!a[0].is_nil() && !a[1].is_nil() && a_.data(a[0], 0).raw() == a_.data(a[1], 0).raw());
     Ok(a_.truth(same))
 }
 
@@ -181,6 +196,16 @@ mod tests {
     /// The line x-engine-c draws, asserted in both directions so a future
     /// "simplification" to pure pointer identity fails here rather than as a
     /// number in a conformance count.
+    /// A CHARACTER equals the INTEGER of its code, because `eq?` compares the
+    /// operand word and not the type. x-lang's string printer is built on it.
+    #[test]
+    fn eq_crosses_char_and_int() {
+        assert!(truthy(r"(eq? #\A 65)"));
+        assert!(!truthy(r"(eq? #\A 66)"));
+        // same? is identity and must NOT cross.
+        assert!(!truthy(r"(same? #\A 65)"));
+    }
+
     #[test]
     fn eq_compares_numbers_by_value_and_strings_by_identity() {
         assert!(truthy("(eq? 1 1)"));
