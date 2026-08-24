@@ -37,13 +37,32 @@ impl Engine {
         }
         let name = self.objects.sym(crate::vocabulary::ARGS);
         let env = self.root_env();
-        self.envs.bind(env, name, list);
+        self.envs.bind(&mut self.objects, env, name, list);
     }
 
     /// Evaluate one top-level form in the global environment.
+    /// Evaluate one TOP-LEVEL form: the root stack is truncated back to where
+    /// it stood, keeping only the result.
+    ///
+    /// `eval` roots every result "until the enclosing evaluation moves on" —
+    /// and at the top level nothing ever moved on, so every form's value stayed
+    /// rooted for the life of the process. One integer per REPL line; thousands
+    /// of dead results across a boot. Found by the live-count flatness test the
+    /// heap-owned environments made possible: the old frame-count test could
+    /// not see object growth at all.
     pub fn eval_top(&mut self, form: Obj) -> EvalResult {
         let env = self.root_env();
-        self.eval(form, env)
+        // The previous top-level result sits at the top of the stack; it is
+        // done with the moment the next form evaluates. Truncate to the BASE of
+        // the stack — top-level owns it — then root only this result.
+        let out = self.eval(form, env);
+        if self.active_evals == 0 {
+            self.root_truncate(0);
+        }
+        if let Ok(v) = out {
+            self.root_push(v);
+        }
+        out
     }
 
     /// Read and evaluate a whole source string, answering the last value. This is
@@ -76,12 +95,44 @@ impl Engine {
         // reader in lib/x/type/vector.x does exactly that, and reaching past the
         // file ate a form off stdin — which is how the REPL launcher disappeared.
         self.loading.push(Reader::new(src));
+        // AT TOP LEVEL THE STACK IS OURS: the previous source's rooted result is
+        // done with the moment another source arrives, and leaving it meant one
+        // permanent root per eval_str for the life of the process — SYMBOL:f,
+        // then INT:1, INT:1, … on the probe that found this. Nested entry
+        // (include evaluates a file mid-eval) must NOT do this: the outer
+        // evaluation's roots live below us.
+        // The guard CANNOT be eval_depth: `include` hides the pending count for
+        // the duration of a load (hide_pending sets it to zero), so a nested
+        // load looked exactly like the top level and truncating destroyed the
+        // outer evaluation's roots — `self.roots[slot]` then indexed past the
+        // stack inside the trampoline. The loading stack is the honest witness:
+        // this source is the OUTERMOST one iff it is alone on it.
+        // `active_evals`, not `eval_depth`: include HIDES the depth for the
+        // duration of a load (that is what makes a loaded file's defs global),
+        // so a nested load looked top-level and truncating here destroyed the
+        // outer evaluation's roots.
+        if self.active_evals == 0 {
+            self.root_truncate(0);
+        }
+        // ONE mark for the whole source: each form's evaluation truncates back
+        // here and re-pushes only its own result, so the stack carries exactly
+        // one value — the latest — however many forms the source holds. Taking
+        // the mark per-form kept the previous push under it and grew the stack
+        // by one root per top-level form for the life of the process.
+        let mark = self.root_mark();
         let mut last = NIL;
         let out = loop {
             match self.read_form() {
                 Ok(Some(form)) => match self.eval(form, env) {
-                    Ok(v) => last = v,
-                    Err(c) => break Err(c),
+                    Ok(v) => {
+                        self.root_truncate(mark);
+                        self.root_push(v);
+                        last = v;
+                    }
+                    Err(c) => {
+                        self.root_truncate(mark);
+                        break Err(c);
+                    }
                 },
                 Ok(None) => break Ok(last),
                 Err(c) => break Err(c),
@@ -105,7 +156,7 @@ mod tests {
         e.bind_args(&["--batch", "file.x"]);
         let env = e.root_env();
         let name = e.objects.sym("args");
-        let args = e.envs.lookup(env, name).expect("args bound");
+        let args = e.envs.lookup(&e.objects, env, name).expect("args bound");
         let items: Vec<Obj> = e.objects.list(args).collect();
         assert_eq!(items.len(), 2);
         assert_eq!(e.objects.str_val(items[0]), "--batch");
@@ -119,7 +170,11 @@ mod tests {
         e.bind_args(&empty);
         let env = e.root_env();
         let name = e.objects.sym("args");
-        assert!(e.envs.lookup(env, name).expect("bound").is_nil());
+        assert!(e
+            .envs
+            .lookup(&e.objects, env, name)
+            .expect("bound")
+            .is_nil());
     }
 
     /// Forms come out in order and the stream then ENDS, which is what stops the

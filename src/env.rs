@@ -1,404 +1,281 @@
-//! Environments.
+//! Environments, ON THE HEAP.
 //!
-//! A frame chain, held OUTSIDE the objects in a plain Vec, and never freed. Objects
-//! live in the objects because x-lang reflects over them at committed offsets; an
-//! environment is not one of those things at this stage, so keeping it in Rust
-//! costs nothing and buys ordinary borrow checking.
+//! TRANSCRIBED from the reference (increment D1 of ARCHITECTURE-PORT.md). An
+//! environment there is not a struct anywhere — it is a spine of ordinary pair
+//! cells, `((sym . val) . rest)`, each spine cell tagged FRAME, shared
+//! structurally with its parent (`x_env_extend` conses and never mutates). The
+//! collector needs no special knowledge of it: the cells trace like any pair.
 //!
-//! A frame is referred to by `EnvId`, which is what lets a closure — which IS an
-//! objects object — carry one in a data word without it being confusable with an
-//! object reference.
+//! This file used to hold a Rust `Vec<Frame>` with `EnvId` as an index — and
+//! everything that representation forced: a mark/sweep FIXPOINT between objects
+//! and frames, a frame free-list, dead-frame traps, X_GC_POISON withholding of
+//! slots, and a hand-enumerated root for every frame. All of that machinery
+//! existed to compensate for the state living outside the tree. It is gone:
+//! frames are heap data now, and collection is plain marking again.
 //!
-//! x-lang's real env model (GH #47) marks frames so that a redefinition really
-//! redefines rather than shadowing. That distinction only becomes observable with
-//! nested frames and `set!` interacting in ways this engine cannot yet reach;
-//! when it does, this is the file that grows a FRAME mark rather than the file
-//! that gets replaced.
+//! The HANDLE. `EnvId` survives as a newtype over the env-holder object so the
+//! evaluator's signatures did not all change in the same commit that changed
+//! the representation. A holder is three slots: the chain head, the parent
+//! holder, and the base the environment serves. `def` conses a FRAME cell and
+//! moves the head — the holder mutates, the cells never do, which preserves
+//! this engine's existing activation semantics while the cells themselves are
+//! the reference's. The holder's remaining distance from the reference — where
+//! the current env is BASE STATE under a save/restore protocol and needs no
+//! holder at all — is increment D2's to close.
+//!
+//! THE INDEX. The reference pays for global lookup with a heap BST
+//! (`env_global_tree`); until D2 transcribes it, a Rust-side map shadows any
+//! holder that outgrows a scan. It is a CACHE over the heap truth — every
+//! write goes through `bind`/`set_existing`, so it can never disagree — and it
+//! holds nothing the collector needs to see, because everything it points at
+//! is reachable through the chain it mirrors.
 
-use crate::obj::{EnvId, Obj};
+use crate::obj::{EnvId, Obj, NIL};
+use crate::objects::{Objects, FLAG_ENVH};
 use std::collections::HashMap;
 
-/// A frame's bindings.
-///
-/// SMALL BY DEFAULT, and that is a memory decision rather than a speed one.
-/// Booting x-core.x creates 364,504 frames; a `HashMap` apiece cost about 80 MB
-/// of the engine's 112 MB, and almost every one of them holds a handful of
-/// names — an activation binds its parameters and little else.
-///
-/// The global frame is the exception: it holds every instruction and every
-/// library definition, where a linear scan would be the wrong shape. So a frame
-/// starts as a vector and PROMOTES to a map once it outgrows one.
-enum Bindings {
-    Small(Vec<(Obj, Obj)>),
-    Large(HashMap<Obj, Obj>),
-}
+/// Holder slots.
+const CHAIN: u64 = 0;
+const PARENT: u64 = 1;
+const BASE: u64 = 2;
 
-/// Where a frame stops being a list and becomes a table.
-///
-/// Above a handful of names a scan starts to cost more than a hash; below it the
-/// map's allocation dwarfs the data. Sixteen is comfortably past what any
-/// activation binds and far below what the global frame holds.
-const PROMOTE_AT: usize = 16;
-
-impl Bindings {
-    fn get(&self, name: Obj) -> Option<Obj> {
-        match self {
-            Bindings::Small(v) => v.iter().find(|(k, _)| *k == name).map(|(_, x)| *x),
-            Bindings::Large(m) => m.get(&name).copied(),
-        }
-    }
-
-    fn set(&mut self, name: Obj, value: Obj) {
-        match self {
-            Bindings::Small(v) => {
-                if let Some(slot) = v.iter_mut().find(|(k, _)| *k == name) {
-                    slot.1 = value;
-                    return;
-                }
-                v.push((name, value));
-                if v.len() > PROMOTE_AT {
-                    let m: HashMap<Obj, Obj> = v.drain(..).collect();
-                    *self = Bindings::Large(m);
-                }
-            }
-            Bindings::Large(m) => {
-                m.insert(name, value);
-            }
-        }
-    }
-
-    /// Rebind an EXISTING name, answering whether it was there.
-    fn replace(&mut self, name: Obj, value: Obj) -> bool {
-        match self {
-            Bindings::Small(v) => match v.iter_mut().find(|(k, _)| *k == name) {
-                Some(slot) => {
-                    slot.1 = value;
-                    true
-                }
-                None => false,
-            },
-            Bindings::Large(m) => match m.get_mut(&name) {
-                Some(slot) => {
-                    *slot = value;
-                    true
-                }
-                None => false,
-            },
-        }
-    }
-}
-
-struct Frame {
-    vars: Bindings,
-    parent: Option<EnvId>,
-    /// The base this frame belongs to. In the reference the env-alist hangs OFF
-    /// the base, so "which base does this environment serve" is structural; a
-    /// frame here carries it so the same question is answered from data rather
-    /// than from engine state. Children inherit it; only `push_root` sets it,
-    /// and the base spine is built AFTER its root frame exists, so the builder
-    /// stamps it via `set_base`.
-    base: crate::obj::Obj,
-    /// Reclaimed by the collector and not yet handed out again.
-    ///
-    /// An `EnvId` is a bare INDEX, so a frame freed while something still named
-    /// it would not fail — it would quietly answer the next activation's
-    /// bindings, and the wrong answer would surface somewhere else entirely.
-    /// This is the object heap's poison trap, in the one form an index allows.
-    dead: bool,
-}
+/// Where a chain stops being scanned and gains a shadow map.
+const INDEX_AT: usize = 16;
 
 pub struct Envs {
-    frames: Vec<Frame>,
-    /// Slots whose frames were reclaimed, ready for the next activation.
-    free: Vec<usize>,
-    /// Never hand a reclaimed slot back, so a stale `EnvId` stays dead and the
-    /// trap fires instead of being papered over by the next activation. The
-    /// same switch as the heap's, for the same reason. See `X_GC_POISON`.
-    poison: bool,
+    /// Shadow maps for large frames, keyed by holder. A pure cache: the chain
+    /// is the truth, and every write path updates both.
+    index: HashMap<Obj, HashMap<Obj, Obj>>,
+    /// How many holders have been made — `frame_count` reporting only.
+    made: usize,
 }
 
 impl Envs {
-    /// No frames. The first `push_root` makes one, and for an engine that is
-    /// its own base — there is no privileged "global" environment above the
-    /// bases, because a base IS the top of a chain.
     pub fn new() -> Self {
         Envs {
-            frames: Vec::new(),
-            free: Vec::new(),
-            poison: std::env::var("X_GC_POISON").is_ok(),
+            index: HashMap::new(),
+            made: 0,
         }
     }
 
-    /// Every name and value in every frame.
+    /// A fresh root environment: no parent, no base yet (the spine is built
+    /// after its env exists, then stamped via `set_base`).
+    pub fn push_root(&mut self, o: &mut Objects) -> EnvId {
+        self.make(o, NIL, NIL)
+    }
+
+    /// A fresh environment under `parent`, serving the parent's base.
+    pub fn push(&mut self, o: &mut Objects, parent: EnvId) -> EnvId {
+        let base = o.data(parent.obj(), BASE).as_obj();
+        self.make(o, parent.obj(), base)
+    }
+
+    fn make(&mut self, o: &mut Objects, parent: Obj, base: Obj) -> EnvId {
+        let h = o.alloc(FLAG_ENVH, 3);
+        o.set_data(h, CHAIN, NIL.word());
+        o.set_data(h, PARENT, parent.word());
+        o.set_data(h, BASE, base.word());
+        self.made += 1;
+        EnvId::from_obj(h)
+    }
+
+    pub fn set_base(&mut self, o: &mut Objects, id: EnvId, base: Obj) {
+        o.set_data(id.obj(), BASE, base.word());
+    }
+
+    pub fn base_of(&self, o: &Objects, id: EnvId) -> Obj {
+        o.data(id.obj(), BASE).as_obj()
+    }
+
+    pub fn parent_of(&self, o: &Objects, id: EnvId) -> Option<EnvId> {
+        let p = o.data(id.obj(), PARENT).as_obj();
+        if p.is_nil() {
+            None
+        } else {
+            Some(EnvId::from_obj(p))
+        }
+    }
+
+    /// Bind in THIS environment, shadowing any outer binding of the same name.
     ///
-    /// Frames are not in the heap, so the collector cannot trace into them —
-    /// their contents are roots.
-    /// Push a frame's names and values onto `out`.
-    pub fn bindings_of(&self, id: EnvId, out: &mut Vec<Obj>) {
-        match &self.frame(id).vars {
-            Bindings::Small(v) => {
-                for (k, x) in v {
-                    out.push(*k);
-                    out.push(*x);
-                }
+    /// A FRAME cell is consed onto the chain — `((sym . val) . rest)`, the
+    /// reference's `x_env_extend` shape — and the holder's head moves. A
+    /// REBINDING of a name already in this frame updates the existing cell
+    /// instead, which is what keeps a chain from growing with every `def` of
+    /// the same name at the REPL.
+    pub fn bind(&mut self, o: &mut Objects, env: EnvId, name: Obj, value: Obj) {
+        let h = env.obj();
+        if let Some(cell) = self.find_in_frame(o, env, name) {
+            o.set_data(cell, 1, value.word());
+            return;
+        }
+        let pair = o.spair(name, value);
+        let head = o.data(h, CHAIN).as_obj();
+        let cell = o.spair(pair, head);
+        o.set_data(h, CHAIN, cell.word());
+        if let Some(m) = self.index.get_mut(&h) {
+            m.insert(name, pair);
+        } else if self.chain_len(o, h) > INDEX_AT {
+            let mut m = HashMap::new();
+            let mut at = o.data(h, CHAIN).as_obj();
+            while !at.is_nil() {
+                let p = o.first(at);
+                m.entry(o.first(p)).or_insert(p);
+                at = o.rest(at);
             }
-            Bindings::Large(m) => {
-                for (k, x) in m {
-                    out.push(*k);
-                    out.push(*x);
-                }
-            }
+            self.index.insert(h, m);
         }
     }
 
-    /// How many slots the collector has reclaimed and not yet handed back.
-    pub fn free_count(&self) -> usize {
-        self.free.len()
-    }
-
-    pub fn parent_of(&self, id: EnvId) -> Option<EnvId> {
-        self.frame(id).parent
-    }
-
-    /// Release every frame not marked reachable, answering the count.
-    ///
-    /// A frame's SLOT is kept — an EnvId is an index — and its bindings are
-    /// dropped, which is where the memory is. The slot goes on a free list for
-    /// the next activation, which is safe precisely because nothing reachable
-    /// still names it.
-    pub fn sweep(&mut self, seen: &[bool]) -> usize {
-        let poison = self.poison;
-        let mut on_free = vec![false; self.frames.len()];
-        for &i in &self.free {
-            on_free[i] = true;
+    fn chain_len(&self, o: &Objects, h: Obj) -> usize {
+        let mut n = 0;
+        let mut at = o.data(h, CHAIN).as_obj();
+        while !at.is_nil() {
+            n += 1;
+            at = o.rest(at);
         }
-        let mut freed = 0;
-        for (i, frame) in self.frames.iter_mut().enumerate() {
-            if seen.get(i).copied().unwrap_or(false) || on_free[i] {
-                continue;
-            }
-            frame.vars = Bindings::Small(Vec::new());
-            frame.parent = None;
-            frame.dead = true;
-            if !poison {
-                self.free.push(i);
-            }
-            freed += 1;
+        n
+    }
+
+    /// The `(sym . val)` cell binding `name` in exactly this frame, if any.
+    fn find_in_frame(&self, o: &Objects, env: EnvId, name: Obj) -> Option<Obj> {
+        let h = env.obj();
+        if let Some(m) = self.index.get(&h) {
+            return m.get(&name).copied();
         }
-        freed
-    }
-
-    pub fn frame_count(&self) -> usize {
-        self.frames.len()
-    }
-
-    fn frame(&self, id: EnvId) -> &Frame {
-        let f = &self.frames[id.index()];
-        assert!(
-            !f.dead,
-            "environment {} used after it was reclaimed",
-            id.index()
-        );
-        f
-    }
-
-    fn frame_mut(&mut self, id: EnvId) -> &mut Frame {
-        let f = &mut self.frames[id.index()];
-        assert!(
-            !f.dead,
-            "environment {} used after it was reclaimed",
-            id.index()
-        );
-        f
-    }
-
-    /// A fresh frame with NO PARENT.
-    ///
-    /// This is what makes a base a sandbox rather than a second environment: a
-    /// rootless frame cannot see outward, so a name defined in the host is
-    /// genuinely unbound inside it. `Envs::push` would have made a child that
-    /// inherited everything, which is the opposite of the capability model
-    /// `base bind` exists to provide.
-    pub fn push_root(&mut self) -> EnvId {
-        self.alloc(None, crate::obj::NIL)
-    }
-
-    /// A fresh frame whose parent is `parent`, serving the parent's base.
-    pub fn push(&mut self, parent: EnvId) -> EnvId {
-        let base = self.frames[parent.index()].base;
-        self.alloc(Some(parent), base)
-    }
-
-    /// Stamp a root frame's base, once the spine it serves exists.
-    pub fn set_base(&mut self, id: EnvId, base: crate::obj::Obj) {
-        self.frames[id.index()].base = base;
-    }
-
-    /// The base `env` serves — read from the frame, not walked for.
-    pub fn base_of(&self, id: EnvId) -> crate::obj::Obj {
-        self.frame(id).base
-    }
-
-    /// Take a frame, REUSING a slot the collector reclaimed when there is one.
-    ///
-    /// An `EnvId` is an index, so reusing a slot would be a disaster if anything
-    /// still named it — which is exactly what the sweep establishes it does not.
-    /// Without reuse the frame vector grows for the life of the process even
-    /// though its contents are being freed.
-    fn alloc(&mut self, parent: Option<EnvId>, base: crate::obj::Obj) -> EnvId {
-        let frame = Frame {
-            vars: Bindings::Small(Vec::new()),
-            parent,
-            base,
-            dead: false,
-        };
-        match self.free.pop() {
-            Some(i) => {
-                self.frames[i] = frame;
-                EnvId::new(i)
+        let mut at = o.data(h, CHAIN).as_obj();
+        while !at.is_nil() {
+            let p = o.first(at);
+            if o.first(p) == name {
+                return Some(p);
             }
-            None => {
-                self.frames.push(frame);
-                EnvId::new(self.frames.len() - 1)
-            }
+            at = o.rest(at);
         }
+        None
     }
 
-    /// Bind in THIS frame, shadowing any outer binding of the same name.
-    pub fn bind(&mut self, env: EnvId, name: Obj, value: Obj) {
-        self.frame_mut(env).vars.set(name, value);
-    }
-
-    /// Walk out through the chain. `None` is unbound, which the caller turns into
-    /// a raise — an unbound name is an error, not nil.
-    pub fn lookup(&self, env: EnvId, name: Obj) -> Option<Obj> {
+    /// Walk out through the chain. `None` is unbound — an error, not nil.
+    pub fn lookup(&self, o: &Objects, env: EnvId, name: Obj) -> Option<Obj> {
         let mut at = env;
         loop {
-            if let Some(v) = self.frame(at).vars.get(name) {
-                return Some(v);
+            if let Some(p) = self.find_in_frame(o, at, name) {
+                return Some(o.rest(p));
             }
-            at = self.frame(at).parent?;
+            at = self.parent_of(o, at)?;
         }
     }
 
     /// Rebind a name where it is ALREADY bound, answering whether one was found.
-    ///
-    /// This is `set!`, and it is a different operation from `bind`: binding in
-    /// the current frame would shadow the outer name rather than change it, and a
-    /// caller that then read the outer frame would see the old value.
-    pub fn set_existing(&mut self, env: EnvId, name: Obj, value: Obj) -> bool {
+    pub fn set_existing(&mut self, o: &mut Objects, env: EnvId, name: Obj, value: Obj) -> bool {
         let mut at = env;
         loop {
-            // One pass: `replace` answers whether the name was there, so a hit
-            // never costs a second lookup and a miss never writes.
-            if self.frame_mut(at).vars.replace(name, value) {
+            if let Some(p) = self.find_in_frame(o, at, name) {
+                o.set_data(p, 1, value.word());
                 return true;
             }
-            match self.frame(at).parent {
-                Some(p) => at = p,
+            match self.parent_of(o, at) {
+                Some(up) => at = up,
                 None => return false,
             }
         }
+    }
+
+    /// Holders made since the engine started — reporting only. The heap owns
+    /// their lifetimes now; there is nothing to sweep here.
+    pub fn frame_count(&self) -> usize {
+        self.made
     }
 }
 
 impl Default for Envs {
     fn default() -> Self {
-        Self::new()
+        Envs::new()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::objects::Objects;
 
-    /// A root frame, the way an engine starts one.
-    fn setup() -> (Objects, Envs, EnvId, Obj) {
-        let mut a = Objects::new();
-        let mut envs = Envs::new();
-        let root = envs.push_root();
-        let x = a.sym("x");
-        (a, envs, root, x)
+    fn setup() -> (Objects, Envs) {
+        (Objects::new(), Envs::new())
     }
 
     #[test]
-    fn a_child_frame_sees_its_parents_bindings() {
-        let (mut a, mut envs, root, x) = setup();
-        let v = a.int(1);
-        envs.bind(root, x, v);
-        let child = envs.push(root);
-        assert_eq!(envs.lookup(child, x), Some(v));
+    fn bind_and_lookup_walk_the_chain() {
+        let (mut o, mut envs) = setup();
+        let root = envs.push_root(&mut o);
+        let child = envs.push(&mut o, root);
+        let (a, b) = (o.sym("a"), o.sym("b"));
+        let (one, two) = (o.int(1), o.int(2));
+        envs.bind(&mut o, root, a, one);
+        envs.bind(&mut o, child, b, two);
+        assert_eq!(envs.lookup(&o, child, a), Some(one));
+        assert_eq!(envs.lookup(&o, child, b), Some(two));
+        assert_eq!(envs.lookup(&o, root, b), None);
     }
 
     #[test]
-    fn binding_in_a_child_shadows_rather_than_replaces() {
-        let (mut a, mut envs, root, x) = setup();
-        let outer = a.int(1);
-        let inner = a.int(2);
-        envs.bind(root, x, outer);
-        let child = envs.push(root);
-        envs.bind(child, x, inner);
-        assert_eq!(envs.lookup(child, x), Some(inner));
-        assert_eq!(
-            envs.lookup(root, x),
-            Some(outer),
-            "the outer binding must be untouched"
-        );
-    }
-
-    /// The difference between `set!` and `def`: set! reaches the frame the name
-    /// actually lives in. Shadowing here would leave the outer value stale and
-    /// the caller reading it would never know.
-    #[test]
-    fn set_existing_reaches_the_owning_frame() {
-        let (mut a, mut envs, root, x) = setup();
-        let old = a.int(1);
-        let new = a.int(2);
-        envs.bind(root, x, old);
-        let child = envs.push(root);
-        assert!(envs.set_existing(child, x, new));
-        assert_eq!(envs.lookup(root, x), Some(new));
+    fn a_child_shadows_and_the_parent_keeps_its_value() {
+        let (mut o, mut envs) = setup();
+        let root = envs.push_root(&mut o);
+        let child = envs.push(&mut o, root);
+        let a = o.sym("a");
+        let (one, two) = (o.int(1), o.int(2));
+        envs.bind(&mut o, root, a, one);
+        envs.bind(&mut o, child, a, two);
+        assert_eq!(envs.lookup(&o, child, a), Some(two));
+        assert_eq!(envs.lookup(&o, root, a), Some(one));
     }
 
     #[test]
-    fn set_existing_refuses_an_unbound_name() {
-        let (mut a, mut envs, root, _) = setup();
-        let never = a.sym("never-bound");
-        let v = a.int(1);
-        assert!(!envs.set_existing(root, never, v));
+    fn set_existing_reaches_the_outer_frame() {
+        let (mut o, mut envs) = setup();
+        let root = envs.push_root(&mut o);
+        let child = envs.push(&mut o, root);
+        let a = o.sym("a");
+        let (one, two) = (o.int(1), o.int(2));
+        envs.bind(&mut o, root, a, one);
+        assert!(envs.set_existing(&mut o, child, a, two));
+        assert_eq!(envs.lookup(&o, root, a), Some(two));
     }
 
-    /// The sandbox property: a root frame does not see the frame it was made
-    /// from. Using `push` here instead would inherit every host binding and the
-    /// isolation would be silently absent.
+    /// Rebinding in the SAME frame updates the cell rather than growing the
+    /// chain — a REPL that redefines must not leak a cell per definition.
     #[test]
-    fn a_root_frame_cannot_see_outward() {
-        let (mut a, mut envs, host, x) = setup();
-        let v = a.int(1);
-        envs.bind(host, x, v);
-        let sandbox = envs.push_root();
-        assert_eq!(envs.lookup(sandbox, x), None);
-        assert_eq!(envs.lookup(host, x), Some(v));
+    fn rebinding_updates_in_place() {
+        let (mut o, mut envs) = setup();
+        let root = envs.push_root(&mut o);
+        let a = o.sym("a");
+        for i in 0..40 {
+            let v = o.int(i);
+            envs.bind(&mut o, root, a, v);
+        }
+        let head = o.data(root.obj(), 0).as_obj();
+        let mut n = 0;
+        let mut at = head;
+        while !at.is_nil() {
+            n += 1;
+            at = o.rest(at);
+        }
+        assert_eq!(n, 1);
     }
 
-    /// And two roots do not see each other -- what makes `base bind` a
-    /// capability handed to ONE base rather than a global name.
+    /// The index shadows a grown frame and must agree with the chain.
     #[test]
-    fn two_roots_are_independent() {
-        let (mut a, mut envs, _root, x) = setup();
-        let v = a.int(1);
-        let r1 = envs.push_root();
-        let r2 = envs.push_root();
-        envs.bind(r1, x, v);
-        assert_eq!(envs.lookup(r1, x), Some(v));
-        assert_eq!(envs.lookup(r2, x), None);
-    }
-
-    #[test]
-    fn an_unbound_name_is_absent_not_nil() {
-        let (mut a, envs, root, _) = setup();
-        let missing = a.sym("missing");
-        assert_eq!(envs.lookup(root, missing), None);
+    fn the_index_is_a_cache_not_a_truth() {
+        let (mut o, mut envs) = setup();
+        let root = envs.push_root(&mut o);
+        let names: Vec<Obj> = (0..40).map(|i| o.sym(&format!("n{}", i))).collect();
+        for (i, &n) in names.iter().enumerate() {
+            let v = o.int(i as i64);
+            envs.bind(&mut o, root, n, v);
+        }
+        for (i, &n) in names.iter().enumerate() {
+            assert_eq!(
+                envs.lookup(&o, root, n).map(|v| o.int_val(v)),
+                Some(i as i64)
+            );
+        }
     }
 }

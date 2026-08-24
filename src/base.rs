@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn every_declared_route_resolves() {
         let mut o = Objects::new();
-        let base = build(&mut o, NIL, EnvId::new(0));
+        let base = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(0)));
         for (n, name) in ROUTES.iter().enumerate() {
             let c = cell(&o, base, n);
             assert!(
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn the_spine_is_exactly_as_long_as_the_route_list() {
         let mut o = Objects::new();
-        let base = build(&mut o, NIL, EnvId::new(0));
+        let base = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(0)));
         let last = cell(&o, base, ROUTES.len() - 1);
         assert!(o.rest(last).is_nil(), "the spine has a spare cell");
     }
@@ -260,19 +260,19 @@ mod tests {
     fn the_engine_reads_back_what_it_wrote() {
         let mut o = Objects::new();
         let catalog = o.sym("catalog-stand-in");
-        let base = build(&mut o, catalog, EnvId::new(3));
+        let base = build(&mut o, catalog, EnvId::from_word(crate::obj::Word(3)));
         assert_eq!(catalog_of(&o, base), catalog);
-        assert_eq!(env_of(&o, base), EnvId::new(3));
+        assert_eq!(env_of(&o, base), EnvId::from_word(crate::obj::Word(3)));
     }
 
     /// Two bases are distinct spines: writing one must not disturb the other.
     #[test]
     fn bases_do_not_share_cells() {
         let mut o = Objects::new();
-        let a = build(&mut o, NIL, EnvId::new(1));
-        let b = build(&mut o, NIL, EnvId::new(2));
-        assert_eq!(env_of(&o, a), EnvId::new(1));
-        assert_eq!(env_of(&o, b), EnvId::new(2));
+        let a = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(1)));
+        let b = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(2)));
+        assert_eq!(env_of(&o, a), EnvId::from_word(crate::obj::Word(1)));
+        assert_eq!(env_of(&o, b), EnvId::from_word(crate::obj::Word(2)));
     }
 
     /// The ROUTES list and base-paths.x are the same list, and this is what

@@ -64,6 +64,10 @@ pub struct Engine {
     pub(crate) env_roots: Vec<EnvId>,
     /// Already collecting: a hook's own evaluation must not recurse on hooks.
     pub(crate) in_gc: bool,
+    /// Evaluations on the Rust stack RIGHT NOW. Unlike `eval_depth`, `include`
+    /// does not hide this: it exists so the top-of-stack owner check cannot be
+    /// fooled by a load, whose whole purpose is to fool `eval_depth`.
+    pub(crate) active_evals: u32,
     /// Bases displaced by `in_base`, still live while their children run.
     pub(crate) base_stack: Vec<Obj>,
     /// How many `guard` bodies are on the stack.
@@ -144,6 +148,7 @@ impl Engine {
             roots: Vec::new(),
             env_roots: Vec::new(),
             in_gc: false,
+            active_evals: 0,
             base_stack: Vec::new(),
             guard_depth: 0,
             gc_stress: std::env::var("X_GC_STRESS")
@@ -233,7 +238,10 @@ impl Engine {
             self.objects.pair(one, NIL),
             self.objects.ptr(crate::obj::Addr::new(0)),
             self.objects.foreign(0),
-            self.objects.env_obj(EnvId::new(0)),
+            {
+                let scratch = self.envs.push_root(&mut self.objects);
+                self.objects.env_obj(scratch)
+            },
         ];
         for v in samples {
             let _ = self.objects.type_tree_of(v);
@@ -348,16 +356,16 @@ impl Engine {
     /// The instruction set IS given, because a fresh base must evaluate
     /// `(+ 2 3)`. A sandbox withholds the host's definitions, not the machine.
     pub fn make_base(&mut self) -> Obj {
-        let env = self.envs.push_root();
+        let env = self.envs.push_root(&mut self.objects);
 
         // `#t` and `#f` are instruction-level too: a form read in the host and
         // evaluated in a child must find them. They are `%isa-values` rows in
         // their own right, which is why they are declared and not merely bound.
         let t = self.objects.sym_shared(crate::vocabulary::TRUE);
-        self.envs.bind(env, t, t);
+        self.envs.bind(&mut self.objects, env, t, t);
         let f = self.objects.sym_shared(crate::vocabulary::FALSE);
         let fo = self.objects.false_obj();
-        self.envs.bind(env, f, fo);
+        self.envs.bind(&mut self.objects, env, f, fo);
 
         // --- the identity values -------------------------------------------
         // x-lang's `meta/identity` capability, and it is CORE: an engine that
@@ -377,7 +385,7 @@ impl Engine {
         ] {
             let sym = self.objects.sym_shared(name);
             let v = self.objects.str_new(text);
-            self.envs.bind(env, sym, v);
+            self.envs.bind(&mut self.objects, env, sym, v);
         }
         // The `%isa-values` rows: names an engine binds to OBJECTS rather than
         // to callables. They belong here, with the rest of the instruction set,
@@ -390,18 +398,18 @@ impl Engine {
         // the host's, so a signal is visible from wherever it is observed.
         let eof = self.objects.sym_shared(crate::vocabulary::TOKEN_EOF);
         let (t, f) = (self.token_eof, self.sigint_flag);
-        self.envs.bind(env, eof, t);
+        self.envs.bind(&mut self.objects, env, eof, t);
         let flag = self.objects.sym_shared(crate::vocabulary::SIGINT_FLAG);
-        self.envs.bind(env, flag, f);
+        self.envs.bind(&mut self.objects, env, flag, f);
 
         for (sym, obj) in self.prim_bindings.clone() {
-            self.envs.bind(env, sym, obj);
+            self.envs.bind(&mut self.objects, env, sym, obj);
         }
 
         let base = crate::base::build(&mut self.objects, self.catalog, env);
         // The root frame serves the spine just built — stamped after, because
         // the spine cannot exist before its env does.
-        self.envs.set_base(env, base);
+        self.envs.set_base(&mut self.objects, env, base);
         // A fresh base interns for itself, from empty. NOT a snapshot of the
         // parent's table: x-engine-c was asked, and a symbol the host interned
         // before the child existed is still a different object inside it.
@@ -486,7 +494,7 @@ mod tests {
             if let Some(name) = def.bare {
                 let sym = e.objects.sym_shared(name);
                 assert!(
-                    e.envs.lookup(env, sym).is_some(),
+                    e.envs.lookup(&e.objects, env, sym).is_some(),
                     "`{}` registered but not bound",
                     name
                 );
@@ -506,7 +514,11 @@ mod tests {
             let (Some(name), Some((ns, m))) = (def.bare, def.coord) else {
                 continue;
             };
-            let bare = e.envs.lookup(env, e.objects.sym(name)).expect("bound");
+            let bare = {
+                let sy = e.objects.sym(name);
+                e.envs.lookup(&e.objects, env, sy)
+            }
+            .expect("bound");
             let filed = lookup_coord(&mut e, catalog, ns, m).expect("filed");
             assert_eq!(bare, filed, "`{}` and ({} {}) differ", name, ns, m);
         }
@@ -551,7 +563,11 @@ mod tests {
         let env = e.base_env(b);
         for name in ["#t", "#f"] {
             let sym = e.objects.sym(name);
-            assert!(e.envs.lookup(env, sym).is_some(), "`{}` unbound", name);
+            assert!(
+                e.envs.lookup(&e.objects, env, sym).is_some(),
+                "`{}` unbound",
+                name
+            );
         }
     }
 }

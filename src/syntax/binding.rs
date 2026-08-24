@@ -47,7 +47,7 @@ fn def(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     } else {
         env
     };
-    e.envs.bind(target, name, v);
+    e.envs.bind(&mut e.objects, target, name, v);
     Ok(name)
 }
 
@@ -58,7 +58,7 @@ fn set(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let name = e.nth(args, 0);
     let form = e.nth(args, 1);
     let v = e.eval(form, env)?;
-    if e.envs.set_existing(env, name, v) {
+    if e.envs.set_existing(&mut e.objects, env, name, v) {
         Ok(v)
     } else {
         Err(Cond::Unbound(name))

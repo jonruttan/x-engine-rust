@@ -140,7 +140,9 @@ impl Engine {
     /// is in tail position from the top level, and a `def` is global.
     pub fn eval(&mut self, form: Obj, env: EnvId) -> EvalResult {
         self.eval_depth += 1;
+        self.active_evals += 1;
         let r = self.eval_pending(form, env);
+        self.active_evals -= 1;
         self.eval_depth -= 1;
         // THE RESULT IS ROOTED until the enclosing evaluation moves on.
         //
@@ -243,7 +245,7 @@ impl Engine {
                 break Ok(NIL);
             }
             if self.objects.is_sym(form) {
-                break match self.envs.lookup(env, form) {
+                break match self.envs.lookup(&self.objects, env, form) {
                     Some(v) => Ok(v),
                     None => Err(Cond::Unbound(form)),
                 };
@@ -609,7 +611,7 @@ impl Engine {
         // the arguments in order, so the values line up one position behind the
         // names.
         let bound: Vec<Obj> = std::iter::once(callee).chain(vals).collect();
-        let frame = self.envs.push(defenv);
+        let frame = self.envs.push(&mut self.objects, defenv);
         // Rooted from the moment it exists: binding a dotted rest parameter
         // allocates, and the body's non-tail forms run under it.
         let env_mark = self.env_root_mark();
@@ -636,13 +638,13 @@ impl Engine {
         // Arguments arrive AS WRITTEN, so the spine is bound to the names
         // directly; a name with no argument is nil.
         let given: Vec<Obj> = self.objects.list(args).collect();
-        let frame = self.envs.push(defenv);
+        let frame = self.envs.push(&mut self.objects, defenv);
         let env_mark = self.env_root_mark();
         self.env_root_push(frame);
         self.bind_params(frame, params, &given);
         if !envname.is_nil() {
             let e = self.objects.env_obj(env);
-            self.envs.bind(frame, envname, e);
+            self.envs.bind(&mut self.objects, frame, envname, e);
         }
         let out = self.eval_body_tail(body, frame);
         self.env_root_truncate(env_mark);
@@ -663,7 +665,7 @@ impl Engine {
         while self.objects.is_cell(p) {
             let name = self.objects.first(p);
             let v = vals.get(i).copied().unwrap_or(NIL);
-            self.envs.bind(frame, name, v);
+            self.envs.bind(&mut self.objects, frame, name, v);
             i += 1;
             p = self.objects.rest(p);
         }
@@ -673,7 +675,7 @@ impl Engine {
             for &v in vals[i.min(vals.len())..].iter().rev() {
                 list = self.objects.pair(v, list);
             }
-            self.envs.bind(frame, p, list);
+            self.envs.bind(&mut self.objects, frame, p, list);
         }
     }
 

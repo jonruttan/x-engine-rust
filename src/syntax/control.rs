@@ -53,12 +53,12 @@ fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
             // The HANDLER is a tail position; the BODY is not. Parking the body
             // would evaluate it in the caller's loop, outside this guard, and
             // the raise it exists to catch would sail straight past.
-            let frame = e.envs.push(env);
+            let frame = e.envs.push(&mut e.objects, env);
             if !name.is_nil() {
                 // The value is built HERE, not at the failure site. A condition
                 // that is caught and ignored never allocates a message at all.
                 let v = cond.value(&mut e.objects);
-                e.envs.bind(frame, name, v);
+                e.envs.bind(&mut e.objects, frame, name, v);
             }
             e.eval_body_tail(handler, frame)
         }

@@ -177,23 +177,23 @@ impl Flags {
 /// closure whose captured environment was really an object would bind names into
 /// arbitrary storage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct EnvId(usize);
+pub struct EnvId(Obj);
 
 impl EnvId {
-    pub const fn new(i: usize) -> Self {
-        EnvId(i)
+    pub const fn from_obj(o: Obj) -> Self {
+        EnvId(o)
     }
 
-    pub const fn index(self) -> usize {
+    pub const fn obj(self) -> Obj {
         self.0
     }
 
     pub const fn word(self) -> Word {
-        Word(self.0 as u64)
+        self.0.word()
     }
 
     pub const fn from_word(w: Word) -> Self {
-        EnvId(w.0 as usize)
+        EnvId(w.as_obj())
     }
 }
 

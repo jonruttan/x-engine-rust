@@ -46,10 +46,9 @@ fn collect(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let freed = e.collect();
     if std::env::var("X_HEAP_STATS").is_ok() {
         eprintln!(
-            "collect: freed {} objects, {} live; {} of {} frames free",
+            "collect: freed {} objects, {} live; {} envs made (heap-owned)",
             freed,
             e.objects.live,
-            e.envs.free_count(),
             e.envs.frame_count()
         );
     }

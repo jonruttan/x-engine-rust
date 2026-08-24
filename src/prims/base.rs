@@ -37,7 +37,7 @@ fn base_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 /// shared unless it was handed over.
 fn base_bind(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let env = e.base_env(a[0]);
-    e.envs.bind(env, a[1], a[2]);
+    e.envs.bind(&mut e.objects, env, a[1], a[2]);
     Ok(a[2])
 }
 

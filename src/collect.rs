@@ -38,8 +38,8 @@
 
 use crate::obj::{EnvId, Flags, Obj, Word};
 use crate::objects::{
-    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_ENV, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR,
-    FLAG_SPAIR, FLAG_TOKBASE, FLAG_WRAP,
+    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_ENV, FLAG_ENVH, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP,
+    FLAG_PAIR, FLAG_SPAIR, FLAG_TOKBASE, FLAG_WRAP,
 };
 
 /// The mark, kept in a spare bit of the flags word.
@@ -70,7 +70,7 @@ impl Objects {
             .set_word(o.addr().plus(crate::objects::SLOT_FLAGS * 8), Word(w));
     }
 
-    fn is_marked(&self, o: Obj) -> bool {
+    pub(crate) fn is_marked(&self, o: Obj) -> bool {
         self.flags_word(o) & MARK != 0
     }
 
@@ -79,13 +79,13 @@ impl Objects {
         self.set_flags_word(o, w | MARK);
     }
 
-    fn clear_mark(&mut self, o: Obj) {
+    pub(crate) fn clear_mark(&mut self, o: Obj) {
         let w = self.flags_word(o);
         self.set_flags_word(o, w & !MARK);
     }
 
     /// The next object on the allocation chain.
-    fn chain_next(&self, o: Obj) -> Obj {
+    pub(crate) fn chain_next(&self, o: Obj) -> Obj {
         self.heap
             .word(o.addr().plus(crate::objects::SLOT_HEAP * 8))
             .as_obj()
@@ -107,14 +107,12 @@ impl Objects {
             && (w / 8) as usize + crate::objects::META_LEN as usize <= self.heap.words_len()
     }
 
-    /// Mark `o` and everything it reaches.
-    /// Mark everything reachable from `stack`, reporting the ENVIRONMENTS found.
+    /// Mark everything reachable from `stack`.
     ///
-    /// Objects and environments reach each other — a closure holds a frame, a
-    /// frame's bindings hold objects — so neither can be traced alone. This half
-    /// walks objects and hands back the frames it met; `Engine::collect` runs the
-    /// two to a fixpoint.
-    fn mark(&mut self, stack: &mut Vec<Obj>, envs: &mut Vec<EnvId>) {
+    /// One walk, no fixpoint: since increment D1 an environment is heap data —
+    /// a holder whose slots are its chain, its parent holder and its base — so
+    /// a closure's captured env traces like any other slot.
+    pub(crate) fn mark(&mut self, stack: &mut Vec<Obj>) {
         while let Some(o) = stack.pop() {
             if o.is_nil() || !self.plausible(o.word().raw()) || self.is_marked(o) {
                 continue;
@@ -140,21 +138,27 @@ impl Objects {
                 f if f == FLAG_FN => {
                     stack.push(self.data(o, 0).as_obj());
                     stack.push(self.data(o, 1).as_obj());
-                    envs.push(self.closure_env(o));
+                    stack.push(self.closure_env(o).obj());
                 }
-                // params, env NAME, body — the fourth is an environment id.
+                // params, env NAME, body — the fourth is the captured env.
                 f if f == FLAG_OP => {
                     stack.push(self.data(o, 0).as_obj());
                     stack.push(self.data(o, 1).as_obj());
                     stack.push(self.data(o, 2).as_obj());
-                    envs.push(self.op_env(o));
+                    stack.push(self.op_env(o).obj());
                 }
                 f if f == FLAG_WRAP || f == FLAG_TOKBASE => {
                     stack.push(self.data(o, 0).as_obj());
                 }
-                // An environment OBJECT names a frame and nothing else.
+                // An environment OBJECT names a holder and nothing else.
                 f if f == FLAG_ENV => {
-                    envs.push(self.env_id(o));
+                    stack.push(self.env_id(o).obj());
+                }
+                // An ENV HOLDER: chain head, parent holder, base — all objects.
+                f if f == FLAG_ENVH => {
+                    stack.push(self.data(o, 0).as_obj());
+                    stack.push(self.data(o, 1).as_obj());
+                    stack.push(self.data(o, 2).as_obj());
                 }
                 // THE FALSE SINGLETON IS SCRATCH SPACE. It looks like a value
                 // with nothing in it, and x-lang hangs the include list off its
@@ -343,15 +347,13 @@ impl crate::engine::Engine {
 
     /// `(heap collect)` — reclaim what nothing can reach. Answers the count.
     ///
-    /// Objects and environments are traced TOGETHER, to a fixpoint. Neither can
-    /// be done first: a closure keeps a frame alive, and a frame's bindings keep
-    /// objects alive, so tracing one and then the other would miss whatever the
-    /// second turned up for the first.
-    ///
-    /// Treating every frame as a root was the earlier, sound-but-thriftless
-    /// answer, and it cost most of the collection: 364,717 frames survive a boot
-    /// and each pinned everything it had ever bound, so only 46% of the heap
-    /// could be reclaimed.
+    /// PLAIN MARKING, at last. Environments used to live outside the heap, and
+    /// collecting meant running objects and frames to a FIXPOINT — a closure
+    /// keeps a frame, a frame's bindings keep objects — with a seen-vector, a
+    /// frame sweep and a dead-frame trap compensating. Increment D1 of the
+    /// architecture port moved frames onto the heap as the reference has them
+    /// (holder objects whose chains are ordinary FRAME cells), so the tracer
+    /// walks them like anything else and the machinery above is simply gone.
     pub fn collect(&mut self) -> usize {
         // HOOKS FIRST, BEFORE ANY MARKING. Not a detail — the reference paid for
         // this with a use-after-free. Everything a hook allocates is born
@@ -359,46 +361,25 @@ impl crate::engine::Engine {
         // that ESCAPED into reachable state (a `heap mark-root!` spine cell, an
         // int a hook stored through `set!`) would be freed by this same sweep,
         // leaving a reachable dangling pointer for the NEXT collection's mark
-        // walk to follow. Usually silent, because the freed chunk is typically
-        // recycled and the walk just traverses a reinterpreted live object.
-        // Running them here means the later passes mark whatever escaped, while
-        // transient hook garbage is still swept — and a root registered from
-        // inside a hook counts in THIS cycle. See x_heap_mark_phase.
-        //
-        // Re-entrancy is the price: a hook evaluates x-lang, which allocates and
-        // can trip the stress counter. `in_gc` makes the nested call collect
-        // without re-running hooks rather than recursing on them.
+        // walk to follow. Running them here means the later passes mark whatever
+        // escaped, while transient hook garbage is still swept — and a root
+        // registered from inside a hook counts in THIS cycle. See
+        // x_heap_mark_phase.
         if !self.in_gc {
             self.in_gc = true;
             self.run_gc_hooks(crate::base::MARK_HOOKS);
         }
 
         let mut ostack = self.root_set();
-        let mut estack = self.env_root_set();
-        let mut seen = vec![false; self.envs.frame_count()];
-
-        loop {
-            self.objects.mark(&mut ostack, &mut estack);
-            let Some(id) = estack.pop() else { break };
-            if seen.get(id.index()).copied().unwrap_or(true) {
-                continue;
-            }
-            seen[id.index()] = true;
-            self.envs.bindings_of(id, &mut ostack);
-            // The frame's BASE is a reference like any binding: a live frame
-            // must keep the spine it serves.
-            ostack.push(self.envs.base_of(id));
-            if let Some(p) = self.envs.parent_of(id) {
-                estack.push(p);
-            }
+        for e in self.env_root_set() {
+            ostack.push(e.obj());
         }
+        self.objects.mark(&mut ostack);
 
         // Between mark and sweep, as the reference does it.
         self.run_gc_hooks(crate::base::FREE_HOOKS);
 
-        let freed_frames = self.envs.sweep(&seen);
         let freed = self.objects.sweep();
-        let _ = freed_frames;
         self.in_gc = false;
         freed
     }
@@ -454,6 +435,7 @@ impl crate::engine::Engine {
 
 #[cfg(test)]
 mod tests {
+
     use crate::engine::Engine;
 
     /// A call's frame is gone once the call returns.
@@ -464,14 +446,22 @@ mod tests {
     /// unreclaimable because each dead frame pinned everything it had bound.
     #[test]
     fn a_returned_call_leaves_no_frame_behind() {
+        // Frames are heap objects since D1, so "no frame survives a returned
+        // call" is now "the LIVE COUNT returns to its settled level" — the
+        // holders and their chains are ordinary garbage.
         let mut e = Engine::new();
         e.eval_str("(def f (fn (self n) (+ n 1)))").unwrap();
+        // One round to settle whatever the first evaluation interns, then the
+        // guarantee: an IDENTICAL round leaves the live count exactly where it
+        // was. Any per-call leak — a holder, a chain cell, a binding — shows as
+        // growth here.
+        e.eval_str("(f 1) (f 2) (f 3)").unwrap();
         e.collect();
-        let settled = e.envs.frame_count() - e.envs.free_count();
+        let settled = e.objects.live;
 
         e.eval_str("(f 1) (f 2) (f 3)").unwrap();
         e.collect();
-        assert_eq!(e.envs.frame_count() - e.envs.free_count(), settled);
+        assert_eq!(e.objects.live, settled);
     }
 
     /// A CAPTURED frame is not: the closure `g` returns holds the frame that
@@ -499,22 +489,21 @@ mod tests {
         assert_eq!(e.objects.as_int(v), 7);
     }
 
-    /// Reclaimed slots are HANDED BACK. Without reuse the frame vector grows for
-    /// the life of the process even while its contents are freed — which is what
-    /// the first cut of this did, silently.
+    /// A process that calls forever must not grow forever. Frames are heap
+    /// objects since D1, so the invariant is the LIVE COUNT staying flat across
+    /// identical call-and-collect rounds — the holders and their chains are
+    /// ordinary garbage, reclaimed by the ordinary sweep.
     #[test]
-    fn reclaimed_slots_are_reused() {
+    fn repeated_calls_hold_the_live_count_flat() {
         let mut e = Engine::new();
         e.eval_str("(def f (fn (self n) (+ n 1)))").unwrap();
         e.eval_str("(f 1)").unwrap();
         e.collect();
-        let before = e.envs.frame_count();
-        // Each round reclaims the last round's frames and takes them back, so a
-        // process that calls forever does not grow the frame vector forever.
+        let settled = e.objects.live;
         for _ in 0..10 {
             e.eval_str("(f 1)").unwrap();
             e.collect();
         }
-        assert_eq!(e.envs.frame_count(), before);
+        assert_eq!(e.objects.live, settled);
     }
 }
