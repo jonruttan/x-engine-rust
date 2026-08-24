@@ -261,13 +261,32 @@ impl crate::engine::Engine {
     /// can happen; it does not remove it, because x-lang can call
     /// `(heap collect)` from anywhere.
     fn root_set(&self) -> Vec<Obj> {
-        // The engine's own singletons and tables.
+        // THE REFERENCE'S ROOT SET IS THREE ENTRIES: the base tree, the root
+        // chain, and the registered mark-roots — because the interpreter state
+        // IS the base tree. This inventory is what remains after removing every
+        // entry provable from the base, each with its proof:
+        //
+        //   token_eof     bound as %token-eof in every base's env (setup binds
+        //                 it beside #t/#f), and env bindings are traced.
+        //   sigint_flag   bound as %sigint-flag the same way.
+        //   catalog       base slot 0 — the (prims base) route.
+        //   false_obj     the base's FALSE slot.
+        //
+        // Still engine-held, with the reason each stays:
+        //
+        //   spair/satom markers   sentinels the reference keeps as C statics;
+        //                         nothing on the tree references them.
+        //   builtin_types         the IDENTITY cache: a tree made on demand and
+        //                         not yet filed would be swept and remade as a
+        //                         DIFFERENT object, breaking `type of` identity.
+        //   symbol tables         per-base interning, engine-held as the
+        //                         reference's are; an interned-but-unbound
+        //                         symbol has no other reference.
+        //   roots / env_roots /   the evaluator's Rust locals — the reference's
+        //   base_stack / tail       root CHAIN, in this engine's spelling.
+        //   reader texts          the source being read.
         let mut r: Vec<Obj> = vec![
             self.base,
-            self.token_eof,
-            self.sigint_flag,
-            self.catalog,
-            self.objects.false_obj(),
             self.objects.spair_marker,
             self.objects.satom_marker,
         ];
