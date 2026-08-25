@@ -173,7 +173,8 @@ impl Engine {
         let at = r.pos() as u64;
 
         // ONE CONTEST, then read with the winner. See `prims::tok::analyse`.
-        let (ty, claim) = match analyse(self, &types, text, at) {
+        let env = self.root_env();
+        let (ty, claim) = match analyse(self, &types, text, at, env) {
             Ok(Some(w)) => w,
             Ok(None) => {
                 self.root_truncate(mark);

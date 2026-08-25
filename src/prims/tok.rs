@@ -24,7 +24,7 @@
 use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::eval::EvalResult;
-use crate::obj::{Obj, NIL};
+use crate::obj::{EnvId, Obj, NIL};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
 use crate::vocabulary::Family;
@@ -220,11 +220,15 @@ pub(crate) fn better(score: i64, best: Option<i64>) -> bool {
 /// A handler answering nil rewinds first, so it claims nothing. `better`
 /// decides the winner; `>=` means a later type takes a tie, so registration
 /// order settles equal-length claims while LENGTH settles unequal ones.
+/// `env` is the CALLER's environment, captured before any base swap: it only
+/// serves `call_with_values`' argument quoting, whose `(lit v)` heads must
+/// resolve — a bare token base binds no instruction names at all.
 pub(crate) fn analyse(
     e: &mut Engine,
     types: &[Obj],
     text: Obj,
     at: u64,
+    env: EnvId,
 ) -> Result<Option<(Obj, i64)>, Cond> {
     let mark = e.root_mark();
     e.root_push(text);
@@ -234,7 +238,6 @@ pub(crate) fn analyse(
     e.root_push(score);
     let state_slot = e.root_mark();
     e.root_push(NIL);
-    let env = e.root_env();
 
     let rewind = |e: &mut Engine| {
         let start = e.objects.buf_retain(buf);
@@ -362,14 +365,15 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     // construction. That keeps `$"…"` interpolation working (a plain host base
     // claims nothing and reads forms) while a registered language wins wherever
     // its analysers claim.
-    let is_base_arg = !e.objects.is_tokbase(a[0]);
-    let types: Vec<Obj> = if is_base_arg {
-        let alist = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
-        let entries: Vec<Obj> = e.objects.list(alist).collect();
-        entries.iter().map(|&entry| e.objects.rest(entry)).collect()
-    } else {
-        e.objects.list(e.objects.tokbase_types(a[0])).collect()
-    };
+    // A token base and an interpreter base differ by CONTENTS, not kind. The
+    // engine-reader fallback below stands in for the built-in types the
+    // reference files on every full base's alist, so it applies exactly where
+    // those types would be: a base with a catalog. A `base make-tok` base has
+    // none, and an input nothing claims yields no tokens there.
+    let falls_back = !crate::base::catalog_of(&e.objects, a[0]).is_nil();
+    let alist = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
+    let entries: Vec<Obj> = e.objects.list(alist).collect();
+    let types: Vec<Obj> = entries.iter().map(|&entry| e.objects.rest(entry)).collect();
 
     // The registered types are held in a Rust Vec for the whole drive, and the
     // handlers they carry are x-lang code that can collect.
@@ -382,13 +386,9 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let mut at = 0u64;
     while at < len {
         // The same contest the form reader runs. See `analyse`.
-        let claim = if is_base_arg {
-            e.in_base(target, |e| analyse(e, &types, text, at))?
-        } else {
-            analyse(e, &types, text, at)?
-        };
+        let claim = e.in_base(target, |e| analyse(e, &types, text, at, env))?;
         let Some((ty, claim)) = claim else {
-            if is_base_arg {
+            if falls_back {
                 // No registered type claims here: the engine's own reader takes
                 // one form, or the input is done.
                 let src = e.objects.bytes_of(text);
@@ -422,29 +422,33 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
         // answering nil without consuming, so the next one sees the same buffer
         // — which is why each attempt gets a buffer positioned identically
         // rather than one carried over from a reader that already looked.
-        let mut token = NIL;
+        // A type with NO read hook DISCARDS its span — whitespace, comments —
+        // and the drive fetches another token, as `x_token_read` does.
         if reader.is_nil() {
-            token = tok(&mut e.objects, &[buf])?;
-        } else {
-            for r in handler_list(e, reader) {
-                let fresh = e.objects.buf(text, at);
-                e.objects.set_buf_cursor(fresh, at + n);
-                let fmark = e.root_mark();
-                e.root_push(fresh);
-                e.root_push(r);
-                let got = if is_base_arg {
-                    e.in_base(target, |e| e.call_with_values(r, &[fresh], env))?
-                } else {
-                    e.call_with_values(r, &[fresh], env)?
-                };
-                e.root_truncate(fmark);
-                if !got.is_nil() {
-                    token = got;
-                    break;
-                }
+            e.root_truncate(rmark);
+            at += n;
+            continue;
+        }
+        let mut token = NIL;
+        for r in handler_list(e, reader) {
+            let fresh = e.objects.buf(text, at);
+            e.objects.set_buf_cursor(fresh, at + n);
+            let fmark = e.root_mark();
+            e.root_push(fresh);
+            e.root_push(r);
+            let got = e.in_base(target, |e| e.call_with_values(r, &[fresh], env))?;
+            e.root_truncate(fmark);
+            if !got.is_nil() {
+                token = got;
+                break;
             }
         }
         e.root_truncate(rmark);
+        // Every reader declined: the drive stops, dropping the unterminated
+        // tail — the contract `x_prim_token_read_string` states and keeps.
+        if token.is_nil() {
+            break;
+        }
         e.root_push(token);
         tokens.push(token);
         at += n;
@@ -470,9 +474,24 @@ fn read_tok(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 
 // --- registration ------------------------------------------------------------
 
-/// `(base make-tok)` — a base with NO types registered.
-fn make_tok(a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.tokbase())
+/// `(base make-tok)` — a REAL base with an empty type-alist.
+///
+/// The reference's `x_prim_make_token_base` allocates an ordinary base with
+/// nothing registered, inheriting only the boolean singletons. A token base
+/// differs from an interpreter base by its CONTENTS — no catalog, no types —
+/// not by its kind: the tokenizer drives whatever type-alist the base it is
+/// handed carries, and `base make-type` files into the same alist either way.
+fn make_tok(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
+    let env = e.envs.push_root(&mut e.objects);
+    let t = e.objects.sym_shared(crate::vocabulary::TRUE);
+    e.envs.bind(&mut e.objects, env, t, t);
+    let f = e.objects.sym_shared(crate::vocabulary::FALSE);
+    let fo = e.objects.false_obj();
+    e.envs.bind(&mut e.objects, env, f, fo);
+    let base = crate::base::build(&mut e.objects, NIL, env);
+    e.envs.set_base(&mut e.objects, env, base);
+    e.base_syms.insert(base, crate::symbols::Symbols::new());
+    Ok(base)
 }
 
 /// `(base make-type TARGET "NAME" handlers)` — register a type, ANSWERING ITS
@@ -490,14 +509,10 @@ fn make_type(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let text = e.objects.str_val(a[1]);
     let name = e.objects.handle(&text);
     let ty = e.objects.type_new(name, a[2]);
-    if e.objects.is_tokbase(a[0]) {
-        e.objects.tokbase_add(a[0], ty);
-    } else {
-        let entry = e.objects.spair(name, ty);
-        let head = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
-        let cell = e.objects.spair(entry, head);
-        crate::base::set(&mut e.objects, a[0], crate::base::TYPE_ALIST, cell);
-    }
+    let entry = e.objects.spair(name, ty);
+    let head = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
+    let cell = e.objects.spair(entry, head);
+    crate::base::set(&mut e.objects, a[0], crate::base::TYPE_ALIST, cell);
     Ok(name)
 }
 
@@ -512,7 +527,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::filed("buf", "read-text", 1, read_text),
     PrimDef::both_full("token-read-string", "tok", "read-str", 2, read_str),
     PrimDef::filed_full("tok", "read", 1, read_tok),
-    PrimDef::filed("base", "make-tok", 0, make_tok),
+    PrimDef::filed_full("base", "make-tok", 0, make_tok),
     PrimDef::filed_full("base", "make-type", 3, make_type),
 ];
 

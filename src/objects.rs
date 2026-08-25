@@ -174,7 +174,6 @@ pub const FLAG_BUF: Flags = Flags::new(0x20000);
 pub const FLAG_BUFMARKS: Flags = Flags::new(0x20001);
 
 /// A TOKENIZER BASE: a base with no bindings, carrying registered reader types.
-pub const FLAG_TOKBASE: Flags = Flags::new(0x40000);
 
 /// An escape CONTINUATION, identified by a serial number.
 ///
@@ -287,7 +286,6 @@ pub const STAMPED_KINDS: &[(Flags, &str)] = &[
     (FLAG_TYPE, "TYPE"),
     (FLAG_ITER, "ITER"),
     (FLAG_BUF, "BUFFER"),
-    (FLAG_TOKBASE, "TOKENBASE"),
     (FLAG_CONT, "CONTINUATION"),
 ];
 

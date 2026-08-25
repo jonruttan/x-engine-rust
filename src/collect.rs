@@ -38,7 +38,7 @@
 use crate::obj::{EnvId, Flags, Obj, Word};
 use crate::objects::{
     Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_ENV, FLAG_ENVH, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP,
-    FLAG_PAIR, FLAG_SPAIR, FLAG_TOKBASE, FLAG_WRAP,
+    FLAG_PAIR, FLAG_SPAIR, FLAG_WRAP,
 };
 
 /// The mark, kept in a spare bit of the flags word.
@@ -156,7 +156,7 @@ impl Objects {
                     stack.push(self.data(o, 2).as_obj());
                     stack.push(self.op_env(o).obj());
                 }
-                f if f == FLAG_WRAP || f == FLAG_TOKBASE => {
+                f if f == FLAG_WRAP => {
                     stack.push(self.data(o, 0).as_obj());
                 }
                 // An environment OBJECT names a holder and nothing else.

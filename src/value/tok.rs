@@ -4,8 +4,8 @@
 //! share a header and an allocator; it is not one FILE, because these kinds
 //! have nothing else to do with each other.
 
-use crate::obj::{Obj, Word, NIL};
-use crate::objects::{Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_TOKBASE, FLAG_TOKEOF};
+use crate::obj::{Obj, Word};
+use crate::objects::{Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_TOKEOF};
 
 impl Objects {
     /// A buffer over `text`, with both marks at `at`.
@@ -82,35 +82,6 @@ impl Objects {
         self.data(o, 2).as_obj()
     }
 
-    /// A base with NO types registered — deliberately bare, which is the whole
-    /// purpose `base make-tok` exists for.
-    pub fn tokbase(&mut self) -> Obj {
-        self.alloc(FLAG_TOKBASE, 1)
-    }
-
-    pub fn is_tokbase(&self, o: Obj) -> bool {
-        self.is(o, FLAG_TOKBASE)
-    }
-
-    pub fn tokbase_types(&self, o: Obj) -> Obj {
-        self.data(o, 0).as_obj()
-    }
-
-    /// Registered types are kept in REGISTRATION ORDER, because the scorer must
-    /// consider every one of them per position rather than stopping at the
-    /// first: two types competing for the same character is the case that
-    /// distinguishes a scorer from a search.
-    pub fn tokbase_add(&mut self, o: Obj, ty: Obj) {
-        let head = self.tokbase_types(o);
-        let mut items: Vec<Obj> = self.list(head).collect();
-        items.push(ty);
-        let mut list = NIL;
-        for &t in items.iter().rev() {
-            list = self.pair(t, list);
-        }
-        self.set_data(o, 0, list.word());
-    }
-
     /// The one end-of-input sentinel. Allocated once per engine, never compared
     /// by value: `lib/x/repl/loop.x` tests it with `(obj same?)` and says why --
     /// "eq? compares value words and could conflate a satom with an integer".
@@ -172,20 +143,5 @@ mod tests {
         );
         o.set_buf_retain(b, 3);
         assert_eq!(o.buf_retain(b), 3);
-    }
-
-    /// A fresh tokenizer base has NO types, which is the whole purpose of
-    /// `base make-tok` existing beside `base make`.
-    #[test]
-    fn a_tokenizer_base_starts_bare_and_keeps_registration_order() {
-        let mut o = Objects::new();
-        let tb = o.tokbase();
-        assert!(o.tokbase_types(tb).is_nil(), "born with no types");
-        let (n1, n2) = (o.str_new("A"), o.str_new("B"));
-        let (t1, t2) = (o.type_new(n1, NIL), o.type_new(n2, NIL));
-        o.tokbase_add(tb, t1);
-        o.tokbase_add(tb, t2);
-        let types: Vec<Obj> = o.list(o.tokbase_types(tb)).collect();
-        assert_eq!(types, vec![t1, t2], "registration order, not reversed");
     }
 }
