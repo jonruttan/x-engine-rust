@@ -518,20 +518,39 @@ impl Engine {
                 }
             },
             Body::IntBinop(f) => {
-                let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
-                Ok(self.objects.int(f(x, y)))
+                // The bitwise family guards nil ITSELF (x-lang #239): a
+                // `(Base make)` child gets these raw, with no library wrapper
+                // in front, and a nil operand must raise catchably — the
+                // reference's message, "<op>: operand is nil".
+                if vals[0].is_nil() || vals[1].is_nil() {
+                    Err(self.nil_operand(def))
+                } else {
+                    let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
+                    Ok(self.objects.int(f(x, y)))
+                }
             }
             Body::IntPred(f) => {
                 let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
                 Ok(self.objects.truth(f(x, y)))
             }
             Body::IntUnop(f) => {
-                let x = self.objects.as_int(vals[0]);
-                Ok(self.objects.int(f(x)))
+                if vals[0].is_nil() {
+                    Err(self.nil_operand(def))
+                } else {
+                    let x = self.objects.as_int(vals[0]);
+                    Ok(self.objects.int(f(x)))
+                }
             }
         };
         self.root_truncate(mark);
         out
+    }
+
+    /// The #239 raise: "<op>: operand is nil", as the reference words it.
+    fn nil_operand(&mut self, def: &crate::prim::PrimDef) -> Cond {
+        let name = def.bare.unwrap_or("int");
+        let v = self.objects.str_new(&format!("{}: operand is nil", name));
+        Cond::Raised(v)
     }
 
     /// Evaluate an argument spine into values.
