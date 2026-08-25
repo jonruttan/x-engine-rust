@@ -261,6 +261,19 @@ pub struct Objects {
     pub(crate) poison_freed: bool,
     /// What a poisoned object used to be, so the trap can name it.
     pub(crate) freed_kind: HashMap<Obj, (u64, u64, u64)>,
+    /// The engine's integer-analyser state objects, in the order
+    /// `prims::tok::INT_STATES` declares: sign, prefix, base, digits,
+    /// xdigits. A state prim answers the NEXT state by reading it here —
+    /// a primitive cannot answer "self" the way a closure's self-binding
+    /// can, so the chain goes through the store, as the reference's states
+    /// chain through their state slots.
+    pub(crate) int_states: [Obj; 5],
+    /// ONE handle object per builtin kind, shared by every base's trees — the
+    /// reference keeps each builtin type's name as a C static atom, so a
+    /// child's INTEGER entry is `eq?` to `(type of 0)`'s answer and
+    /// apps/logo's alist prune can compare identities. `make-type` names stay
+    /// fresh per call, as the reference's strndup'd atoms are.
+    pub(crate) kind_handles: HashMap<Flags, Obj>,
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -332,6 +345,8 @@ impl Objects {
             live: 0,
             poison_freed: std::env::var("X_GC_POISON").is_ok(),
             freed_kind: HashMap::new(),
+            int_states: [crate::obj::NIL; 5],
+            kind_handles: HashMap::new(),
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with
@@ -390,6 +405,16 @@ impl Objects {
 
     /// The type word a fresh object of these flags carries. See the type-word
     /// note above.
+    /// The shared handle for a builtin kind's name.
+    pub(crate) fn kind_handle(&mut self, flags: Flags, text: &str) -> Obj {
+        if let Some(&h) = self.kind_handles.get(&flags) {
+            return h;
+        }
+        let h = self.handle(text);
+        self.kind_handles.insert(flags, h);
+        h
+    }
+
     fn stamp_for(&self, flags: Flags) -> Obj {
         if flags == FLAG_SPAIR {
             self.spair_marker
