@@ -118,11 +118,25 @@ semantic it hardcodes is a semantic no base can replace. The increments:
   its `use_ops` flag inside one signature — never as dispatcher kinds),
   and the environment convention settles.
 
-Recorded deviation to resolve along the way: the reference's CURRENT
-environment lives on the base (`env-alist` field), so a hook needs no env
-parameter; this engine threads `EnvId` through calls. E1 threads it into
-the engine hooks and leaves library hooks the value-shaped call logo
-already uses; by E3 the convention must settle one way, deliberately.
+THE ENVIRONMENT CONVENTION, SETTLED: the current environment is an
+ARGUMENT, as the base is. The reference keeps it on the base's
+`env-alist` field because C threads one context pointer — and its whole
+compound-save/restore machinery exists to repair that mutation; passing
+the environment beside the base gives the same dynamic value without the
+dance, and is the same philosophy as invariant 1. The library-visible
+door follows: where the reference's hooks read the current environment
+off the base's routes, this engine's library eval hooks RECEIVE it — the
+value first, the environment second, and a one-parameter hook never sees
+the extra argument. The doors differ per engine as base routes do under
+decision L1; the LAW (hooks govern, and can resolve names in the scope
+they run in) is the same.
+
+Known remaining after the arc: per-base STAMPING. Values are stamped
+with the engine base's trees, so replacing a ROOT tree's hook poisons
+the replacer's own body — on the reference, a re-aimed base's values
+carry that base's trees and the host's carry the host's. The re-aiming
+story is complete for made types today and completes for builtin kinds
+when stamping follows the allocating base.
 
 ## The off-heap rule (paid for landing D)
 

@@ -268,7 +268,15 @@ impl Engine {
                     None => Ok(form),
                 }
             } else if self.objects.is_closure(hook) {
-                self.apply_closure_values(hook, &[form])
+                // THE SETTLED ENVIRONMENT CONVENTION: the current environment
+                // is an argument, as the base is. The reference's hooks read
+                // it from the base's env field — its spelling under the
+                // one-context-pointer constraint — so a library hook here
+                // RECEIVES it, as this engine's declared door: the value
+                // first, the environment second. A one-parameter hook (logo's
+                // block eval) never sees the extra argument.
+                let env_obj = self.objects.env_obj(env);
+                self.apply_closure_values(hook, &[form, env_obj])
             } else {
                 self.call_with_values(hook, &[form], env)
             };
@@ -801,6 +809,33 @@ mod tests {
         assert_eq!(
             int_of("(def n 1) (def call (fn (self) (%seq (def n 2) ()))) (call) n"),
             2
+        );
+    }
+
+    /// The settled environment convention, observable: a library eval hook
+    /// receives the environment of the evaluation as its second argument, so
+    /// a hook that decides what its instances mean can resolve names in the
+    /// scope they are evaluated in — the door a JavaScript interpreter needs
+    /// open. On a MADE type: a hook replacing the SYMBOL tree would resolve
+    /// its own body through itself, which is the per-base stamping question,
+    /// not this one.
+    #[test]
+    fn a_library_eval_hook_receives_the_environment() {
+        let program = format!(
+            "{}{}",
+            crate::testkit::CATALOG,
+            "(def %tmake (%coord (lit type) (lit make)))
+             (def %minst (%coord (lit type) (lit make-instance)))
+             (def h (%tmake \"ENV-EVAL\" (pair (pair (lit eval)
+               (fn (self v env) (eval (lit target) env))) ())))
+             (def i (%minst h 7))
+             (def target 55)
+             (eval i ())"
+        );
+        assert_eq!(
+            crate::testkit::int_of(&program),
+            55,
+            "the hook resolved a name through the environment it was handed"
         );
     }
 
