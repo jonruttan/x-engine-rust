@@ -12,7 +12,7 @@ use crate::dbl;
 use crate::engine::Engine;
 use crate::eval::EvalResult;
 use crate::foreign::{self, Foreign};
-use crate::obj::{Obj, NIL};
+use crate::obj::{Obj, NIL, WORD};
 use crate::prim::PrimDef;
 use crate::vocabulary::{
     CONV_DD_TO_D, CONV_D_TO_D, CONV_D_TO_I, CONV_D_TO_S, CONV_I_TO_D, CONV_S0_TO_D,
@@ -42,11 +42,24 @@ fn marshal(e: &Engine, o: Obj) -> u64 {
     if e.objects.is_foreign(o) {
         return e.objects.foreign_addr(o);
     }
+    // A PTR into this engine's heap becomes a REAL ADDRESS, exactly as a
+    // string does: the heap is the engine's own array, so an address inside it
+    // must be resolved before it crosses the door — `Sys wait` hands `waitpid`
+    // a region as `(%str->ptr s)` and reads the status back through it. The
+    // two spaces do not overlap: a heap offset is bounded by the heap, and
+    // anything the foreign side hands back is a process address far above it.
+    if e.objects.is_ptr(o) {
+        let at = e.objects.as_ptr(o);
+        if (at.raw() as usize) < e.objects.heap.words_len() * WORD {
+            return e.objects.heap.address_of(at);
+        }
+        return at.raw();
+    }
     e.objects.as_int(o) as u64
 }
 
 /// `(ffi dlopen path flags)` — nil path is the SELF handle.
-fn dlopen(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn dlopen(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let path = cstr(e, a[0]);
     let flags = e.objects.as_int(a[1]) as i32;
     let h = foreign::open(path.as_deref(), flags);
@@ -59,7 +72,7 @@ fn dlopen(e: &mut Engine, a: &[Obj]) -> EvalResult {
 
 /// `(ffi dlsym lib "name")` — nil when unresolvable, because the library
 /// branches on a nil handle rather than guarding every lookup.
-fn dlsym(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn dlsym(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let Some(name) = cstr(e, a[1]) else {
         return Ok(NIL);
     };
@@ -73,7 +86,7 @@ fn dlsym(e: &mut Engine, a: &[Obj]) -> EvalResult {
 }
 
 /// `(ptr call f args...)` — the integer convention, up to seven arguments.
-fn ptr_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn ptr_call(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let f = Foreign(marshal(e, a[0]));
     let args: Vec<u64> = a[1..].iter().map(|&o| marshal(e, o)).collect();
     let r = foreign::call_ints(f, &args);
@@ -92,7 +105,7 @@ fn ptr_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// most of these conventions do not call anything at all. `d+d` adds two
 /// doubles; only `d->d`, `dd->d` and `s0->d` reach through the pointer, and only
 /// those three touch [`crate::foreign`].
-fn ffi_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn ffi_call(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let conv = e.objects.str_val(a[0]);
     let bits: Vec<u64> = a[2..].iter().map(|&o| marshal(e, o)).collect();
     let arg = |n: usize| bits.get(n).copied().unwrap_or(0);
@@ -131,7 +144,7 @@ fn ffi_call(e: &mut Engine, a: &[Obj]) -> EvalResult {
 }
 
 /// `(syscall n args...)` — bare, because `lib/x/sys/` reaches it by name.
-fn syscall(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn syscall(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let n = e.objects.as_int(a[0]);
     let args: Vec<u64> = a[1..].iter().map(|&o| marshal(e, o)).collect();
     Ok(e.objects.int(foreign::kernel(n, &args)))

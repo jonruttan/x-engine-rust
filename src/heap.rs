@@ -1,10 +1,9 @@
 //! The heap: word storage.
 //!
-//! NAMED FOR THE CONTRACT, not for the implementation. x-lang's ISA has a `heap`
-//! namespace — `heap collect`, `heap count`, `heap mark`, `heap free-hook!` —
-//! and the object header's word 0 is documented as the heap link word. This was
-//! called `Store` for a while, which meant the contract and the code would have
-//! used different words for the same thing the moment isa/gc arrived.
+//! NAMED FOR THE CONTRACT: x-lang's ISA has a `heap` namespace — `heap
+//! collect`, `heap count`, `heap mark`, `heap free-hook!` — and the object
+//! header's word 0 is documented as the heap link word, so the code uses the
+//! contract's word.
 //!
 //! The word arena only GROWS: freed objects go back on the collector's free list
 //! (see `collect.rs`) and are handed out again, but nothing is ever returned to

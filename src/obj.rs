@@ -1,10 +1,8 @@
 //! The four things a machine word can mean here, as four types.
 //!
-//! Everything in this engine used to be `u64`. An object reference, a byte
-//! offset, a raw word read out of storage, a header bitfield, an environment
-//! index and a plain integer were one type to the compiler, so passing an offset
-//! where an object belonged was a silent success. `fn as_ptr(&self, o: Obj) ->
-//! u64` was the confession: the difference existed only in the author's head.
+//! An object reference, a byte offset, a raw storage word and a header
+//! bitfield are all machine words; as one type the compiler cannot tell them
+//! apart, and passing an offset where an object belongs is a silent success.
 //!
 //! These are newtypes, so they cost nothing at runtime and every crossing
 //! between them has to be written down. Where a crossing is genuinely
@@ -177,23 +175,23 @@ impl Flags {
 /// closure whose captured environment was really an object would bind names into
 /// arbitrary storage.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct EnvId(usize);
+pub struct EnvId(Obj);
 
 impl EnvId {
-    pub const fn new(i: usize) -> Self {
-        EnvId(i)
+    pub const fn from_obj(o: Obj) -> Self {
+        EnvId(o)
     }
 
-    pub const fn index(self) -> usize {
+    pub const fn obj(self) -> Obj {
         self.0
     }
 
     pub const fn word(self) -> Word {
-        Word(self.0 as u64)
+        self.0.word()
     }
 
     pub const fn from_word(w: Word) -> Self {
-        EnvId(w.0 as usize)
+        EnvId(w.as_obj())
     }
 }
 

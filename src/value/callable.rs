@@ -160,8 +160,8 @@ mod tests {
     #[test]
     fn a_closure_remembers_its_environment_id() {
         let mut o = Objects::new();
-        let c = o.closure(NIL, NIL, EnvId::new(3));
-        assert_eq!(o.closure_env(c), EnvId::new(3));
+        let c = o.closure(NIL, NIL, EnvId::from_word(Word(3)));
+        assert_eq!(o.closure_env(c), EnvId::from_word(Word(3)));
     }
 
     /// An operative carries the same, plus the name its caller's environment
@@ -170,9 +170,9 @@ mod tests {
     fn an_operative_carries_params_envname_body_and_env() {
         let mut o = Objects::new();
         let name = o.sym("e");
-        let op = o.operative(NIL, name, NIL, EnvId::new(2));
+        let op = o.operative(NIL, name, NIL, EnvId::from_word(Word(2)));
         assert_eq!(o.op_envname(op), name);
-        assert_eq!(o.op_env(op), EnvId::new(2));
+        assert_eq!(o.op_env(op), EnvId::from_word(Word(2)));
         assert!(o.is_op(op));
         assert!(!o.is_closure(op), "an operative is not a closure");
     }
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn a_wrapper_holds_the_very_same_operative() {
         let mut o = Objects::new();
-        let inner = o.operative(NIL, NIL, NIL, EnvId::new(0));
+        let inner = o.operative(NIL, NIL, NIL, EnvId::from_word(Word(0)));
         let w = o.wrapper(inner);
         assert_eq!(o.wrapper_inner(w), inner);
     }

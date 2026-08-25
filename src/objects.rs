@@ -122,6 +122,9 @@ pub const FLAG_OP: Flags = Flags::new(0x0800);
 
 /// A first-class environment. `(op (x) e ...)` binds one to `e`.
 pub const FLAG_ENV: Flags = Flags::new(0x1000);
+/// An ENV HOLDER — chain head, parent holder, base. Its slots are all objects,
+/// traced like any other; the FRAME cells on its chain are ordinary spairs.
+pub const FLAG_ENVH: Flags = Flags::new(0x1001);
 
 /// A TYPE object: a name and its handler list.
 pub const FLAG_TYPE: Flags = Flags::new(0x2000);
@@ -163,6 +166,12 @@ pub const FLAG_FOREIGN: Flags = Flags::new(0x80000);
 /// suite reads it as a word. Word 1 must be an OBJECT, because the suite
 /// reaches it with `rest` and then reads ITS word 0.
 pub const FLAG_BUF: Flags = Flags::new(0x20000);
+/// A buffer's inner bookkeeping pair — `(read . write)`. Its slots are RAW
+/// MARKS, not objects, which is why it is its own kind: the tracer must mark
+/// the object and refuse to traverse its slots, exactly as the reference's
+/// buffer mark handler does ("don't traverse its slots since they're raw char
+/// pointers, not objects").
+pub const FLAG_BUFMARKS: Flags = Flags::new(0x20001);
 
 /// A TOKENIZER BASE: a base with no bindings, carrying registered reader types.
 pub const FLAG_TOKBASE: Flags = Flags::new(0x40000);
@@ -481,9 +490,32 @@ impl Objects {
     ///
     /// One rule in one place: `first` and `rest` had their own nil guards before
     /// this, which is the same rule written twice.
+    #[cfg(debug_assertions)]
+    fn flags_word_raw(&self, o: Obj) -> u64 {
+        self.heap
+            .word(
+                o.addr()
+                    .plus(crate::objects::SLOT_FLAGS * crate::obj::WORD as u64),
+            )
+            .raw()
+    }
+
     pub fn data(&self, o: Obj, i: u64) -> Word {
         if o.is_nil() {
             return Word(0);
+        }
+        // Reads trap too under poison, in debug builds: first/rest are plain
+        // data reads and touch neither the flags word nor the store path.
+        #[cfg(debug_assertions)]
+        if self.poison_freed && self.flags_word_raw(o) == crate::collect::POISON {
+            let was = self.freed_kind.get(&o);
+            panic!(
+                "read of a FREED object at {:?} slot {} (was {:?})\n  held by: {:?}",
+                o,
+                i,
+                was,
+                self.holders_of(o)
+            );
         }
         self.heap.word(Self::slot(o, i))
     }
@@ -528,18 +560,10 @@ impl Objects {
         self.true_obj
     }
 
-    /// x-lang's truth answer: `#t` or `#f`, NEVER a symbol and never nil.
-    ///
-    /// This answered the symbol `t` and nil for a while. Both are correctly
-    /// truthy and falsy, so nothing that merely BRANCHED on a predicate could
-    /// tell — 102 conformance checks and 18 compliance rows never noticed. What
-    /// notices is printing one: `(null? ())` rendered as nothing where x-lang's
-    /// spec suite expects `#t`, and seventeen list specs failed on it.
-    ///
-    /// The reference settles it. `x_prim_eq`, `x_prim_same`, `x_prim_lt` and
-    /// `type`'s predicates all answer `x_firstobj(x_eval_field_true(p_base))` or
-    /// the matching false field — base fields a child base INHERITS
-    /// (`x-prim/base.c`), never a symbol and never nil.
+    /// x-lang's truth answer: the `#t` and `#f` OBJECTS, never a symbol and
+    /// never nil. A predicate's answer is a value that gets DISPLAYED, not just
+    /// branched on; the reference returns its base's TRUE/FALSE fields
+    /// (`x_prim_eq`, x-prim/pred.c), which child bases inherit.
     pub fn truth(&self, b: bool) -> Obj {
         if b {
             self.true_obj
@@ -600,7 +624,6 @@ impl Objects {
     }
 
     /// A one-line description of a raw word, for the collector's trap.
-    #[cfg(debug_assertions)]
     pub(crate) fn describe_word(&self, w: u64) -> String {
         let o = Word(w).as_obj();
         if o.is_nil() {

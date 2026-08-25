@@ -7,12 +7,6 @@
 //! through `x_token_read`. So a reader macro the library installs changes every
 //! later read — `include` and the REPL included.
 //!
-//! This engine had two readers that never met: a hand-written one for its own
-//! input, and the `tok` instructions for the library to drive. `lib/x/reader/
-//! lit-reader.x` installed its quote macro correctly, onto a type the engine's
-//! reader never consulted, so `'x` read as a SYMBOL NAMED `'x` and surfaced far
-//! away as `Unbound SYMBOL ''str`.
-//!
 //! # The shape
 //!
 //! At every position where a form may begin, the registered analysers get first
@@ -32,7 +26,7 @@
 use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::obj::{Obj, NIL};
-use crate::prims::tok::{handler, handler_list, score_one};
+use crate::prims::tok::{analyse, handler, handler_list};
 use crate::vocabulary::Family;
 
 impl Engine {
@@ -177,20 +171,25 @@ impl Engine {
             self.root_push(*t);
         }
         let at = r.pos() as u64;
-        for ty in types {
-            if ty.is_nil() || handler(self, ty, Family::Analyse).is_nil() {
-                continue;
+
+        // ONE CONTEST, then read with the winner. See `prims::tok::analyse`.
+        let (ty, claim) = match analyse(self, &types, text, at) {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                self.root_truncate(mark);
+                return Ok(None);
             }
-            let n = match score_one(self, ty, text, at) {
-                Ok(Some(n)) => n,
-                Ok(None) => continue,
-                Err(c) => {
-                    self.root_truncate(mark);
-                    return Err(c);
-                }
-            };
+            Err(c) => {
+                self.root_truncate(mark);
+                return Err(c);
+            }
+        };
+        {
+            // The magnitude is the span; the sign only ordered the contest.
+            let n = claim.unsigned_abs();
             if n == 0 {
-                continue;
+                self.root_truncate(mark);
+                return Ok(None);
             }
             // The reader runs with the buffer positioned on the claimed span:
             // retain at the start, cursor at the end, so `buf last-char` is the

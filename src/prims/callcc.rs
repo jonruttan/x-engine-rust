@@ -16,12 +16,12 @@ use crate::prim::PrimDef;
 /// The continuation unwinds outward and cannot be re-entered. x-lang's library
 /// never calls call/cc at all — only doc-prims.x documents it — so escape covers
 /// everything the language does.
-fn call_cc(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn call_cc(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.with_escape(a[0], e.root_env())
 }
 
 /// `(%cc-invoke k v)` — begin an unwind that only k's own call/cc will stop.
-fn cc_invoke(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn cc_invoke(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.invoke_cont(a[0], a[1])
 }
 

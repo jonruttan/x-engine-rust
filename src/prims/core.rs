@@ -14,11 +14,22 @@ use crate::prim::PrimDef;
 
 /// `(eval expr env)` — in the environment given, which is how an operative
 /// reaches into its caller's.
+///
+/// The two arities are DIFFERENT instructions, as `x_prim_eval` draws them.
+/// Without an env the expression is in tail position — it is PARKED for the
+/// caller's trampoline, so a loop written through `eval` runs in constant
+/// stack. With an env it cannot be: the given environment must be restored
+/// after, so the evaluation happens here, under this frame.
 fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let expr_form = e.nth(args, 0);
     let expr = e.eval(expr_form, env)?;
-    let env_form = e.nth(args, 1);
-    let target_obj = e.eval(env_form, env)?;
+    // Presence is asked of the SPINE, not the value: `(eval x ())` has an env
+    // argument that happens to be nil, and takes the with-env path.
+    let env_cell = e.objects.rest(args);
+    if env_cell.is_nil() {
+        return Ok(e.park_tail(expr, env));
+    }
+    let target_obj = e.eval(e.objects.first(env_cell), env)?;
     let target = if e.objects.is_env(target_obj) {
         e.objects.env_id(target_obj)
     } else {
@@ -44,13 +55,14 @@ fn apply(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let l_form = e.nth(args, 1);
     let list = e.eval(l_form, env)?;
     let vals: Vec<Obj> = e.objects.list(list).collect();
-    e.call_with_values(f, &vals, env)
+    // TAIL, not settled: `let` expands through here.
+    e.call_with_values_tail(f, &vals, env)
 }
 
 /// The reflective root. Everything reflective starts here: the prelude walks the
 /// committed base paths from `(%base)` to reach the prims catalog, so an engine
 /// without it cannot even be asked what it provides.
-fn base(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn base(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.base)
 }
 
@@ -99,15 +111,12 @@ fn atomic(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 /// zz          =>  7
 /// ```
 ///
-/// Nested evaluation here answered `Unbound SYMBOL 'zz`: the definition landed
-/// in `myif`'s caller frame and died with it. `lib/x/doc/doc.x` is built on this
-/// exact behaviour — its comment says the final tail-eval "must run in the op's
-/// own tail so it defines the symbol in the caller's env" — so `(doc (def or …))`
-/// defined nothing, and `or` was Unbound a hundred lines later with no error at
-/// the point of loss.
-fn tail_eval(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    // An env operand that is not an env is a caller error, not a licence to pick
-    // one. Falling back to the root used to hide exactly the bug above.
+/// `lib/x/doc/doc.x` is built on this exact behaviour — its comment says the
+/// final tail-eval "must run in the op's own tail so it defines the symbol in
+/// the caller's env".
+fn tail_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    // An env operand that is not an env is a caller error, not a licence to
+    // pick one.
     if !e.objects.is_env(a[1]) {
         return Err(Cond::NotAnEnvironment(a[1]));
     }

@@ -33,7 +33,12 @@ fn error(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let spec = e.nth(args, 0);
     let body = e.objects.rest(args);
-    match e.eval_body(body, env) {
+    // A handler is now active, which is what lets a pending interrupt become a
+    // STOP rather than tearing the run down.
+    e.guard_depth += 1;
+    let outcome = e.eval_body(body, env);
+    e.guard_depth -= 1;
+    match outcome {
         Ok(v) => Ok(v),
         // An ESCAPING continuation is not a condition and must pass straight
         // through. A guard that caught one would strand the escape at the wrong
@@ -48,12 +53,12 @@ fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
             // The HANDLER is a tail position; the BODY is not. Parking the body
             // would evaluate it in the caller's loop, outside this guard, and
             // the raise it exists to catch would sail straight past.
-            let frame = e.envs.push(env);
+            let frame = e.envs.push(&mut e.objects, env);
             if !name.is_nil() {
                 // The value is built HERE, not at the failure site. A condition
                 // that is caught and ignored never allocates a message at all.
                 let v = cond.value(&mut e.objects);
-                e.envs.bind(frame, name, v);
+                e.envs.bind(&mut e.objects, frame, name, v);
             }
             e.eval_body_tail(handler, frame)
         }

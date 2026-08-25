@@ -5,12 +5,6 @@
 //! library reaches into it by walking the routes the engine commits to in
 //! `tools/contract/base-paths.x`.
 //!
-//! This engine had a two-element pair standing in for one. It satisfied the
-//! `core` profile and every conformance case that exists, because none of them
-//! looks, while the state a base is supposed to carry sat in a Rust struct that
-//! reflection cannot see. `make check-base-routes` in x-lang is what says so:
-//! the library walks sixteen routes by name and would have died on the first.
-//!
 //! # The shape
 //!
 //! A flat spine, one cell per route, so that a route ends at the CELL whose
@@ -98,10 +92,9 @@ const PRIMS_SLOT: usize = 0;
 /// Build a base spine with every route present and nil-valued, then fill the
 /// two the engine sets itself.
 ///
-/// Every cell EXISTS even when its value is nil. A route that resolved to
+/// Every cell EXISTS even when its value is nil: a route that resolved to
 /// nothing would be indistinguishable from a route the engine forgot, and the
-/// library's walk would answer nil rather than failing — which is the quiet
-/// half of the bug this replaces.
+/// library's walk would answer nil rather than failing.
 /// A spine of `n` cells, each holding a fresh one-word cell the library can read
 /// with `%cell-int` and write with `%set-cell-int!`.
 ///
@@ -227,13 +220,12 @@ mod tests {
 
     /// EVERY route in base-paths.x must resolve on a base this engine builds.
     ///
-    /// This is the check the whole session was missing: a base with fewer cells
-    /// than declared routes walks off the end and answers nil, which reads as "no
-    /// value" rather than "no such route".
+    /// A base with fewer cells than declared routes walks off the end and
+    /// answers nil, which reads as "no value" rather than "no such route".
     #[test]
     fn every_declared_route_resolves() {
         let mut o = Objects::new();
-        let base = build(&mut o, NIL, EnvId::new(0));
+        let base = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(0)));
         for (n, name) in ROUTES.iter().enumerate() {
             let c = cell(&o, base, n);
             assert!(
@@ -251,7 +243,7 @@ mod tests {
     #[test]
     fn the_spine_is_exactly_as_long_as_the_route_list() {
         let mut o = Objects::new();
-        let base = build(&mut o, NIL, EnvId::new(0));
+        let base = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(0)));
         let last = cell(&o, base, ROUTES.len() - 1);
         assert!(o.rest(last).is_nil(), "the spine has a spare cell");
     }
@@ -260,19 +252,19 @@ mod tests {
     fn the_engine_reads_back_what_it_wrote() {
         let mut o = Objects::new();
         let catalog = o.sym("catalog-stand-in");
-        let base = build(&mut o, catalog, EnvId::new(3));
+        let base = build(&mut o, catalog, EnvId::from_word(crate::obj::Word(3)));
         assert_eq!(catalog_of(&o, base), catalog);
-        assert_eq!(env_of(&o, base), EnvId::new(3));
+        assert_eq!(env_of(&o, base), EnvId::from_word(crate::obj::Word(3)));
     }
 
     /// Two bases are distinct spines: writing one must not disturb the other.
     #[test]
     fn bases_do_not_share_cells() {
         let mut o = Objects::new();
-        let a = build(&mut o, NIL, EnvId::new(1));
-        let b = build(&mut o, NIL, EnvId::new(2));
-        assert_eq!(env_of(&o, a), EnvId::new(1));
-        assert_eq!(env_of(&o, b), EnvId::new(2));
+        let a = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(1)));
+        let b = build(&mut o, NIL, EnvId::from_word(crate::obj::Word(2)));
+        assert_eq!(env_of(&o, a), EnvId::from_word(crate::obj::Word(1)));
+        assert_eq!(env_of(&o, b), EnvId::from_word(crate::obj::Word(2)));
     }
 
     /// The ROUTES list and base-paths.x are the same list, and this is what

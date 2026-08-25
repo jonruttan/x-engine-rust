@@ -13,6 +13,12 @@ impl Objects {
         self.set_data(o, 0, Word(at.raw()));
         o
     }
+
+    /// Is this a POINTER object? Asked when marshalling for the foreign door,
+    /// which converts a heap-internal address and leaves a process one alone.
+    pub fn is_ptr(&self, o: Obj) -> bool {
+        self.is(o, FLAG_PTR)
+    }
 }
 
 #[cfg(test)]

@@ -53,11 +53,24 @@ pub enum Body {
     Value(fn(&mut Objects, &[Obj]) -> Result<Obj, Cond>),
     /// Needs to reach back into EVALUATION or the input stream: iterators drive
     /// a step function, `io read` consumes the program's own text.
-    Applicative(fn(&mut Engine, &[Obj]) -> EvalResult),
+    /// The BASE arrives as the reference's `p_base` does — an argument, derived
+    /// from the running environment's frame, so `(b eval …)` needs no bracket
+    /// for these to see the right registry.
+    Applicative(fn(&mut Engine, Obj, &[Obj]) -> EvalResult),
     /// Arguments arrive AS WRITTEN, with the environment they were written in.
     /// `lit`, `def`, `fn`, `op`, `match`, `guard`, `set!` — everything whose
     /// whole purpose is to decide what gets evaluated.
     Operative(fn(&mut Engine, Obj, EnvId) -> EvalResult),
+    /// A TOWER operator: the same pure integer operation, but offered to the
+    /// type-ops registry first so a typed operand reaches its own handler. The
+    /// spelling travels with it because that is the alist key.
+    ///
+    /// Only `+ - * / %` and the comparisons carry this. The bitwise family
+    /// deliberately does not: ruling #52 says bitwise has no tower semantics —
+    /// there is no float `&` — so the dispatch is not offered there.
+    TowerBinop(&'static str, fn(i64, i64) -> i64),
+    /// The same, for a comparison.
+    TowerPred(&'static str, fn(i64, i64) -> bool),
 
     // The three below are PURE FUNCTIONS OF INTEGERS. They do not receive the
     // engine at all, which is the point: eleven of the thirteen machine
@@ -106,6 +119,36 @@ impl PrimDef {
             coord: Some((ns, method)),
             arity: (2, Some(2)),
             body: Body::IntBinop(f),
+        }
+    }
+
+    /// A tower operator: type-ops dispatch, then the integer operation.
+    pub const fn tower2(
+        bare: &'static str,
+        ns: &'static str,
+        method: &'static str,
+        f: fn(i64, i64) -> i64,
+    ) -> Self {
+        PrimDef {
+            bare: Some(bare),
+            coord: Some((ns, method)),
+            arity: (2, Some(2)),
+            body: Body::TowerBinop(bare, f),
+        }
+    }
+
+    /// A tower comparison: type-ops dispatch, then the integer comparison.
+    pub const fn tower_pred(
+        bare: &'static str,
+        ns: &'static str,
+        method: &'static str,
+        f: fn(i64, i64) -> bool,
+    ) -> Self {
+        PrimDef {
+            bare: Some(bare),
+            coord: Some((ns, method)),
+            arity: (2, Some(2)),
+            body: Body::TowerPred(bare, f),
         }
     }
 
@@ -190,7 +233,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         n: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),
@@ -205,7 +248,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         n: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: None,
@@ -223,7 +266,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         min: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: None,
@@ -242,7 +285,7 @@ impl PrimDef {
         ns: &'static str,
         method: &'static str,
         min: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),
@@ -256,7 +299,7 @@ impl PrimDef {
     pub const fn var_bare(
         bare: &'static str,
         min: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),
@@ -270,7 +313,7 @@ impl PrimDef {
     pub const fn bare_full(
         bare: &'static str,
         n: usize,
-        f: fn(&mut Engine, &[Obj]) -> EvalResult,
+        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
     ) -> Self {
         PrimDef {
             bare: Some(bare),

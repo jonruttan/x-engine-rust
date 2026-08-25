@@ -31,7 +31,7 @@ use crate::prim::PrimDef;
 /// Must INCREASE across an allocation, which is the whole of what the contract
 /// asks — so it counts allocations EVER and collection does not lower it. The
 /// live count is a different number and is not what x-lang asked for here.
-fn count(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn count(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let n = e.objects.alloc_count() as i64;
     Ok(e.objects.int(n))
 }
@@ -42,14 +42,13 @@ fn count(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// and that collecting twice looks the same as once. The first is what the mark
 /// phase is for; the second follows from the mark being computed fresh each
 /// time, so a second collection immediately after a first finds nothing new.
-fn collect(e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn collect(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let freed = e.collect();
     if std::env::var("X_HEAP_STATS").is_ok() {
         eprintln!(
-            "collect: freed {} objects, {} live; {} of {} frames free",
+            "collect: freed {} objects, {} live; {} envs made (heap-owned)",
             freed,
             e.objects.live,
-            e.envs.free_count(),
             e.envs.frame_count()
         );
     }
@@ -62,11 +61,11 @@ fn collect(e: &mut Engine, _a: &[Obj]) -> EvalResult {
 /// x-lang leaves their call shapes undefined and says so; they are here because
 /// the capability is the whole group, and an engine that declared `isa/gc` while
 /// omitting two rows would be claiming a group it does not cover.
-fn mark(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn mark(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
-fn sweep(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
+fn sweep(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
@@ -74,20 +73,20 @@ fn sweep(_e: &mut Engine, _a: &[Obj]) -> EvalResult {
 ///
 /// Answers the object, so a caller can pin inline. Nothing to record: every
 /// object here already survives everything.
-fn pin(_e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn pin(_e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(a[0])
 }
 
 /// `(heap mark-hook! f)` — prepend to the base's mark-hook list.
-fn mark_hook(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let b = e.base;
+fn mark_hook(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let b = base;
     base::push(&mut e.objects, b, base::MARK_HOOKS, a[0]);
     Ok(a[0])
 }
 
 /// `(heap free-hook! f)` — prepend to the base's free-hook list.
-fn free_hook(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let b = e.base;
+fn free_hook(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let b = base;
     base::push(&mut e.objects, b, base::FREE_HOOKS, a[0]);
     Ok(a[0])
 }
@@ -98,8 +97,8 @@ fn free_hook(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// The engine's part is RECORDING it. Whether a later collection honours the
 /// list is the collector's behaviour, and this engine's collector is the empty
 /// one.
-fn mark_root(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let b = e.base;
+fn mark_root(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let b = base;
     base::push(&mut e.objects, b, base::MARK_ROOTS, a[0]);
     Ok(a[0])
 }
@@ -111,15 +110,59 @@ fn mark_root(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// an engine that filed it only in the catalog would leave every bare harness
 /// unable to guard itself.
 ///
-/// It is ENFORCED, not merely recorded. Collection is EXPLICIT-ONLY, so nothing
-/// stands between a runaway loop and the machine except this — and unbounded
-/// allocation has taken this project's machine down before.
-fn alloc_limit(e: &mut Engine, a: &[Obj]) -> EvalResult {
+/// It is ENFORCED, not merely recorded: collection is EXPLICIT-ONLY, so
+/// nothing stands between a runaway loop and the machine except this.
+fn alloc_limit(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     let n = e.objects.as_int(a[0]);
-    let b = e.base;
+    let b = base;
     base::set(&mut e.objects, b, base::ALLOC_LIMIT, a[0]);
     e.alloc_limit = if n > 0 { Some(n as usize) } else { None };
     Ok(a[0])
+}
+
+/// `(heap check)` — DEBUG: walk the chain and verify every reference slot
+/// holds nil or a plausible object start; answers the number of BAD slots and
+/// prints each. Costs a full heap walk; exists to catch structure miswiring
+/// the moment it happens rather than three calls later.
+fn heap_check(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
+    let mut bad = 0i64;
+    let mut at = e.objects.heap_chain;
+    while !at.is_nil() {
+        let f = crate::obj::Flags::from_word(crate::obj::Word(
+            e.objects.flags_word(at) & !(1u64 << 63),
+        ));
+        let n = e.objects.data_len(at);
+        let check_slots: &[u64] =
+            if f == crate::objects::FLAG_PAIR || f == crate::objects::FLAG_SPAIR {
+                &[0, 1]
+            } else if f == crate::objects::FLAG_ENVH {
+                &[0, 1, 2]
+            } else {
+                &[]
+            };
+        for &i in check_slots {
+            if i >= n {
+                continue;
+            }
+            let w = e.objects.data(at, i).raw();
+            if w == 0 {
+                continue;
+            }
+            if w % 8 != 0
+                || (w / 8) as usize + crate::objects::META_LEN as usize > e.objects.heap.words_len()
+            {
+                eprintln!(
+                    "HEAP-CHECK bad: {} slot {} holds {:#x}",
+                    e.objects.describe_word(at.word().raw()),
+                    i,
+                    w
+                );
+                bad += 1;
+            }
+        }
+        at = e.objects.chain_next(at);
+    }
+    Ok(e.objects.int(bad))
 }
 
 pub const TABLE: &[PrimDef] = &[
@@ -128,6 +171,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::filed_full("heap", "mark", 0, mark),
     PrimDef::filed_full("heap", "sweep", 0, sweep),
     PrimDef::filed_full("heap", "pin!", 1, pin),
+    PrimDef::filed_full("heap", "check", 0, heap_check),
     PrimDef::filed_full("heap", "mark-hook!", 1, mark_hook),
     PrimDef::filed_full("heap", "free-hook!", 1, free_hook),
     PrimDef::filed_full("heap", "mark-root!", 1, mark_root),

@@ -33,7 +33,9 @@ use crate::vocabulary::Family;
 
 /// `(buf make s)` — a buffer viewing a string's bytes, non-owning.
 fn make(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.buf(a[0], 0))
+    // A made buffer is EMPTY whatever its region holds: the region is capacity,
+    // not content, and `str make`'s space fill must never read back as input.
+    Ok(a_.buf_writable(a[0], 0, 0))
 }
 
 /// `(buf read b)` — the next character, advancing the cursor.
@@ -44,6 +46,11 @@ fn read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
     let text = a_.buf_text(b);
     let at = a_.buf_cursor(b);
+    // Bounded by the WRITE mark, not the region: unwritten capacity is not
+    // input. x_buffereof is `read >= write`.
+    if at >= a_.buf_write(b) {
+        return Ok(NIL);
+    }
     let bytes = a_.bytes_of(text);
     if at as usize >= bytes.len() {
         return Ok(NIL);
@@ -76,7 +83,9 @@ fn last_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     if at == 0 || at as usize > bytes.len() {
         return Ok(NIL);
     }
-    Ok(a_.char_new(bytes[at as usize - 1] as u32))
+    // The CODE, not a character — the reference answers "Integer character
+    // code", and the spec asserts 105 for #\i.
+    Ok(a_.int(bytes[at as usize - 1] as i64))
 }
 
 /// `(buf retain b)` — the retain mark catches up to the cursor.
@@ -85,9 +94,29 @@ fn last_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// span would still start at the beginning of the input, and the second `"43"`
 /// in `"42 43 "` would measure five bytes rather than two.
 fn retain(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let at = a_.buf_cursor(a[0]);
-    a_.set_buf_retain(a[0], at);
-    Ok(a[0])
+    let b = a[0];
+    let at = a_.buf_cursor(b);
+    if a_.buf_ro(b) {
+        // The tokenizer's case: a mark bump, never a copy (#354).
+        a_.set_buf_retain(b, at);
+        return Ok(b);
+    }
+    // A WRITABLE buffer compacts: the unread remainder moves to the front of
+    // the region, so the tail capacity is writable again. The spec observes the
+    // backing string directly — after reading one of "abc", byte 0 is 'b'.
+    let text = a_.buf_text(b);
+    let base = a_.str_bytes(text);
+    let w = a_.buf_write(b);
+    let mut i = 0u64;
+    while at + i < w {
+        let c = a_.heap.byte(base.plus(at + i));
+        a_.heap.set_byte(base.plus(i), c);
+        i += 1;
+    }
+    a_.set_buf_retain(b, 0);
+    a_.set_buf_cursor(b, 0);
+    a_.set_buf_write(b, w - at);
+    Ok(b)
 }
 
 /// `(buf reset b)` — the cursor goes back to the retain mark.
@@ -98,21 +127,35 @@ fn reset(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 /// `(buf append b s)` — extend the text being read.
+/// `(buf append b ch)` — ONE CHARACTER, written at the write mark INTO the
+/// region. The region is shared state: writing in place is what makes the byte
+/// visible to every view of it. Writes past the region's capacity are clamped.
 fn append(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
-    let mut bytes = a_.bytes_of(a_.buf_text(b));
-    bytes.extend(a_.bytes_of(a[1]));
-    let text = a_.str_from_bytes(&bytes);
-    a_.set_data(b, 2, text.word());
+    let text = a_.buf_text(b);
+    let w = a_.buf_write(b);
+    // Clamp at the region's capacity rather than write past it.
+    if (w as usize) < a_.byte_len(text) {
+        let at = a_.str_bytes(text);
+        let ch = a_.as_char(a[1]) as u8;
+        a_.heap.set_byte(at.plus(w), ch);
+        a_.set_buf_write(b, w + 1);
+    }
     Ok(b)
 }
 
-/// `(buf read-text b)` — everything from the retain mark to the end.
+/// `(buf read-text b)` — read ONE character; nil at end of input OR on a NUL,
+/// which is `x_type_buffer_read` plus the NUL test.
 fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
-    let bytes = a_.bytes_of(a_.buf_text(b));
-    let from = (a_.buf_retain(b) as usize).min(bytes.len());
-    Ok(a_.str_from_bytes(&bytes[from..]))
+    let got = read(a_, a)?;
+    if got.is_nil() {
+        return Ok(NIL);
+    }
+    if a_.as_char(got) == 0 {
+        return Ok(NIL);
+    }
+    Ok(b)
 }
 
 // --- the tokenizer -----------------------------------------------------------
@@ -125,43 +168,6 @@ fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// `type make` carry their handlers identically.
 pub(crate) fn handler(e: &mut Engine, ty: Obj, family: Family) -> Obj {
     e.objects.type_handler(ty, family)
-}
-
-/// Run one type's analyser from the buffer's current position.
-///
-/// Answers the length it claims, or `None`. The score object is how acceptance
-/// is signalled — the analyser writes a length into it — so it is read after
-/// every character rather than inferred from what the analyser returned.
-pub(crate) fn score_one(
-    e: &mut Engine,
-    ty: Obj,
-    text: Obj,
-    from: u64,
-) -> Result<Option<u64>, Cond> {
-    let analyse = handler(e, ty, Family::Analyse);
-    if analyse.is_nil() {
-        return Ok(None);
-    }
-    // The slot may hold ONE handler or a LIST of them, and the list is how
-    // x-lang installs reader macros: lib/x/reader/lit-reader.x pushes
-    // `(interp lit quasi unquote <the engine's own symbol analyser>)` onto the
-    // symbol type, with the engine's handler captured as the catch-all TAIL.
-    // Walking only a lone handler leaves `'x` reading as a symbol named `'x`.
-    //
-    // Order is the library's and it means something — the catch-all is last on
-    // purpose — so the FIRST handler that scores wins rather than the longest.
-    for h in handler_list(e, analyse) {
-        // The captured tail may be nil — lib/x/reader/lit-reader.x ends its list
-        // with the engine's own analyser, and an engine that had none there
-        // contributes nothing rather than a call through nil.
-        if h.is_nil() {
-            continue;
-        }
-        if let Some(n) = score_with(e, h, text, from)? {
-            return Ok(Some(n));
-        }
-    }
-    Ok(None)
 }
 
 /// The handlers in a slot: a list walked directly, a lone handler on its own.
@@ -177,72 +183,153 @@ pub(crate) fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
     }
 }
 
-/// Run ONE analyser state machine from `from`, answering the length it claims.
-fn score_with(e: &mut Engine, analyse: Obj, text: Obj, from: u64) -> Result<Option<u64>, Cond> {
+/// Does `score` beat `best`, by the reference's comparison?
+///
+/// `x_token_analyse` writes it as
+/// `score >= i_best || (i_best < 1 && score <= i_best)`, with `i_best` starting
+/// at zero. Two things fall out of that shape and both matter: `>=` means a
+/// LATER type takes a tie, which is how the library's ordering settles
+/// equal-length claims; and while nothing positive has matched, a MORE negative
+/// score wins — the symbol fallback scores negative so any positive match beats
+/// it (sexp/symbol.c).
+pub(crate) fn better(score: i64, best: Option<i64>) -> bool {
+    match best {
+        None => true,
+        Some(b) => score >= b || (b < 1 && score <= b),
+    }
+}
+
+/// THE ANALYSE CONTEST: which registered type claims the text at `at`, and how
+/// much of it — `x_token_analyse`, shared by both drives.
+///
+/// ONE BUFFER for the whole contest, rewound to the token start between
+/// attempts, so an analyser's side effects — `%buffer-unread` backing off a
+/// delimiter it peeked at, the retain mark, `last-char` — accumulate the way
+/// the library expects.
+///
+/// A handler's attempt ends one of two ways, measured differently:
+///
+///   * it RETURNS THE SCORE OBJECT — an accept; the claim is the score's own
+///     value, which `%score-set` filled from the buffer span. Setting the
+///     score is NOT an accept: `%float-first-frac` sets it on the first
+///     fractional digit and returns the next state.
+///   * it runs out of input with a score already set — the EOF auto-score,
+///     `sign(score) * consumed`, which claims an undelimited token at the end
+///     of a source.
+///
+/// A handler answering nil rewinds first, so it claims nothing. `better`
+/// decides the winner; `>=` means a later type takes a tie, so registration
+/// order settles equal-length claims while LENGTH settles unequal ones.
+pub(crate) fn analyse(
+    e: &mut Engine,
+    types: &[Obj],
+    text: Obj,
+    at: u64,
+) -> Result<Option<(Obj, i64)>, Cond> {
     let mark = e.root_mark();
     e.root_push(text);
-    e.root_push(analyse);
-    let buf = e.objects.buf(text, from);
+    let buf = e.objects.buf(text, at);
     e.root_push(buf);
     let score = e.objects.int(0);
     e.root_push(score);
-    let mut state = analyse;
+    let state_slot = e.root_mark();
+    e.root_push(NIL);
     let env = e.root_env();
 
-    loop {
-        let chr = match read(&mut e.objects, &[buf]) {
-            Ok(v) => v,
-            Err(c) => {
-                e.root_truncate(mark);
-                return Err(c);
+    let rewind = |e: &mut Engine| {
+        let start = e.objects.buf_retain(buf);
+        e.objects.set_buf_cursor(buf, start);
+    };
+
+    let mut best: Option<i64> = None;
+    let mut winner = NIL;
+
+    for &ty in types {
+        if ty.is_nil() {
+            continue;
+        }
+        let slot = handler(e, ty, Family::Analyse);
+        if slot.is_nil() {
+            continue;
+        }
+        for h in handler_list(e, slot) {
+            // The captured tail may be nil — lib/x/reader/lit-reader.x ends its
+            // list with the engine's own analyser.
+            if h.is_nil() {
+                continue;
             }
-        };
-        if chr.is_nil() {
-            // END OF INPUT. No accept branch runs, so nothing is scored — a
-            // token must be delimited.
-            e.root_truncate(mark);
-            return Ok(None);
-        }
-        let next = match e.call_with_values(state, &[buf, score, chr], env) {
-            Ok(v) => v,
-            Err(c) => {
-                e.root_truncate(mark);
-                return Err(c);
+            e.objects.set_data(score, 0, crate::obj::Word::from_i64(0));
+            let mut state = h;
+            e.roots[state_slot] = state;
+
+            let accepted = loop {
+                let chr = match read(&mut e.objects, &[buf]) {
+                    Ok(v) => v,
+                    Err(c) => {
+                        e.root_truncate(mark);
+                        return Err(c);
+                    }
+                };
+                // End of input: break WITHOUT rewinding, so the auto-score below
+                // still sees the span.
+                if chr.is_nil() {
+                    break None;
+                }
+                let next = match e.call_with_values(state, &[buf, score, chr], env) {
+                    Ok(v) => v,
+                    Err(c) => {
+                        e.root_truncate(mark);
+                        return Err(c);
+                    }
+                };
+                if next.is_nil() {
+                    rewind(e);
+                    break None;
+                }
+                if next == buf {
+                    continue;
+                }
+                if next == score {
+                    break Some(e.objects.as_int(score));
+                }
+                state = next;
+                e.roots[state_slot] = state;
+            };
+
+            let claim = match accepted {
+                Some(n) if n != 0 => Some(n),
+                Some(_) => None,
+                None => {
+                    let consumed = e
+                        .objects
+                        .buf_cursor(buf)
+                        .saturating_sub(e.objects.buf_retain(buf))
+                        as i64;
+                    let scored = e.objects.as_int(score);
+                    if consumed > 0 && scored != 0 {
+                        Some(if scored < 0 { -consumed } else { consumed })
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(n) = claim {
+                if better(n, best) {
+                    best = Some(n);
+                    winner = ty;
+                }
             }
-        };
-        let claimed = e.objects.as_int(score);
-        if claimed != 0 {
-            // THE LENGTH IS WHAT WAS CONSUMED, and the score only carries its
-            // SIGN. The reference computes `(score < 0 ? -1 : 1) * consumed`,
-            // and consumed is the buffer's own span — retain to cursor, after
-            // any `%buffer-unread` the acceptor performed.
-            //
-            // Taking the score's MAGNITUDE as the length happens to agree for an
-            // acceptor that sets it from `%buffer-len` — `%lit-accept` does — and
-            // is wrong for one that sets a bare sign.
-            //
-            // This is closer to the reference and it is NOT yet enough:
-            // `$"a{1}b"` still reads with nil parts, so something else about
-            // that analyser's drive is wrong too. Recorded rather than claimed.
-            let consumed = e
-                .objects
-                .buf_cursor(buf)
-                .saturating_sub(e.objects.buf_retain(buf));
-            e.root_truncate(mark);
-            return Ok(Some(consumed.max(1)));
+            rewind(e);
         }
-        if !e.objects.truthy(next) {
-            e.root_truncate(mark);
-            return Ok(None);
-        }
-        state = next;
-        e.roots[mark + 1] = state;
     }
+
+    e.root_truncate(mark);
+    Ok(best.map(|n| (winner, n)))
 }
 
 /// `(tok read-str TB text)` — drive every registered type over the text, score
 /// them against each other, and answer the LIST of tokens produced.
-fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let text = a[1];
     let gmark = e.root_mark();
     e.root_push(text);
@@ -260,54 +347,66 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
     // A TOKBASE drives the scorer over the types registered in it. That is the
     // protocol x-lang's conformance suite exercises, delimiting included: an
     // undelimited `"42"` must yield no tokens at all.
-    if !e.objects.is_tokbase(a[0]) {
-        // A BASE reads the text as the engine reads any other source.
-        //
-        // It cannot go through the scorer here, and the reason is this engine's
-        // deviation rather than the caller's mistake: the reference expresses its
-        // BUILT-IN syntax as analyse/read handlers on the builtin types, so
-        // scoring plain text finds them. This engine keeps that syntax in Rust
-        // (see crate::form), so the scorer would find nothing registered and
-        // answer no tokens -- which is exactly what happened to every chunk of a
-        // `$"…"` literal.
-        let text = e.objects.str_val(text);
-        let mut r = crate::read::Reader::new(&text);
-        let mut forms: Vec<Obj> = Vec::new();
-        while let Some(f) = e.read_form_from(&mut r)? {
-            forms.push(f);
-        }
-        let mut list = NIL;
-        for &f in forms.iter().rev() {
-            list = e.objects.pair(f, list);
-        }
-        return Ok(list);
-    }
-    let types: Vec<Obj> = e.objects.list(e.objects.tokbase_types(a[0])).collect();
+    // THE FIRST ARGUMENT'S TYPE-ALIST IS THE TYPE LIST. For a token base that
+    // is its own list; for a REAL base it is the base's type-alist — the same
+    // registry `make-instance` and `type ?` read, which is what lets an app
+    // register a language on a child base and have every consumer agree
+    // (apps/logo). The whole drive runs IN that base, so a read handler's
+    // `%make-instance` resolves its handle where the type was filed.
+    //
+    // Types with no analyse handler cost one nil check, exactly as in the form
+    // reader. When NO type claims a position, a real base falls back to the
+    // engine's own reader for ONE form — this engine keeps its built-in syntax
+    // in Rust where the reference expresses it as handlers on the builtin
+    // types, so the fallback is the same implicit tail the reference gets by
+    // construction. That keeps `$"…"` interpolation working (a plain host base
+    // claims nothing and reads forms) while a registered language wins wherever
+    // its analysers claim.
+    let is_base_arg = !e.objects.is_tokbase(a[0]);
+    let types: Vec<Obj> = if is_base_arg {
+        let alist = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
+        let entries: Vec<Obj> = e.objects.list(alist).collect();
+        entries.iter().map(|&entry| e.objects.rest(entry)).collect()
+    } else {
+        e.objects.list(e.objects.tokbase_types(a[0])).collect()
+    };
+
     // The registered types are held in a Rust Vec for the whole drive, and the
     // handlers they carry are x-lang code that can collect.
     for t in &types {
         e.root_push(*t);
     }
+    let target = a[0];
     let env = e.root_env();
-
     let mut tokens: Vec<Obj> = Vec::new();
     let mut at = 0u64;
     while at < len {
-        // EVERY type is tried at this position and the longest claim wins.
-        // Taking the first that matches would make registration order decide
-        // the language, which is the distinction between a scorer and a search.
-        let mut best: Option<(u64, Obj)> = None;
-        for &ty in &types {
-            if let Some(n) = score_one(e, ty, text, at)? {
-                // `map_or`, not `is_none_or`: the latter is stable since 1.82 and
-                // this crate's declared MSRV is 1.78. Raising the floor for one
-                // call would be the tail wagging the dog.
-                if n > 0 && best.map_or(true, |(b, _)| n > b) {
-                    best = Some((n, ty));
-                }
+        // The same contest the form reader runs. See `analyse`.
+        let claim = if is_base_arg {
+            e.in_base(target, |e| analyse(e, &types, text, at))?
+        } else {
+            analyse(e, &types, text, at)?
+        };
+        let Some((ty, claim)) = claim else {
+            if is_base_arg {
+                // No registered type claims here: the engine's own reader takes
+                // one form, or the input is done.
+                let src = e.objects.bytes_of(text);
+                let mut r = crate::read::Reader::from_bytes(src, at as usize, text);
+                let form = e.in_base(target, |e| e.read_form_from(&mut r))?;
+                let Some(form) = form else { break };
+                e.root_push(form);
+                tokens.push(form);
+                at = r.pos() as u64;
+                continue;
             }
+            break;
+        };
+        // The sign ordered the contest; the span is the magnitude.
+        let n = claim.unsigned_abs();
+        if n == 0 {
+            break;
         }
-        let Some((n, ty)) = best else { break };
 
         // The winner's `read` runs against a buffer positioned on exactly the
         // span it claimed: retain at the start, cursor at the end.
@@ -333,7 +432,11 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
                 let fmark = e.root_mark();
                 e.root_push(fresh);
                 e.root_push(r);
-                let got = e.call_with_values(r, &[fresh], env)?;
+                let got = if is_base_arg {
+                    e.in_base(target, |e| e.call_with_values(r, &[fresh], env))?
+                } else {
+                    e.call_with_values(r, &[fresh], env)?
+                };
                 e.root_truncate(fmark);
                 if !got.is_nil() {
                     token = got;
@@ -356,20 +459,12 @@ fn read_str(e: &mut Engine, a: &[Obj]) -> EvalResult {
     Ok(list)
 }
 
-/// `(tok read TB b)` — the same drive, over a buffer already positioned.
-/// `(tok read buffer)` — ONE FORM from the buffer, leaving its cursor after what
-/// was read.
-///
-/// ONE argument, the buffer. It was declared as taking two, `(tok read TB
-/// buffer)`, and read the second — so `lib/x/reader/lit-reader.x`'s
-/// `(%token-read buffer)` handed it a buffer it ignored and a nil it used, and
-/// `'x` came out as `(lit ())`.
+/// `(tok read buffer)` — ONE FORM from the buffer, leaving its cursor after
+/// what was read. ONE argument, the buffer.
 ///
 /// This is what a reader macro calls to read the form it prefixes: `%lit-read`
-/// answers `(lit X)` by reading X through here. It used to re-tokenize the
-/// buffer's whole text and answer a LIST of every token in it, which is a
-/// different instruction entirely.
-fn read_tok(e: &mut Engine, a: &[Obj]) -> EvalResult {
+/// answers `(lit X)` by reading X through here.
+fn read_tok(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.read_form_at(a[0])
 }
 
@@ -380,11 +475,30 @@ fn make_tok(a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.tokbase())
 }
 
-/// `(base make-type TB "NAME" handlers)` — register a reader type.
-fn make_type(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let ty = a_.type_new(a[1], a[2]);
-    a_.tokbase_add(a[0], ty);
-    Ok(ty)
+/// `(base make-type TARGET "NAME" handlers)` — register a type, ANSWERING ITS
+/// HANDLE.
+///
+/// A real base files `(handle . tree)` in ITS type-alist — the one list
+/// `make-instance` resolves a handle through, `type ?` reads a name from, and
+/// the tokenizer contest iterates; apps depend on that identity (apps/logo
+/// registers a language on a child base and dispatches every token with
+/// `%type?`). A token base keeps its own list for the bare-protocol checks.
+///
+/// The HANDLE comes back, not the tree, because the handle is what everything
+/// downstream compares — as `x_prim_base_make_type` answers its name atom.
+fn make_type(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let text = e.objects.str_val(a[1]);
+    let name = e.objects.handle(&text);
+    let ty = e.objects.type_new(name, a[2]);
+    if e.objects.is_tokbase(a[0]) {
+        e.objects.tokbase_add(a[0], ty);
+    } else {
+        let entry = e.objects.spair(name, ty);
+        let head = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
+        let cell = e.objects.spair(entry, head);
+        crate::base::set(&mut e.objects, a[0], crate::base::TYPE_ALIST, cell);
+    }
+    Ok(name)
 }
 
 pub const TABLE: &[PrimDef] = &[
@@ -399,7 +513,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::both_full("token-read-string", "tok", "read-str", 2, read_str),
     PrimDef::filed_full("tok", "read", 1, read_tok),
     PrimDef::filed("base", "make-tok", 0, make_tok),
-    PrimDef::filed("base", "make-type", 3, make_type),
+    PrimDef::filed_full("base", "make-type", 3, make_type),
 ];
 
 #[cfg(test)]

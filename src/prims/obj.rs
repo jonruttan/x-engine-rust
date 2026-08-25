@@ -6,41 +6,35 @@ use crate::eval::EvalResult;
 use crate::obj::Obj;
 use crate::objects::Objects;
 use crate::prim::PrimDef;
-
-/// Identity, EXCEPT for numbers. Symbols are interned and nil is one value, so
-/// identity is right for those — but an integer is a boxed object here, so two
-/// spellings of 1 are two objects and a pure pointer compare answers false.
-///
-/// x-engine-c was asked rather than guessed at, and it draws the line in a
-/// specific place: `(eq? 1 1)` holds and `(eq? "a" "a")` does NOT. Numbers
-/// compare by value; strings, which are mutable, by identity.
-/// `(obj eq?)` — by VALUE for numbers and characters, by identity otherwise.
-///
-/// The character half was missing, and it is not a nicety: `%str-ref` answers a
-/// freshly made character, so every string comparison in x-lang's library comes
-/// down to `(eq? (%str-ref hay i) (%str-ref needle j))`. With identity those are
-/// never equal, and `lib/x/platform/syscall.x` could not find "darwin" inside
-/// "aarch64-apple-darwin" — the whole posix layer refused to load with
-/// `(unsupported-platform . aarch64-apple-darwin)`.
-///
-/// Asked of x-engine-c rather than assumed:
-///
-/// ```text
-/// (def %ic (prim-ref 'int '->char))
-/// (match ((eq? (%ic 100) (%ic 100)) 'EQ) (#t 'NOT-EQ))   =>  'EQ
-/// ```
-///
-/// Strings stay identity-compared, which the same interrogation confirmed
-/// earlier: `(eq? "a" "a")` does not hold. The reference reads slot 0 either
-/// way — for an atom that is its value, and for a string it is the pointer.
+/// `eq?` compares the OPERAND WORD, not the type: `a == b || (both non-nil &&
+/// word(a) == word(b))`, as `x_prim_eq` does. A CHARACTER therefore equals the
+/// INTEGER of its code, which the string printer's escape tables rely on.
+/// Strings compare by identity for free — a string's word is the address of
+/// its bytes. Objects that merely share a first word conflate here; identity
+/// questions belong to `same?`.
 fn eq(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let same = if a_.is_int(a[0]) && a_.is_int(a[1]) {
-        a_.int_val(a[0]) == a_.int_val(a[1])
-    } else if a_.is_char(a[0]) && a_.is_char(a[1]) {
-        a_.as_char(a[0]) == a_.as_char(a[1])
-    } else {
-        a[0] == a[1]
-    };
+    // THE OPERAND WORD, NOT THE TYPE. The reference is one expression:
+    //
+    //     a == b || (!isnil(a) && !isnil(b) && x_intval(a) == x_intval(b))
+    //
+    // It reads slot 0 of BOTH operands and compares the words. It does not ask
+    // whether the two are the same kind — so a CHARACTER and the INTEGER of its
+    // code are `eq?`, which x-lang's printer depends on: `%print-str-esc?` and
+    // `%print-str-esc-byte` (lib/x/boot/printer.x) are handed
+    // `(str byte-ref s i)` — a character — and match it against 34, 92, 10, 9,
+    // 13. Type-gating the comparison made every one of those arms miss, so a
+    // quote printed unescaped, a newline came out `\x0a`, and a carriage return
+    // lost its backslash. That is the whole of the csv/json `parse` cluster.
+    //
+    // Strings stay identity-compared for free: slot 0 of a string is the address
+    // of its bytes, so two equal strings hold different words.
+    //
+    // It DOES conflate objects that merely share a first word — two distinct
+    // closures answer #t here. That is the reference's behaviour and x-lang knows
+    // it: tower-compiled.x warns that an `eq?`-keyed analyser swap "stamped the
+    // first compiled handler over every seat", and uses `obj same?` instead.
+    let same = a[0] == a[1]
+        || (!a[0].is_nil() && !a[1].is_nil() && a_.data(a[0], 0).raw() == a_.data(a[1], 0).raw());
     Ok(a_.truth(same))
 }
 
@@ -78,7 +72,7 @@ fn pair(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// walks the base's type-alist; a type that never lands there answers nil, and
 /// callers write into what they get back rather than checking. That is how
 /// `lib/x/type/promise.x` came to push a call handler through nil.
-fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn type_make(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     // The NAME arrives as a string; the handle is made from it here, and the
     // handle is what comes back. x-lang keeps the type-alist keyed by it and
     // passes it to `make-instance`, so answering the tree would hand the library
@@ -86,7 +80,7 @@ fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
     let text = e.objects.str_val(a[0]);
     let name = e.objects.handle(&text);
     let t = e.objects.type_new(name, a[1]);
-    e.file_type(t);
+    e.file_type_in(base, t);
     Ok(name)
 }
 
@@ -100,10 +94,10 @@ fn type_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
 /// Filing here rather than at each construction site is deliberate: this
 /// instruction is the only door x-lang has to a type, so anything the library
 /// can name has passed through it.
-fn type_of(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn type_of(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     let t = e.objects.type_of(a[0]);
     for fresh in e.objects.take_unfiled_types() {
-        e.file_type(fresh);
+        e.file_type_in(base, fresh);
     }
     Ok(t)
 }
@@ -134,8 +128,8 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// answered "no such static member".
 ///
 /// The stamping did not cause that. It exposed it.
-fn make_instance(e: &mut Engine, a: &[Obj]) -> EvalResult {
-    let tree = e.resolve_tree(a[0]);
+fn make_instance(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let tree = e.resolve_tree_in(base, a[0]);
     let o = e.objects.instance(tree, 2);
     e.objects.set_data(o, 0, a[1].word());
     Ok(o)
@@ -143,7 +137,7 @@ fn make_instance(e: &mut Engine, a: &[Obj]) -> EvalResult {
 
 /// The type word is written from the operand, whatever it is. Whether that
 /// operand is a REGISTERED type is x-lang's question to ask.
-fn obj_make(e: &mut Engine, a: &[Obj]) -> EvalResult {
+fn obj_make(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let tree = e.resolve_tree(a[0]);
     let n = e.objects.as_int(a[1]).max(0) as usize;
     Ok(e.objects.instance(tree, n))
@@ -181,6 +175,16 @@ mod tests {
     /// The line x-engine-c draws, asserted in both directions so a future
     /// "simplification" to pure pointer identity fails here rather than as a
     /// number in a conformance count.
+    /// A CHARACTER equals the INTEGER of its code, because `eq?` compares the
+    /// operand word and not the type. x-lang's string printer is built on it.
+    #[test]
+    fn eq_crosses_char_and_int() {
+        assert!(truthy(r"(eq? #\A 65)"));
+        assert!(!truthy(r"(eq? #\A 66)"));
+        // same? is identity and must NOT cross.
+        assert!(!truthy(r"(same? #\A 65)"));
+    }
+
     #[test]
     fn eq_compares_numbers_by_value_and_strings_by_identity() {
         assert!(truthy("(eq? 1 1)"));
@@ -190,14 +194,9 @@ mod tests {
         assert!(truthy("(eq? (lit a) (lit a))"), "symbols are interned");
     }
 
-    /// TRUTHINESS IS NOT ENOUGH — which is exactly how this went wrong.
-    ///
-    /// `truth` answered the symbol `t` and nil for a long time. Both branch
-    /// correctly, so the test above passed, 102 conformance checks passed and 18
-    /// compliance rows passed, while `(null? ())` PRINTED as nothing and
-    /// seventeen of x-lang's list specs failed on it. A predicate's answer is a
-    /// VALUE that gets displayed, not just something to branch on, so assert the
-    /// identity rather than the truthiness.
+    /// TRUTHINESS IS NOT ENOUGH: a symbol and nil branch exactly like `#t`
+    /// and `#f`, and a predicate's answer is a VALUE that gets displayed. So
+    /// assert IDENTITY with the `#t`/`#f` objects, not truthiness.
     #[test]
     fn a_predicate_answers_the_very_objects_hash_t_and_hash_f() {
         assert!(truthy("(same? (eq? 1 1) #t)"));

@@ -33,28 +33,15 @@ fn byte_ref(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a_.heap.byte(at.plus(i)) as u32;
     Ok(a_.char_new(b))
 }
-
-/// `(str byte-sub s off LEN)` — a length, not an end index. x-lang was bitten by
-/// that confusion once already, in its own struct codec, where every str field at
-/// a non-zero offset over-read.
+/// `(str byte-sub s off LEN)` — a length, not an end index. ADDRESSES raw
+/// bytes rather than slicing the NUL-bounded value: a buffer a syscall filled
+/// is binary, with real data past its first zero byte, and `byte-ref` beside
+/// this addresses raw bytes too. Out-of-range reads answer 0 (`Heap::word`),
+/// so no bound is needed.
 fn byte_sub(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let s = a[0];
     let off = a_.as_int(a[1]).max(0) as u64;
     let len = a_.as_int(a[2]).max(0) as u64;
-    // ADDRESSED, not sliced out of the NUL-bounded value.
-    //
-    // This read `bytes_of`, which stops at the first NUL, and that made every
-    // BINARY buffer unreadable past its first zero byte. `(str make 4096)` handed
-    // to a syscall is exactly that buffer: x-lang's dirent decoder reads a name
-    // at offset 21 of a batch whose fifth byte is a NUL, so every entry name came
-    // back EMPTY -- and `File list-dir` then answered a list of empty strings.
-    // `%pin-tree-files` joined one onto its path, listed the same directory
-    // again, and recursed until the allocation ceiling: 138 s and 300M objects
-    // to walk five files, against 0.7 s on the reference.
-    //
-    // `byte-ref` beside this always addressed raw bytes; the two disagreed, and
-    // the reference addresses in both. Out-of-range reads answer 0 rather than
-    // panicking (`Heap::word`), so no bound is needed here.
     let at = a_.str_bytes(s);
     let taken: Vec<u8> = (0..len).map(|i| a_.heap.byte(at.plus(off + i))).collect();
     Ok(a_.str_from_bytes(&taken))

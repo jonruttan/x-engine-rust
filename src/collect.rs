@@ -28,18 +28,17 @@
 //! CONSERVATIVELY: a word is followed only if it could be an object here — in
 //! range and correctly aligned.
 //!
-//! That is a NARROW licence, and widening it was tried and reverted. Tracing
-//! every kind's words this way looks safer — "never free a live object" — but it
-//! is not: a word that passes the plausibility test may point into the MIDDLE of
-//! an object, and marking it writes the mark bit over whatever lives there. The
-//! failure mode is not retained garbage, it is a corrupted heap. Conservatism is
-//! only safe where the alternative is not knowing, which is instances; for every
-//! other kind the layout is known and precision is both cheaper and correct.
+//! That licence is NARROW. Conservative tracing of kinds with known layouts is
+//! unsound, not merely wasteful: a word that passes the plausibility test may
+//! point into the MIDDLE of an object, and marking it writes the mark bit over
+//! whatever lives there. Conservatism is only safe where the alternative is not
+//! knowing, which is instances; everywhere else the layout is known and
+//! precision is both cheaper and correct.
 
 use crate::obj::{EnvId, Flags, Obj, Word};
 use crate::objects::{
-    Objects, FLAG_BUF, FLAG_ENV, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR, FLAG_SPAIR,
-    FLAG_TOKBASE, FLAG_WRAP,
+    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_ENV, FLAG_ENVH, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP,
+    FLAG_PAIR, FLAG_SPAIR, FLAG_TOKBASE, FLAG_WRAP,
 };
 
 /// The mark, kept in a spare bit of the flags word.
@@ -58,8 +57,20 @@ const MARK: u64 = 1 << 63;
 /// and the next read of it traps with a backtrace naming the exact primitive.
 pub const POISON: u64 = 0x0BAD_0BAD_0BAD_0BAD;
 
+/// The flags word of every swept chunk (poison mode stamps `POISON` instead).
+/// No live object carries it, so "is this address free right now?" is one
+/// word read — the collector's map purge asks it per map key.
+pub const FREED: u64 = 0x0DEAD_0DEAD_0DEAD;
+
 impl Objects {
-    fn flags_word(&self, o: Obj) -> u64 {
+    /// Is this address a swept chunk right now? One flags-word read; sound
+    /// between a sweep and the next allocation, which is when the purge runs.
+    pub(crate) fn is_freed(&self, o: Obj) -> bool {
+        let f = self.flags_word(o);
+        f == FREED || f == POISON
+    }
+
+    pub(crate) fn flags_word(&self, o: Obj) -> u64 {
         self.heap
             .word(o.addr().plus(crate::objects::SLOT_FLAGS * 8))
             .raw()
@@ -70,7 +81,7 @@ impl Objects {
             .set_word(o.addr().plus(crate::objects::SLOT_FLAGS * 8), Word(w));
     }
 
-    fn is_marked(&self, o: Obj) -> bool {
+    pub(crate) fn is_marked(&self, o: Obj) -> bool {
         self.flags_word(o) & MARK != 0
     }
 
@@ -79,13 +90,13 @@ impl Objects {
         self.set_flags_word(o, w | MARK);
     }
 
-    fn clear_mark(&mut self, o: Obj) {
+    pub(crate) fn clear_mark(&mut self, o: Obj) {
         let w = self.flags_word(o);
         self.set_flags_word(o, w & !MARK);
     }
 
     /// The next object on the allocation chain.
-    fn chain_next(&self, o: Obj) -> Obj {
+    pub(crate) fn chain_next(&self, o: Obj) -> Obj {
         self.heap
             .word(o.addr().plus(crate::objects::SLOT_HEAP * 8))
             .as_obj()
@@ -107,14 +118,10 @@ impl Objects {
             && (w / 8) as usize + crate::objects::META_LEN as usize <= self.heap.words_len()
     }
 
-    /// Mark `o` and everything it reaches.
-    /// Mark everything reachable from `stack`, reporting the ENVIRONMENTS found.
-    ///
-    /// Objects and environments reach each other — a closure holds a frame, a
-    /// frame's bindings hold objects — so neither can be traced alone. This half
-    /// walks objects and hands back the frames it met; `Engine::collect` runs the
-    /// two to a fixpoint.
-    fn mark(&mut self, stack: &mut Vec<Obj>, envs: &mut Vec<EnvId>) {
+    /// Mark everything reachable from `stack`. One walk: an environment is
+    /// heap data — a holder whose slots are its chain, its parent holder and
+    /// its base — so a closure's captured env traces like any other slot.
+    pub(crate) fn mark(&mut self, stack: &mut Vec<Obj>) {
         while let Some(o) = stack.pop() {
             if o.is_nil() || !self.plausible(o.word().raw()) || self.is_marked(o) {
                 continue;
@@ -140,21 +147,27 @@ impl Objects {
                 f if f == FLAG_FN => {
                     stack.push(self.data(o, 0).as_obj());
                     stack.push(self.data(o, 1).as_obj());
-                    envs.push(self.closure_env(o));
+                    stack.push(self.closure_env(o).obj());
                 }
-                // params, env NAME, body — the fourth is an environment id.
+                // params, env NAME, body — the fourth is the captured env.
                 f if f == FLAG_OP => {
                     stack.push(self.data(o, 0).as_obj());
                     stack.push(self.data(o, 1).as_obj());
                     stack.push(self.data(o, 2).as_obj());
-                    envs.push(self.op_env(o));
+                    stack.push(self.op_env(o).obj());
                 }
                 f if f == FLAG_WRAP || f == FLAG_TOKBASE => {
                     stack.push(self.data(o, 0).as_obj());
                 }
-                // An environment OBJECT names a frame and nothing else.
+                // An environment OBJECT names a holder and nothing else.
                 f if f == FLAG_ENV => {
-                    envs.push(self.env_id(o));
+                    stack.push(self.env_id(o).obj());
+                }
+                // An ENV HOLDER: chain head, parent holder, base — all objects.
+                f if f == FLAG_ENVH => {
+                    stack.push(self.data(o, 0).as_obj());
+                    stack.push(self.data(o, 1).as_obj());
+                    stack.push(self.data(o, 2).as_obj());
                 }
                 // THE FALSE SINGLETON IS SCRATCH SPACE. It looks like a value
                 // with nothing in it, and x-lang hangs the include list off its
@@ -165,11 +178,17 @@ impl Objects {
                         stack.push(self.data(o, i).as_obj());
                     }
                 }
-                // retain (raw), cursor CELL, text.
+                // val mark (raw), the marks pair, the text, the RO flag (raw).
+                // The MARKS pair is marked but its kind refuses traversal below
+                // — its words are raw offsets, exactly the slots the reference's
+                // buffer mark handler declines to walk.
                 f if f == FLAG_BUF => {
                     stack.push(self.data(o, 1).as_obj());
                     stack.push(self.data(o, 2).as_obj());
                 }
+                // Raw marks: an object with NO object slots. Marked, never
+                // traversed.
+                f if f == FLAG_BUFMARKS => {}
                 // Everything else: either a raw value (int, char, prim index,
                 // foreign address, string byte offset) or an INSTANCE whose words
                 // are x-lang's to use. The raw kinds have no references to miss;
@@ -218,6 +237,8 @@ impl Objects {
                     let d1 = if n > 1 { self.data(at, 1).raw() } else { 0 };
                     self.freed_kind.insert(at, (was, d0, d1));
                     self.set_flags_word(at, POISON);
+                } else {
+                    self.set_flags_word(at, FREED);
                 }
                 self.free.entry(n).or_default().push(at);
                 freed += 1;
@@ -255,13 +276,24 @@ impl crate::engine::Engine {
     /// can happen; it does not remove it, because x-lang can call
     /// `(heap collect)` from anywhere.
     fn root_set(&self) -> Vec<Obj> {
-        // The engine's own singletons and tables.
+        // The root set. Anything reachable from the base needs no entry here:
+        // %token-eof and %sigint-flag are bound in every base's env, the
+        // catalog is base slot 0, and #f is the base's FALSE slot. What is
+        // listed is engine-held state with no path from the base:
+        //
+        //   spair/satom markers   sentinels the reference keeps as C statics;
+        //                         nothing on the tree references them.
+        //   builtin_types         the IDENTITY cache: a tree made on demand and
+        //                         not yet filed would be swept and remade as a
+        //                         DIFFERENT object, breaking `type of` identity.
+        //   symbol tables         per-base interning, engine-held as the
+        //                         reference's are; an interned-but-unbound
+        //                         symbol has no other reference.
+        //   roots / env_roots /   the evaluator's Rust locals, pushed and
+        //   base_stack / tail       truncated as evaluation proceeds.
+        //   reader texts          the source being read.
         let mut r: Vec<Obj> = vec![
             self.base,
-            self.token_eof,
-            self.sigint_flag,
-            self.catalog,
-            self.objects.false_obj(),
             self.objects.spair_marker,
             self.objects.satom_marker,
         ];
@@ -289,7 +321,15 @@ impl crate::engine::Engine {
         }
 
         // The evaluator's live values.
+        r.extend(self.base_stack.iter().copied());
         r.extend(self.roots.iter().copied());
+
+        // The library's OWN roots — `heap mark-root!`. Named explicitly, as
+        // the reference's third mark pass names them, so the guarantee the
+        // instruction promises does not depend on the list also being
+        // reachable through the base.
+        let roots_list = crate::base::get(&self.objects, self.base, crate::base::MARK_ROOTS);
+        r.extend(self.objects.list(roots_list));
         r
     }
 
@@ -308,37 +348,98 @@ impl crate::engine::Engine {
 
     /// `(heap collect)` — reclaim what nothing can reach. Answers the count.
     ///
-    /// Objects and environments are traced TOGETHER, to a fixpoint. Neither can
-    /// be done first: a closure keeps a frame alive, and a frame's bindings keep
-    /// objects alive, so tracing one and then the other would miss whatever the
-    /// second turned up for the first.
-    ///
-    /// Treating every frame as a root was the earlier, sound-but-thriftless
-    /// answer, and it cost most of the collection: 364,717 frames survive a boot
-    /// and each pinned everything it had ever bound, so only 46% of the heap
-    /// could be reclaimed.
+    /// One mark pass over the roots, then one sweep. Environments are heap
+    /// data, so their holders and chains trace like any other objects.
     pub fn collect(&mut self) -> usize {
-        let mut ostack = self.root_set();
-        let mut estack = self.env_root_set();
-        let mut seen = vec![false; self.envs.frame_count()];
+        // HOOKS FIRST, BEFORE ANY MARKING.
+        if !self.in_gc {
+            self.in_gc = true;
+            self.run_gc_hooks(crate::base::MARK_HOOKS);
+        }
 
-        loop {
-            self.objects.mark(&mut ostack, &mut estack);
-            let Some(id) = estack.pop() else { break };
-            if seen.get(id.index()).copied().unwrap_or(true) {
-                continue;
+        let mut ostack = self.root_set();
+        for e in self.env_root_set() {
+            ostack.push(e.obj());
+        }
+        self.objects.mark(&mut ostack);
+
+        // Between mark and sweep, as the reference does it.
+        self.run_gc_hooks(crate::base::FREE_HOOKS);
+
+        let freed = self.objects.sweep();
+
+        // Rust-side maps keyed by heap ADDRESS outlive what they describe: an
+        // address outlives its object, and a recycled chunk at the same
+        // address would inherit the dead object's entry. The frame index
+        // would hand a new holder the dead frame's map; `base_syms` would
+        // hand a new base the dead base's interned symbols — aliased symbol
+        // identities, which no heap-side check can see. Purge here, before
+        // the mutator can allocate into the freed chunks. Sweep stamps every
+        // freed chunk's flags word, so the test is one read per map key —
+        // never a walk of the free list, whose size is unbounded.
+        let o = &self.objects;
+        self.envs.index.retain(|h, _| !o.is_freed(*h));
+        self.base_syms.retain(|b, _| !o.is_freed(*b));
+
+        // DEBUG (X_DBG_FREECHECK): nothing REACHABLE may sit on the free
+        // list. A missing root frees a live object; under reuse its chunk
+        // serves two owners and the corruption surfaces arbitrarily far away.
+        #[cfg(debug_assertions)]
+        if std::env::var("X_DBG_FREECHECK").is_ok() {
+            let mut stack = self.root_set();
+            for e in self.env_root_set() {
+                stack.push(e.obj());
             }
-            seen[id.index()] = true;
-            self.envs.bindings_of(id, &mut ostack);
-            if let Some(p) = self.envs.parent_of(id) {
-                estack.push(p);
+            self.objects.mark(&mut stack);
+            let mut victims = Vec::new();
+            for bucket in self.objects.free.values() {
+                for &o in bucket {
+                    if self.objects.is_marked(o) {
+                        victims.push(o);
+                    }
+                }
+            }
+            for &v in victims.iter().take(5) {
+                eprintln!(
+                    "FREECHECK: freed-but-REACHABLE {} held by {:?}",
+                    self.objects.describe_word(v.word().raw()),
+                    self.objects.holders_of(v)
+                );
+            }
+            let mut at = self.objects.heap_chain;
+            while !at.is_nil() {
+                self.objects.clear_mark(at);
+                at = self.objects.chain_next(at);
+            }
+            if !victims.is_empty() {
+                panic!(
+                    "FREECHECK: {} reachable objects on the free list",
+                    victims.len()
+                );
             }
         }
 
-        let freed_frames = self.envs.sweep(&seen);
-        let freed = self.objects.sweep();
-        let _ = freed_frames;
+        self.in_gc = false;
         freed
+    }
+
+    /// Invoke every callable on one of the base's hook lists, with NO
+    /// arguments — one call per hook per collection, as `x_heap_run_hooks`
+    /// does. A raising hook does not abort the collection. The engine is the
+    /// consuming layer: registration without invocation would satisfy any
+    /// check that only asks whether a hook survives.
+    fn run_gc_hooks(&mut self, slot: usize) {
+        let list = crate::base::get(&self.objects, self.base, slot);
+        if list.is_nil() {
+            return;
+        }
+        let hooks: Vec<Obj> = self.objects.list(list).collect();
+        let env = self.root_env();
+        for h in hooks {
+            // A raising hook must not abort the collection.
+            // A raising hook must not abort the collection.
+            let _ = self.call_with_values(h, &[], env);
+        }
     }
 
     /// Hold `o` live across anything that might collect.
@@ -370,24 +471,29 @@ impl crate::engine::Engine {
 
 #[cfg(test)]
 mod tests {
+
     use crate::engine::Engine;
 
-    /// A call's frame is gone once the call returns.
-    ///
-    /// This is the whole point of reclaiming frames: an activation that captured
-    /// nothing has no reason to outlive the call, and treating every frame as a
-    /// root — the earlier, sound-but-thriftless answer — left 46% of the heap
-    /// unreclaimable because each dead frame pinned everything it had bound.
+    /// A call's frame is gone once the call returns: an activation that
+    /// captured nothing has no reason to outlive the call.
     #[test]
     fn a_returned_call_leaves_no_frame_behind() {
+        // Frames are heap objects, so "no frame survives a returned call"
+        // means the LIVE COUNT returns to its settled level — the holders and
+        // their chains are ordinary garbage.
         let mut e = Engine::new();
         e.eval_str("(def f (fn (self n) (+ n 1)))").unwrap();
+        // One round settles whatever the first evaluation interns; an
+        // IDENTICAL second round must leave the live count exactly where it
+        // was. Any per-call leak — a holder, a chain cell, a binding — shows
+        // as growth here.
+        e.eval_str("(f 1) (f 2) (f 3)").unwrap();
         e.collect();
-        let settled = e.envs.frame_count() - e.envs.free_count();
+        let settled = e.objects.live;
 
         e.eval_str("(f 1) (f 2) (f 3)").unwrap();
         e.collect();
-        assert_eq!(e.envs.frame_count() - e.envs.free_count(), settled);
+        assert_eq!(e.objects.live, settled);
     }
 
     /// A CAPTURED frame is not: the closure `g` returns holds the frame that
@@ -415,22 +521,19 @@ mod tests {
         assert_eq!(e.objects.as_int(v), 7);
     }
 
-    /// Reclaimed slots are HANDED BACK. Without reuse the frame vector grows for
-    /// the life of the process even while its contents are freed — which is what
-    /// the first cut of this did, silently.
+    /// A process that calls forever must not grow forever: the LIVE COUNT
+    /// stays flat across identical call-and-collect rounds.
     #[test]
-    fn reclaimed_slots_are_reused() {
+    fn repeated_calls_hold_the_live_count_flat() {
         let mut e = Engine::new();
         e.eval_str("(def f (fn (self n) (+ n 1)))").unwrap();
         e.eval_str("(f 1)").unwrap();
         e.collect();
-        let before = e.envs.frame_count();
-        // Each round reclaims the last round's frames and takes them back, so a
-        // process that calls forever does not grow the frame vector forever.
+        let settled = e.objects.live;
         for _ in 0..10 {
             e.eval_str("(f 1)").unwrap();
             e.collect();
         }
-        assert_eq!(e.envs.frame_count(), before);
+        assert_eq!(e.objects.live, settled);
     }
 }
