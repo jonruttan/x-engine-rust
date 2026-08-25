@@ -548,7 +548,9 @@ impl Engine {
 
     /// The #239 raise: "<op>: operand is nil", as the reference words it.
     fn nil_operand(&mut self, def: &crate::prim::PrimDef) -> Cond {
-        let name = def.bare.unwrap_or("int");
+        // Every IntBinop/IntUnop row carries a bare name; the fallback is
+        // for the type system, not for a reachable case.
+        let name = def.bare.unwrap_or_default();
         let v = self.objects.str_new(&format!("{}: operand is nil", name));
         Cond::Raised(v)
     }
