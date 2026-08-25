@@ -300,6 +300,8 @@ impl crate::engine::Engine {
         r.extend(self.objects.builtin_types.values().copied());
         r.extend(self.objects.kind_handles.values().copied());
         r.extend(self.objects.int_states.iter().copied());
+        r.extend(self.objects.eval_hooks.iter().copied());
+        r.extend(self.objects.call_hooks.iter().copied());
         r.extend(self.objects.unfiled_types.iter().copied());
         r.extend(self.objects.interned());
         for (name, obj) in &self.prim_bindings {

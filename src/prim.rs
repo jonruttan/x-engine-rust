@@ -86,6 +86,12 @@ pub enum Body {
     IntPred(fn(i64, i64) -> bool),
     /// `(op a)` on one integer.
     IntUnop(fn(i64) -> i64),
+    /// A type tree's CALL hook: how a value of this type is APPLIED. Answers
+    /// `None` to say the value is not callable after all — the form stays
+    /// data. Interim shape until E3's single convention; the reference's
+    /// hooks never decline, but this engine's foreign door predates its
+    /// slot-0 unification.
+    CallHook(fn(&mut Engine, Obj, Obj, EnvId) -> Option<EvalResult>),
 }
 
 /// One instruction.
@@ -310,6 +316,18 @@ impl PrimDef {
     }
 
     /// An evaluator-reaching instruction bound bare only.
+    pub const fn call_hook(
+        bare: &'static str,
+        f: fn(&mut Engine, Obj, Obj, EnvId) -> Option<EvalResult>,
+    ) -> Self {
+        PrimDef {
+            bare: Some(bare),
+            coord: None,
+            arity: (2, None),
+            body: Body::CallHook(f),
+        }
+    }
+
     pub const fn bare_full(
         bare: &'static str,
         n: usize,
