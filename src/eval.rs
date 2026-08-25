@@ -259,13 +259,17 @@ impl Engine {
             }
             // An engine hook is operative-shaped and takes the form raw; a
             // LIBRARY hook — logo registers one on its block type — is a
-            // closure called with the value, the shape its handlers expect.
+            // closure applied to the VALUE with no argument evaluation, the
+            // reference's raw-args call. The quoting door would resolve `lit`
+            // through the very hook being called.
             let r = if self.objects.is_prim(hook) {
                 let idx = self.objects.prim_idx(hook);
                 match self.prims.get(idx).map(|d| d.body) {
                     Some(crate::prim::Body::Operative(f)) => f(self, form, env),
                     _ => self.call_with_values(hook, &[form], env),
                 }
+            } else if self.objects.is_closure(hook) {
+                self.apply_closure_values(hook, &[form])
             } else {
                 self.call_with_values(hook, &[form], env)
             };
@@ -617,16 +621,48 @@ impl Engine {
         Ok(out)
     }
 
+    /// Apply a closure to VALUES, with no argument evaluation — the reference's
+    /// `x_callable_call` shape, where args arrive raw. The quote-and-re-evaluate
+    /// door (`call_with_values`) cannot serve a hook that redefines what a
+    /// SYMBOL means: evaluating its quoted arguments resolves `lit` through the
+    /// hook being called, which recurses without end.
+    pub(crate) fn apply_closure_values(&mut self, callee: Obj, vals: &[Obj]) -> EvalResult {
+        // ROOTED: the values arrive in a Rust slice, and binding them
+        // allocates cells.
+        let mark = self.root_mark();
+        self.root_push(callee);
+        for v in vals {
+            self.root_push(*v);
+        }
+        let r = self.apply_closure_bound(callee, vals.to_vec());
+        let out = self.settle_tail(r);
+        self.root_truncate(mark);
+        out
+    }
+
+    /// Settle a parked tail for a caller that needs a VALUE.
+    fn settle_tail(&mut self, r: EvalResult) -> EvalResult {
+        let v = r?;
+        match self.tail.take() {
+            Some((f, e)) => self.eval(f, e),
+            None => Ok(v),
+        }
+    }
+
     /// Apply a closure. APPLICATIVE, and the first parameter is bound to the
     /// CLOSURE ITSELF — x-lang's self-passing convention, which is why every
     /// function in the conformance prelude is written with a leading `self`. It
     /// recurses without ever having been named.
     fn apply_closure(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+        let vals = self.eval_args(args, env)?;
+        self.apply_closure_bound(callee, vals)
+    }
+
+    /// The shared tail of both application doors: frame, params, save, body.
+    fn apply_closure_bound(&mut self, callee: Obj, vals: Vec<Obj>) -> EvalResult {
         let params = self.objects.closure_params(callee);
         let body = self.objects.closure_body(callee);
         let defenv = self.objects.closure_env(callee);
-
-        let vals = self.eval_args(args, env)?;
 
         // Lexical: the new frame hangs off the DEFINING environment. A closure
         // resolving names in the CALLER's environment would be dynamic scope
