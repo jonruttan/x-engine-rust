@@ -11,11 +11,12 @@ behaviour emerges from by walking. The design's author, verbatim:
 > C. It took me years to derive that architecture. You're not going to
 > "discover" it in a few hours.
 
-So this document is a TRANSCRIPTION plan, not a design. The design exists, in
+So this document is a TRANSCRIPTION plan, not a design — and the plan is
+EXECUTED: all four increments are on `main`. The design exists, in
 `ext/x-engine-c` (via the x-lang checkout) and it is already paid for. Every
-increment below names the C structure it copies, lands it whole for one
-subsystem, and is judged by the ratchets — 114 conformance checks that pass on
-both engines, the spec suite, and this repo's unit tests. No increment merges
+increment below names the C structure it copies, landed it whole for one
+subsystem, and was judged by the ratchets — 114 conformance checks that pass on
+both engines, the spec suite, and this repo's unit tests. No increment merged
 red, and no increment "improves" on the reference: deviations are recorded in
 the commit that makes them, or not made.
 
@@ -49,24 +50,47 @@ use-after-free waiting for stress.
    alists, the from-relations already moved; the remaining Rust `Family`/
    dispatch special cases shrink to walkers as the structures above land.
 
-## Increments, in leverage order
+## Increments, in leverage order — ALL FOUR COMPLETE
 
-Each is one branch, one commit narrative, gates green before and after.
+Each was one branch, one commit narrative, gates green before and after. All
+four are on `main`; D landed via PR #5.
 
-- **A. Buffer as pair cells.** Smallest, self-contained, and retires the whole
-  class of "slots happen to line up" coincidences. `value/tok.rs` +
-  `prims/tok.rs`; the spec is `lib/buffer.spec.md` plus the tokenizer suite.
-- **B. Engine singletons onto the base.** token-eof, sigint flag, catalog,
-  interned-symbol tables addressed as base fields (routes already exist in
-  `tools/contract/base-paths.x`). Root set shrinks accordingly; the poison
-  stress mode judges it.
-- **C. `p_base` as an argument.** Mechanical, wide diff: Engine methods take
-  the base; the field and `in_base` bracket retire. `(b eval …)` becomes a
-  call with a different argument, as in the C.
-- **D. Frames into the tree.** The env model — `Envs`, `EnvId`, the frame
-  vector — becomes environment objects on the heap, as the reference's
-  env-alist is. Largest and last; the collector's fixpoint machinery
-  simplifies to plain marking when it lands.
+- **A. Buffer as pair cells.** COMPLETE. A buffer is the reference's
+  `(val . (read . write))` in `value/tok.rs` + `prims/tok.rs`, judged by
+  `lib/buffer.spec.md` plus the tokenizer suite.
+- **B. Engine singletons onto the base.** COMPLETE. token-eof, sigint flag,
+  catalog, interned-symbol tables are base fields (routes in
+  `tools/contract/base-paths.x`); the root set shrank accordingly, judged by
+  the poison stress mode.
+- **C. `p_base` as an argument.** COMPLETE. Every applicative takes the base —
+  DYNAMIC, flowing through the call, never derived from the environment's
+  frame. `(b eval …)` is a call with a different argument, as in the C.
+- **D. Frames into the tree.** COMPLETE. An environment is a holder object —
+  chain head, parent holder, base — whose chain is a spine of ordinary spair
+  cells; `EnvId` is a newtype over the holder. The frame vector, the
+  collector's fixpoint machinery, frame sweeping, and the dead-frame traps
+  are deleted: one plain mark traces holders and cells like any other
+  objects. Landing it surfaced a rule the plan now records below.
+
+## The off-heap rule (paid for landing D)
+
+A Rust-side map keyed by a heap ADDRESS outlives what it describes: the
+address outlives its object, and a recycled chunk inherits the dead object's
+entry. The collector purges such maps (`Envs::index`, `base_syms`) at every
+sweep, and any new address-keyed map must join that purge. The diagnostic
+signature when one is missed: the fault is reuse-dependent, poison mode hides
+it without a single read-trap, and a freed-but-reachable check stays clean —
+because the stale reference is in a map no mark walks. Grep `HashMap<Obj`.
+
+## What remains
+
+Invariant 4's tail: the remaining Rust dispatch special cases shrink to
+walkers as their structures move. The known open is the token base — `base
+make-type` answers the tree where the reference answers the name atom after
+filing, because the token base is not yet a base with a type-alist. The
+full-suite gap to the reference (181 of 2549, distribution: logo, math
+functions, Buf construction, numeric guards, posix tail) is tracked in
+x-lang's suite, not here.
 
 ## What is NOT ported
 
