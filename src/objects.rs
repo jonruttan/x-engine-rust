@@ -274,6 +274,8 @@ pub struct Objects {
     /// apps/logo's alist prune can compare identities. `make-type` names stay
     /// fresh per call, as the reference's strndup'd atoms are.
     pub(crate) kind_handles: HashMap<Flags, Obj>,
+    /// The engine's eval-hook objects: symbol, list. See prims::core.
+    pub(crate) eval_hooks: [Obj; 2],
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -347,6 +349,7 @@ impl Objects {
             freed_kind: HashMap::new(),
             int_states: [crate::obj::NIL; 5],
             kind_handles: HashMap::new(),
+            eval_hooks: [crate::obj::NIL; 2],
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with

@@ -12,6 +12,40 @@ use crate::obj::{EnvId, Obj};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
 
+/// The SYMBOL type's eval hook — `x_type_symbol_eval`: a symbol evaluates to
+/// what the environment binds it to, and an unbound one raises. Registered on
+/// every base's SYMBOL tree; the machine itself does not know what a symbol
+/// means.
+pub(crate) fn sym_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
+    match e.envs.lookup(&e.objects, env, form) {
+        Some(v) => Ok(v),
+        None => Err(crate::diag::Cond::Unbound(form)),
+    }
+}
+
+/// The LIST type's eval hook — `x_type_list_eval`: evaluate the head, then
+/// apply through the machinery; a head that is not callable makes the form
+/// DATA, which is how quoted structures survive being evaluated. A parked
+/// tail flows back to the caller's trampoline, as the reference's tco_expr
+/// does.
+pub(crate) fn list_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
+    let head = e.objects.first(form);
+    let args = e.objects.rest(form);
+    let callee = e.eval(head, env)?;
+    match e.combine(callee, args, env) {
+        Some(r) => r,
+        None => Ok(form),
+    }
+}
+
+/// The hook table, minted at registration: symbol, then list. Operative-shaped
+/// — a hook receives the FORM raw and the environment, which is the engine
+/// dispatch's own hand-off.
+pub(crate) const EVAL_HOOKS: &[PrimDef] = &[
+    PrimDef::op("%sym-eval", sym_eval),
+    PrimDef::op("%list-eval", list_eval),
+];
+
 /// `(eval expr env)` — in the environment given, which is how an operative
 /// reaches into its caller's.
 ///

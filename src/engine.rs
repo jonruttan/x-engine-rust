@@ -224,6 +224,15 @@ impl Engine {
         e.prims.push(crate::prims::tok::INT_READ);
         e.int_read = e.objects.prim(idx);
 
+        // The eval hooks: what a SYMBOL and a LIST mean when evaluated,
+        // registered on the trees like every other hook — the machine reads
+        // the type word and calls what it finds.
+        for (i, def) in crate::prims::core::EVAL_HOOKS.iter().enumerate() {
+            let idx = e.prims.len();
+            e.prims.push(*def);
+            e.objects.eval_hooks[i] = e.objects.prim(idx);
+        }
+
         // The `%isa-values` objects, made BEFORE the first base, because every
         // base binds them and the root base is made the same way as any other.
         e.token_eof = e.objects.token_eof();
@@ -331,6 +340,19 @@ impl Engine {
         if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_INT) {
             self.install_int_tok(t);
         }
+        if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_SYM) {
+            self.install_eval_hook(t, 0);
+        }
+        if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_PAIR) {
+            self.install_eval_hook(t, 1);
+        }
+    }
+
+    /// One of the engine's eval hooks onto a tree's eval stack.
+    fn install_eval_hook(&mut self, tree: Obj, which: usize) {
+        let h = self.objects.eval_hooks[which];
+        self.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Eval, h);
     }
 
     /// The render handler onto one tree's write and display stacks.
@@ -370,6 +392,12 @@ impl Engine {
             }
             if *flags == crate::objects::FLAG_INT {
                 self.install_int_tok(t);
+            }
+            if *flags == crate::objects::FLAG_SYM {
+                self.install_eval_hook(t, 0);
+            }
+            if *flags == crate::objects::FLAG_PAIR {
+                self.install_eval_hook(t, 1);
             }
             self.file_type_in(base, t);
         }

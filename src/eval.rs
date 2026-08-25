@@ -238,28 +238,40 @@ impl Engine {
             if form.is_nil() {
                 break Ok(NIL);
             }
-            if self.objects.is_sym(form) {
-                break match self.envs.lookup(&self.objects, env, form) {
-                    Some(v) => Ok(v),
-                    None => Err(Cond::Unbound(form)),
-                };
-            }
-            if !self.objects.is_cell(form) {
-                // Integers, strings, closures, primitives: self-evaluating.
+            // THE MACHINE, as `x_eval` draws it: a value whose type word is
+            // nil or a raw marker is ITSELF, and everything else is decided by
+            // its type tree's EVAL hook — symbol lookup is the SYMBOL type's
+            // registered behaviour, application is the LIST type's, and a
+            // value whose tree registers nothing is itself. What evaluation
+            // MEANS is data on the base, replaceable per type, per base.
+            let tree = self.objects.type_of_word(form);
+            if tree.is_nil()
+                || tree == self.objects.spair_marker
+                || tree == self.objects.satom_marker
+            {
                 break Ok(form);
             }
-            let head = self.objects.first(form);
-            let args = self.objects.rest(form);
-            let callee = match self.eval(head, env) {
-                Ok(c) => c,
-                Err(e) => break Err(e),
+            let hook = self
+                .objects
+                .type_handler(tree, crate::vocabulary::Family::Eval);
+            if hook.is_nil() {
+                break Ok(form);
+            }
+            // An engine hook is operative-shaped and takes the form raw; a
+            // LIBRARY hook — logo registers one on its block type — is a
+            // closure called with the value, the shape its handlers expect.
+            let r = if self.objects.is_prim(hook) {
+                let idx = self.objects.prim_idx(hook);
+                match self.prims.get(idx).map(|d| d.body) {
+                    Some(crate::prim::Body::Operative(f)) => f(self, form, env),
+                    _ => self.call_with_values(hook, &[form], env),
+                }
+            } else {
+                self.call_with_values(hook, &[form], env)
             };
-            let answer = match self.combine(callee, args, env) {
-                Some(Ok(v)) => v,
-                Some(Err(e)) => break Err(e),
-                // A head that is not callable makes the form DATA, which is how
-                // x-lang's quoted structures survive being evaluated.
-                None => break Ok(form),
+            let answer = match r {
+                Ok(v) => v,
+                Err(e) => break Err(e),
             };
             // Something in tail position asked to be evaluated HERE rather than
             // under another frame. Loop instead of recursing.
@@ -312,7 +324,7 @@ impl Engine {
     /// Apply a callee to an UNEVALUATED argument spine. `None` when the callee is
     /// not a combiner at all — the caller decides whether that is data or an
     /// error, because those two answers differ by context.
-    fn combine(&mut self, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    pub(crate) fn combine(&mut self, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
         if self.objects.is_prim(callee) {
             let def = self.prims[self.objects.prim_idx(callee)];
             return Some(self.call_prim(&def, args, env));
@@ -860,6 +872,30 @@ mod tests {
         assert_eq!(
             int_of("(def n 1) (def call (fn (self) (%seq (def n 2) ()))) (call) n"),
             2
+        );
+    }
+
+    /// THE ARC'S ACCEPTANCE: what evaluation MEANS is tree data. Replace the
+    /// SYMBOL type's eval hook and every symbol means something else; restore
+    /// it and the old meaning returns. This is the door a JavaScript
+    /// interpreter — or a CPU — walks in through.
+    #[test]
+    fn evaluation_is_replaceable_through_the_tree() {
+        let mut e = crate::engine::Engine::new();
+        let hook = e.eval_str("(fn (_ s) 42)").unwrap();
+        let tree = e.objects.builtin_types[&crate::objects::FLAG_SYM];
+        let old = e
+            .objects
+            .type_handler(tree, crate::vocabulary::Family::Eval);
+        e.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Eval, hook);
+        let v = e.eval_str("certainly-unbound").unwrap();
+        assert_eq!(e.objects.as_int(v), 42, "the replaced meaning governs");
+        e.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Eval, old);
+        assert!(
+            e.eval_str("certainly-unbound").is_err(),
+            "and the restored one raises unbound again"
         );
     }
 

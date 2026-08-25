@@ -72,6 +72,49 @@ four are on `main`; D landed via PR #5.
   are deleted: one plain mark traces holders and cells like any other
   objects. Landing it surfaced a rule the plan now records below.
 
+## E. Evaluation is a type hook — ALL FOUR ABOVE WERE PRELUDE
+
+The reference's machine is `x_eval`: nil answers nil, an untyped value
+answers itself, and EVERYTHING ELSE is one line — call the value's type
+tree's EVAL hook with the argument frame. Symbol lookup is the SYMBOL
+type's registered eval (`x_type_symbol_eval`); application is the LIST
+type's, which evaluates the head and dispatches through the OPERATOR'S
+type's CALL hook; a callable is any value whose type registers call. The
+author's statement of what this buys, verbatim:
+
+> The design of the C engine allows for the interpreter to change to
+> interpret any syntax. Using x-lang the engine can be altered to be a
+> Javascript interpreter, or a C compiler, or even a CPU.
+
+The uniformity that makes it work is `x_callable_call`: every callable
+stores its entry in SLOT 0 and the dispatch is "read slot 0, call it with
+`(callable . args)`" — self rides in the args, and procedure/operative/
+primitive are which function sits in the slot, not kinds of a dispatcher.
+
+This engine's evaluator is the inverse: a Rust match over object kinds,
+with an eight-variant `Body` enum behind the primitive arm. Every
+semantic it hardcodes is a semantic no base can replace. The increments:
+
+- **E1. Eval dispatches through the tree.** The eval core becomes the
+  reference's: read the type word; a tree with an eval hook decides, a
+  value without one is itself. The current symbol and pair arms become
+  ENGINE EVAL HOOKS registered on every base's SYMBOL and PAIR trees —
+  replaceable per base from x-lang, like every other hook now is.
+- **E2. Application dispatches through the tree.** The list hook resolves
+  its operator and applies through the operator's type's CALL hook;
+  PROCEDURE, OPERATIVE and PRIMITIVE trees register theirs, and the
+  evaluator's kind-match dissolves. Class value-call joins natively.
+- **E3. One calling convention.** Every callable carries its entry in
+  slot 0; `Body`'s variants collapse into uniform entries (fast paths may
+  survive INSIDE a uniform callable, as `x_prim_arith_binop` keeps its
+  `use_ops` flag inside one signature — never as dispatcher kinds).
+
+Recorded deviation to resolve along the way: the reference's CURRENT
+environment lives on the base (`env-alist` field), so a hook needs no env
+parameter; this engine threads `EnvId` through calls. E1 threads it into
+the engine hooks and leaves library hooks the value-shaped call logo
+already uses; by E3 the convention must settle one way, deliberately.
+
 ## The off-heap rule (paid for landing D)
 
 A Rust-side map keyed by a heap ADDRESS outlives what it describes: the
