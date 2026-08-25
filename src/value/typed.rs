@@ -355,7 +355,7 @@ impl Objects {
         // The REFERENCE's name for this kind. It is read: with the type word
         // stamped, `%reflect-type-name` dereferences the tree and answers what
         // it finds there.
-        let name = self.handle(crate::objects::kind_name(flags));
+        let name = self.kind_handle(flags, crate::objects::kind_name(flags));
         let t = self.type_new(name, NIL);
         self.builtin_types.insert(flags, t);
         // A type nobody filed is a type the library cannot reach: `type by-atom`

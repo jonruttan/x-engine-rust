@@ -125,6 +125,8 @@ pub struct Engine {
     pub(crate) sigint_flag: Obj,
     /// The render handler installed on builtin trees; see prims::io.
     pub(crate) engine_render: Obj,
+    /// The integer token reader installed beside the analyser states.
+    pub(crate) int_read: Obj,
 }
 
 /// The kinds whose trees carry the engine's render handler — the set the
@@ -180,6 +182,7 @@ impl Engine {
             token_eof: NIL,
             sigint_flag: NIL,
             engine_render: NIL,
+            int_read: NIL,
         };
 
         // One pass over the whole instruction set. Each row contributes its bare
@@ -209,6 +212,17 @@ impl Engine {
         let render_idx = e.prims.len();
         e.prims.push(crate::prims::io::ENGINE_RENDER);
         e.engine_render = e.objects.prim(render_idx);
+
+        // The integer token type's states and reader — same arrangement. The
+        // state objects go into the store so a state can answer its successor.
+        for (i, def) in crate::prims::tok::INT_STATES.iter().enumerate() {
+            let idx = e.prims.len();
+            e.prims.push(*def);
+            e.objects.int_states[i] = e.objects.prim(idx);
+        }
+        let idx = e.prims.len();
+        e.prims.push(crate::prims::tok::INT_READ);
+        e.int_read = e.objects.prim(idx);
 
         // The `%isa-values` objects, made BEFORE the first base, because every
         // base binds them and the root base is made the same way as any other.
@@ -271,7 +285,7 @@ impl Engine {
         // directly — so the ask has to happen here, before any of them exist.
         for (flags, text) in crate::objects::STAMPED_KINDS {
             if !self.objects.builtin_types.contains_key(flags) {
-                let name = self.objects.handle(text);
+                let name = self.objects.kind_handle(*flags, text);
                 let t = self.objects.type_new(name, NIL);
                 self.objects.builtin_types.insert(*flags, t);
                 self.objects.unfiled_types.push(t);
@@ -314,6 +328,9 @@ impl Engine {
                 self.install_render(t);
             }
         }
+        if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_INT) {
+            self.install_int_tok(t);
+        }
     }
 
     /// The render handler onto one tree's write and display stacks.
@@ -325,6 +342,19 @@ impl Engine {
             .type_set_handler(tree, crate::vocabulary::Family::Display, h);
     }
 
+    /// The integer token type's analyser and reader onto an INTEGER tree — the
+    /// engine-side registration `x_type_int_register` performs, which is what
+    /// keeps a number a NUMBER through `tok read-str` on any base carrying the
+    /// tree (apps/logo prunes a child's alist down to exactly these).
+    fn install_int_tok(&mut self, tree: Obj) {
+        let sign = self.objects.int_states[crate::prims::tok::ST_SIGN];
+        self.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Analyse, sign);
+        let read = self.int_read;
+        self.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Read, read);
+    }
+
     /// FRESH builtin trees for a new base, as `x_type_*_register(child, child)`
     /// builds them: a child's types are its own — handles do not intern into
     /// the parent, and a handler pushed on a child tree is invisible outside
@@ -333,10 +363,13 @@ impl Engine {
     /// boots one; a child base never does, so this is what its stacks hold.
     fn file_fresh_builtin_trees(&mut self, base: Obj) {
         for (flags, text) in crate::objects::STAMPED_KINDS {
-            let name = self.objects.handle(text);
+            let name = self.objects.kind_handle(*flags, text);
             let t = self.objects.type_new(name, NIL);
             if RENDERED_KINDS.contains(flags) {
                 self.install_render(t);
+            }
+            if *flags == crate::objects::FLAG_INT {
+                self.install_int_tok(t);
             }
             self.file_type_in(base, t);
         }

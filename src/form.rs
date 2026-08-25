@@ -174,7 +174,9 @@ impl Engine {
 
         // ONE CONTEST, then read with the winner. See `prims::tok::analyse`.
         let env = self.root_env();
-        let (ty, claim) = match analyse(self, &types, text, at, env) {
+        let cbuf = self.objects.buf(text, at);
+        self.root_push(cbuf);
+        let (ty, claim) = match analyse(self, &types, cbuf, env) {
             Ok(Some(w)) => w,
             Ok(None) => {
                 self.root_truncate(mark);

@@ -226,13 +226,10 @@ pub(crate) fn better(score: i64, best: Option<i64>) -> bool {
 pub(crate) fn analyse(
     e: &mut Engine,
     types: &[Obj],
-    text: Obj,
-    at: u64,
+    buf: Obj,
     env: EnvId,
 ) -> Result<Option<(Obj, i64)>, Cond> {
     let mark = e.root_mark();
-    e.root_push(text);
-    let buf = e.objects.buf(text, at);
     e.root_push(buf);
     let score = e.objects.int(0);
     e.root_push(score);
@@ -383,10 +380,22 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let target = a[0];
     let env = e.root_env();
     let mut tokens: Vec<Obj> = Vec::new();
-    let mut at = 0u64;
-    while at < len {
-        // The same contest the form reader runs. See `analyse`.
-        let claim = e.in_base(target, |e| analyse(e, &types, text, at, env))?;
+    // ONE buffer for the whole drive, as `x_prim_token_read_string` builds one:
+    // a read handler may consume PAST its own span — a block reader reads its
+    // nested tokens recursively — and the drive must continue from wherever the
+    // reads left the cursor. A per-token buffer clipped to the claimed span cut
+    // logo's `[` reader off from its block's contents.
+    let buf = e.objects.buf(text, 0);
+    e.root_push(buf);
+    loop {
+        let at = e.objects.buf_retain(buf);
+        if at >= len {
+            break;
+        }
+        // The same contest the form reader runs. See `analyse`. The contest
+        // rewinds the cursor to the retain mark between handlers, so the
+        // buffer comes back positioned where it started.
+        let claim = e.in_base(target, |e| analyse(e, &types, buf, env))?;
         let Some((ty, claim)) = claim else {
             if falls_back {
                 // No registered type claims here: the engine's own reader takes
@@ -397,7 +406,9 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
                 let Some(form) = form else { break };
                 e.root_push(form);
                 tokens.push(form);
-                at = r.pos() as u64;
+                let pos = r.pos() as u64;
+                e.objects.set_buf_retain(buf, pos);
+                e.objects.set_buf_cursor(buf, pos);
                 continue;
             }
             break;
@@ -408,35 +419,28 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
             break;
         }
 
-        // The winner's `read` runs against a buffer positioned on exactly the
-        // span it claimed: retain at the start, cursor at the end.
-        let buf = e.objects.buf(text, at);
+        // The winner's `read` runs with the cursor at the end of the claimed
+        // span and the retain mark at its start — and may keep reading.
         e.objects.set_buf_cursor(buf, at + n);
-        // The winner and its buffer, live until the read returns.
         let rmark = e.root_mark();
         e.root_push(ty);
-        e.root_push(buf);
         let reader = handler(e, ty, Family::Read);
         e.root_push(reader);
-        // As with the analysers, the slot may be a LIST. A reader DECLINES by
-        // answering nil without consuming, so the next one sees the same buffer
-        // — which is why each attempt gets a buffer positioned identically
-        // rather than one carried over from a reader that already looked.
         // A type with NO read hook DISCARDS its span — whitespace, comments —
         // and the drive fetches another token, as `x_token_read` does.
         if reader.is_nil() {
             e.root_truncate(rmark);
-            at += n;
+            e.objects.set_buf_retain(buf, at + n);
             continue;
         }
+        // The slot may be a LIST. A reader DECLINES by answering nil without
+        // consuming, so each attempt starts from the same position.
         let mut token = NIL;
         for r in handler_list(e, reader) {
-            let fresh = e.objects.buf(text, at);
-            e.objects.set_buf_cursor(fresh, at + n);
+            e.objects.set_buf_cursor(buf, at + n);
             let fmark = e.root_mark();
-            e.root_push(fresh);
             e.root_push(r);
-            let got = e.in_base(target, |e| e.call_with_values(r, &[fresh], env))?;
+            let got = e.in_base(target, |e| e.call_with_values(r, &[buf], env))?;
             e.root_truncate(fmark);
             if !got.is_nil() {
                 token = got;
@@ -451,7 +455,15 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
         }
         e.root_push(token);
         tokens.push(token);
-        at += n;
+        // Everything the read consumed is done with: retain to the cursor, as
+        // `x_token_read` retains after each delivered token.
+        let end = e.objects.buf_cursor(buf);
+        e.objects.set_buf_retain(buf, end.max(at + n));
+        // A read that walked the cursor BACKWARD cannot be allowed to wedge
+        // the drive; the claimed span is the floor.
+        if e.objects.buf_retain(buf) <= at {
+            break;
+        }
     }
 
     let mut list = NIL;
@@ -470,6 +482,133 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 /// answers `(lit X)` by reading X through here.
 fn read_tok(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.read_form_at(a[0])
+}
+
+// --- the engine's integer token type -----------------------------------------
+// TRANSCRIBED from the reference's `x-token/sexp/int.c`: five analyser states
+// (sign, prefix, base, digits, xdigits) and a reader, installed on every
+// base's INTEGER tree. The states answer SELF while consuming; on the first
+// non-member character they unread it and accept with a POSITIVE score of the
+// span — deterministic, as the sexp analysers are — or decline when nothing
+// was consumed. State indexes into `Objects::int_states`.
+
+pub(crate) const ST_SIGN: usize = 0;
+const ST_PREFIX: usize = 1;
+const ST_BASE: usize = 2;
+const ST_DIGITS: usize = 3;
+const ST_XDIGITS: usize = 4;
+
+fn buf_span(a_: &Objects, b: Obj) -> u64 {
+    a_.buf_cursor(b).saturating_sub(a_.buf_retain(b))
+}
+
+fn unread(a_: &mut Objects, b: Obj) {
+    let c = a_.buf_cursor(b);
+    a_.set_buf_cursor(b, c.saturating_sub(1));
+}
+
+/// Accept: unread the delimiter, score the span, answer the SCORE object —
+/// or decline when the span is empty.
+fn int_accept(a_: &mut Objects, a: &[Obj]) -> Obj {
+    let (b, score) = (a[0], a[1]);
+    unread(a_, b);
+    let n = buf_span(a_, b);
+    if n < 1 {
+        return NIL;
+    }
+    a_.set_data(score, 0, crate::obj::Word::from_i64(n as i64));
+    score
+}
+
+fn chr_of(a_: &Objects, a: &[Obj]) -> u32 {
+    a_.as_char(a[2])
+}
+
+fn int_digits(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    if chr_of(a_, a).is_ascii_digit_u32() {
+        return Ok(a_.int_states[ST_DIGITS]);
+    }
+    Ok(int_accept(a_, a))
+}
+
+fn int_xdigits(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let c = chr_of(a_, a);
+    if c.is_ascii_digit_u32() || (0x61..=0x66).contains(&c) || (0x41..=0x46).contains(&c) {
+        return Ok(a_.int_states[ST_XDIGITS]);
+    }
+    Ok(int_accept(a_, a))
+}
+
+fn int_base(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let c = chr_of(a_, a);
+    if c == b'x' as u32 || c == b'X' as u32 {
+        return Ok(a_.int_states[ST_XDIGITS]);
+    }
+    int_digits(a_, a)
+}
+
+fn int_prefix(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let c = chr_of(a_, a);
+    if c == b'0' as u32 {
+        return Ok(a_.int_states[ST_BASE]);
+    }
+    if !c.is_ascii_digit_u32() {
+        unread(a_, a[0]);
+        return Ok(NIL);
+    }
+    Ok(a_.int_states[ST_DIGITS])
+}
+
+fn int_sign(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let c = chr_of(a_, a);
+    if c == b'+' as u32 || c == b'-' as u32 {
+        return Ok(a_.int_states[ST_PREFIX]);
+    }
+    int_prefix(a_, a)
+}
+
+/// Leading zero reads DECIMAL (019 = 19); only an explicit 0x/0X prefix is
+/// hex — x-lang #45 R5b, as `x_sexp_int_read` keeps it.
+fn int_read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let b = a[0];
+    let (start, end) = (a_.buf_retain(b), a_.buf_cursor(b));
+    if end <= start {
+        return Ok(NIL);
+    }
+    let text = a_.buf_text(b);
+    let bytes = a_.bytes_of(text);
+    let raw = std::str::from_utf8(&bytes[start as usize..end as usize]).unwrap_or("");
+    let (sign, body) = match raw.as_bytes().first() {
+        Some(b'-') => (-1i64, &raw[1..]),
+        Some(b'+') => (1, &raw[1..]),
+        _ => (1, raw),
+    };
+    let n = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).unwrap_or(0)
+    } else {
+        body.parse::<i64>().unwrap_or(0)
+    };
+    Ok(a_.int(sign * n))
+}
+
+/// The state table, in `Objects::int_states` order.
+pub(crate) const INT_STATES: &[PrimDef] = &[
+    PrimDef::bare("%int-tok-sign", 3, int_sign),
+    PrimDef::bare("%int-tok-prefix", 3, int_prefix),
+    PrimDef::bare("%int-tok-base", 3, int_base),
+    PrimDef::bare("%int-tok-digits", 3, int_digits),
+    PrimDef::bare("%int-tok-xdigits", 3, int_xdigits),
+];
+
+pub(crate) const INT_READ: PrimDef = PrimDef::bare("%int-tok-read", 1, int_read);
+
+trait AsciiDigitU32 {
+    fn is_ascii_digit_u32(&self) -> bool;
+}
+impl AsciiDigitU32 for u32 {
+    fn is_ascii_digit_u32(&self) -> bool {
+        (0x30..=0x39).contains(self)
+    }
 }
 
 // --- registration ------------------------------------------------------------
