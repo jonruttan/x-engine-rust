@@ -13,9 +13,11 @@
 //! does not grow the chain. Lookup walks the chain, then the parent.
 //!
 //! Frames that outgrow a linear scan gain a shadow map, keyed by holder. The
-//! map is a cache over the chain — every write path updates both — and holds
-//! nothing the collector needs, since everything it points at is reachable
-//! through the chain it mirrors.
+//! map is a cache over the chain — every write path updates both. It holds
+//! nothing the collector needs to KEEP: everything it points at is reachable
+//! through the chain it mirrors. But it is keyed by holder ADDRESS, and an
+//! address outlives its holder — the collector purges dead holders' entries
+//! at every sweep, or a recycled chunk would inherit the dead frame's map.
 
 use crate::obj::{EnvId, Obj, NIL};
 use crate::objects::{Objects, FLAG_ENVH};
@@ -32,7 +34,7 @@ const INDEX_AT: usize = 16;
 pub struct Envs {
     /// Shadow maps for large frames, keyed by holder. A pure cache: the chain
     /// is the truth, and every write path updates both.
-    index: HashMap<Obj, HashMap<Obj, Obj>>,
+    pub(crate) index: HashMap<Obj, HashMap<Obj, Obj>>,
     /// How many holders have been made — `frame_count` reporting only.
     made: usize,
 }

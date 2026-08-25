@@ -57,7 +57,19 @@ const MARK: u64 = 1 << 63;
 /// and the next read of it traps with a backtrace naming the exact primitive.
 pub const POISON: u64 = 0x0BAD_0BAD_0BAD_0BAD;
 
+/// The flags word of every swept chunk (poison mode stamps `POISON` instead).
+/// No live object carries it, so "is this address free right now?" is one
+/// word read — the collector's map purge asks it per map key.
+pub const FREED: u64 = 0x0DEAD_0DEAD_0DEAD;
+
 impl Objects {
+    /// Is this address a swept chunk right now? One flags-word read; sound
+    /// between a sweep and the next allocation, which is when the purge runs.
+    pub(crate) fn is_freed(&self, o: Obj) -> bool {
+        let f = self.flags_word(o);
+        f == FREED || f == POISON
+    }
+
     pub(crate) fn flags_word(&self, o: Obj) -> u64 {
         self.heap
             .word(o.addr().plus(crate::objects::SLOT_FLAGS * 8))
@@ -225,6 +237,8 @@ impl Objects {
                     let d1 = if n > 1 { self.data(at, 1).raw() } else { 0 };
                     self.freed_kind.insert(at, (was, d0, d1));
                     self.set_flags_word(at, POISON);
+                } else {
+                    self.set_flags_word(at, FREED);
                 }
                 self.free.entry(n).or_default().push(at);
                 freed += 1;
@@ -353,6 +367,19 @@ impl crate::engine::Engine {
         self.run_gc_hooks(crate::base::FREE_HOOKS);
 
         let freed = self.objects.sweep();
+
+        // Rust-side maps keyed by heap ADDRESS outlive what they describe: an
+        // address outlives its object, and a recycled chunk at the same
+        // address would inherit the dead object's entry. The frame index
+        // would hand a new holder the dead frame's map; `base_syms` would
+        // hand a new base the dead base's interned symbols — aliased symbol
+        // identities, which no heap-side check can see. Purge here, before
+        // the mutator can allocate into the freed chunks. Sweep stamps every
+        // freed chunk's flags word, so the test is one read per map key —
+        // never a walk of the free list, whose size is unbounded.
+        let o = &self.objects;
+        self.envs.index.retain(|h, _| !o.is_freed(*h));
+        self.base_syms.retain(|b, _| !o.is_freed(*b));
 
         // DEBUG (X_DBG_FREECHECK): nothing REACHABLE may sit on the free
         // list. A missing root frees a live object; under reuse its chunk
