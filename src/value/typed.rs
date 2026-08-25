@@ -197,6 +197,26 @@ impl Objects {
         }
     }
 
+    /// Install a handler as a fresh tree's stack head — the engine-side twin of
+    /// what `install_handlers` does for a `(key . handler)` row.
+    pub(crate) fn type_set_handler(&mut self, ty: Obj, key: Family, handler: Obj) {
+        let Some((group, family)) = Self::handler_slot(key) else {
+            return;
+        };
+        let mut node = ty;
+        for _ in 0..group {
+            node = self.rest(node);
+        }
+        let mut fam = self.first(node);
+        for _ in 0..family {
+            fam = self.rest(fam);
+        }
+        let stack = self.first(fam);
+        if self.is_cell(stack) {
+            self.set_data(stack, 0, handler.word());
+        }
+    }
+
     /// A type's installed handler for one family, or nil.
     ///
     /// The ACTIVE handler is the head of the family's stack, which is what the

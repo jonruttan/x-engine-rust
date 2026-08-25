@@ -123,7 +123,19 @@ pub struct Engine {
     /// here, between forms. That is soon enough: x-lang's own case reads the
     /// flag in the form AFTER the one that raises.
     pub(crate) sigint_flag: Obj,
+    /// The render handler installed on builtin trees; see prims::io.
+    pub(crate) engine_render: Obj,
 }
+
+/// The kinds whose trees carry the engine's render handler — the set the
+/// reference's per-kind registration gives write/display hooks that the
+/// library's own boot pushes then shadow.
+const RENDERED_KINDS: &[crate::obj::Flags] = &[
+    crate::objects::FLAG_INT,
+    crate::objects::FLAG_STR,
+    crate::objects::FLAG_SYM,
+    crate::objects::FLAG_PAIR,
+];
 
 /// The EXPRESSION LAYER's version, which `x-version` reports.
 ///
@@ -167,6 +179,7 @@ impl Engine {
             eval_depth: 0,
             token_eof: NIL,
             sigint_flag: NIL,
+            engine_render: NIL,
         };
 
         // One pass over the whole instruction set. Each row contributes its bare
@@ -190,6 +203,12 @@ impl Engine {
             }
         }
         e.catalog = e.file_catalog(&coords);
+
+        // The trees' own render handler: in the table so it is callable,
+        // deliberately outside the catalog and bound nowhere.
+        let render_idx = e.prims.len();
+        e.prims.push(crate::prims::io::ENGINE_RENDER);
+        e.engine_render = e.objects.prim(render_idx);
 
         // The `%isa-values` objects, made BEFORE the first base, because every
         // base binds them and the root base is made the same way as any other.
@@ -283,6 +302,43 @@ impl Engine {
                 }
             }
             at = self.objects.chain_next(at);
+        }
+
+        // The render handler on the printable kinds' trees, root base
+        // included: the reference's per-kind registration installs a write
+        // hook the library's boot pushes then shadow — the stacks' SHAPE is
+        // contract (core/sandbox reads a child's as strictly shorter than the
+        // parent's and non-empty).
+        for k in RENDERED_KINDS {
+            if let Some(&t) = self.objects.builtin_types.get(k) {
+                self.install_render(t);
+            }
+        }
+    }
+
+    /// The render handler onto one tree's write and display stacks.
+    fn install_render(&mut self, tree: Obj) {
+        let h = self.engine_render;
+        self.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Write, h);
+        self.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Display, h);
+    }
+
+    /// FRESH builtin trees for a new base, as `x_type_*_register(child, child)`
+    /// builds them: a child's types are its own — handles do not intern into
+    /// the parent, and a handler pushed on a child tree is invisible outside
+    /// it. The printable kinds carry the engine's render handler, which is the
+    /// C-registration hook the library's boot pushes shadow on a base that
+    /// boots one; a child base never does, so this is what its stacks hold.
+    fn file_fresh_builtin_trees(&mut self, base: Obj) {
+        for (flags, text) in crate::objects::STAMPED_KINDS {
+            let name = self.objects.handle(text);
+            let t = self.objects.type_new(name, NIL);
+            if RENDERED_KINDS.contains(flags) {
+                self.install_render(t);
+            }
+            self.file_type_in(base, t);
         }
     }
 
@@ -432,6 +488,12 @@ impl Engine {
         // The root frame serves the spine just built — stamped after, because
         // the spine cannot exist before its env does.
         self.envs.set_base(&mut self.objects, env, base);
+        // Fresh builtin trees, except for the engine's own base: registration
+        // has not run yet when it is built, and it gets the engine-wide trees
+        // (the stamp source) filed by register_builtin_types instead.
+        if !self.objects.builtin_types.is_empty() {
+            self.file_fresh_builtin_trees(base);
+        }
         // A fresh base interns for itself, from empty. NOT a snapshot of the
         // parent's table: x-engine-c was asked, and a symbol the host interned
         // before the child existed is still a different object inside it.
