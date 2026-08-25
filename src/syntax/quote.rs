@@ -14,7 +14,10 @@ fn lit(e: &mut Engine, args: Obj, _env: EnvId) -> EvalResult {
     Ok(e.nth(args, 0))
 }
 
-pub const TABLE: &[PrimDef] = &[PrimDef::op("lit", lit)];
+crate::uniform_op!(lit_u, lit);
+
+#[rustfmt::skip]
+pub const TABLE: &[PrimDef] = &[PrimDef::row(Some("lit"), None, 0, lit_u)];
 
 #[cfg(test)]
 mod tests {

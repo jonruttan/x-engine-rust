@@ -27,7 +27,14 @@ fn operative(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     Ok(e.objects.operative(params, envname, body, env))
 }
 
-pub const TABLE: &[PrimDef] = &[PrimDef::op("fn", func), PrimDef::op("op", operative)];
+crate::uniform_op!(func_u, func);
+crate::uniform_op!(operative_u, operative);
+
+#[rustfmt::skip]
+pub const TABLE: &[PrimDef] = &[
+    PrimDef::row(Some("fn"), None, 0, func_u),
+    PrimDef::row(Some("op"), None, 0, operative_u),
+];
 
 #[cfg(test)]
 mod tests {

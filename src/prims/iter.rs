@@ -79,11 +79,17 @@ fn step(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     }
 }
 
+crate::uniform_value!(make_u, make, 2);
+crate::uniform_engine!(next_u, next, 1);
+crate::uniform_engine!(empty_u, empty, 1);
+crate::uniform_engine!(step_u, step, 1);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed("iter", "make", 2, make),
-    PrimDef::filed_full("iter", "next", 1, next),
-    PrimDef::filed_full("iter", "empty?", 1, empty),
-    PrimDef::filed_full("iter", "step", 1, step),
+    PrimDef::row(None, Some(("iter", "make")), 2, make_u),
+    PrimDef::row(None, Some(("iter", "next")), 1, next_u),
+    PrimDef::row(None, Some(("iter", "empty?")), 1, empty_u),
+    PrimDef::row(None, Some(("iter", "step")), 1, step_u),
 ];
 
 #[cfg(test)]

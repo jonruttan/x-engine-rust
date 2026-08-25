@@ -41,10 +41,15 @@ fn sigint_restore(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
+crate::uniform_engine!(clock_u, clock, 0);
+crate::uniform_engine!(sigint_install_u, sigint_install, 0);
+crate::uniform_engine!(sigint_restore_u, sigint_restore, 0);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed_full("sys", "clock", 0, clock),
-    PrimDef::bare_full("sigint-install", 0, sigint_install),
-    PrimDef::bare_full("sigint-restore", 0, sigint_restore),
+    PrimDef::row(None, Some(("sys", "clock")), 0, clock_u),
+    PrimDef::row(Some("sigint-install"), None, 0, sigint_install_u),
+    PrimDef::row(Some("sigint-restore"), None, 0, sigint_restore_u),
 ];
 
 #[cfg(test)]

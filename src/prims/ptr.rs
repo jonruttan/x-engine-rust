@@ -143,22 +143,39 @@ fn mem_free(_a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
     Ok(NIL)
 }
 
+crate::uniform_value!(obj_to_ptr_u, obj_to_ptr, 1);
+crate::uniform_value!(ptr_to_obj_u, ptr_to_obj, 1);
+crate::uniform_value!(ptr_to_int_u, ptr_to_int, 1);
+crate::uniform_value!(int_to_ptr_u, int_to_ptr, 1);
+crate::uniform_value!(str_to_ptr_u, str_to_ptr, 1);
+crate::uniform_value!(ptr_to_str_u, ptr_to_str, 1);
+crate::uniform_value!(ptr_ref_u, ptr_ref, 3);
+crate::uniform_value!(ptr_set_u, ptr_set, 4);
+crate::uniform_value!(ptr_ref_word_u, ptr_ref_word, 2);
+crate::uniform_value!(ptr_set_word_u, ptr_set_word, 3);
+crate::uniform_value!(mem_cmp_u, mem_cmp, 3);
+crate::uniform_value!(mem_copy_u, mem_copy, 3);
+crate::uniform_value!(mem_set_u, mem_set, 3);
+crate::uniform_value!(mem_alloc_u, mem_alloc, 1);
+crate::uniform_value!(mem_free_u, mem_free, 1);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::both("obj->ptr", "obj", "->ptr", 1, obj_to_ptr),
-    PrimDef::filed("ptr", "->obj", 1, ptr_to_obj),
-    PrimDef::filed("ptr", "->int", 1, ptr_to_int),
-    PrimDef::both("int->ptr", "int", "->ptr", 1, int_to_ptr),
-    PrimDef::both("str->ptr", "str", "->ptr", 1, str_to_ptr),
-    PrimDef::both("ptr->str", "ptr", "->str", 1, ptr_to_str),
-    PrimDef::filed("ptr", "ref", 3, ptr_ref),
-    PrimDef::filed("ptr", "set!", 4, ptr_set),
-    PrimDef::filed("ptr", "ref-word", 2, ptr_ref_word),
-    PrimDef::filed("ptr", "set-word!", 3, ptr_set_word),
-    PrimDef::filed("mem", "cmp", 3, mem_cmp),
-    PrimDef::filed("mem", "copy", 3, mem_copy),
-    PrimDef::filed("mem", "set", 3, mem_set),
-    PrimDef::filed("mem", "alloc", 1, mem_alloc),
-    PrimDef::filed("mem", "free", 1, mem_free),
+    PrimDef::row(Some("obj->ptr"), Some(("obj", "->ptr")), 1, obj_to_ptr_u),
+    PrimDef::row(None, Some(("ptr", "->obj")), 1, ptr_to_obj_u),
+    PrimDef::row(None, Some(("ptr", "->int")), 1, ptr_to_int_u),
+    PrimDef::row(Some("int->ptr"), Some(("int", "->ptr")), 1, int_to_ptr_u),
+    PrimDef::row(Some("str->ptr"), Some(("str", "->ptr")), 1, str_to_ptr_u),
+    PrimDef::row(Some("ptr->str"), Some(("ptr", "->str")), 1, ptr_to_str_u),
+    PrimDef::row(None, Some(("ptr", "ref")), 3, ptr_ref_u),
+    PrimDef::row(None, Some(("ptr", "set!")), 4, ptr_set_u),
+    PrimDef::row(None, Some(("ptr", "ref-word")), 2, ptr_ref_word_u),
+    PrimDef::row(None, Some(("ptr", "set-word!")), 3, ptr_set_word_u),
+    PrimDef::row(None, Some(("mem", "cmp")), 3, mem_cmp_u),
+    PrimDef::row(None, Some(("mem", "copy")), 3, mem_copy_u),
+    PrimDef::row(None, Some(("mem", "set")), 3, mem_set_u),
+    PrimDef::row(None, Some(("mem", "alloc")), 1, mem_alloc_u),
+    PrimDef::row(None, Some(("mem", "free")), 1, mem_free_u),
 ];
 
 #[cfg(test)]

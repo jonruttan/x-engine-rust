@@ -91,11 +91,17 @@ fn match_(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     Ok(NIL)
 }
 
+crate::uniform_op!(seq_u, seq);
+crate::uniform_op!(error_u, error);
+crate::uniform_op!(guard_u, guard);
+crate::uniform_op!(match_op_u, match_);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::op("%seq", seq),
-    PrimDef::op("error", error),
-    PrimDef::op("guard", guard),
-    PrimDef::op("match", match_),
+    PrimDef::row(Some("%seq"), None, 0, seq_u),
+    PrimDef::row(Some("error"), None, 0, error_u),
+    PrimDef::row(Some("guard"), None, 0, guard_u),
+    PrimDef::row(Some("match"), None, 0, match_op_u),
 ];
 
 #[cfg(test)]

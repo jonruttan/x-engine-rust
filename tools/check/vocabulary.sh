@@ -38,6 +38,7 @@ for f in $(find src -name '*.rs' | grep -v 'src/vocabulary.rs' | sort); do
 		/#\[cfg\(test\)\]/ { intest=1 }
 		intest { next }
 		/PrimDef::/ { next }
+		/crate::uniform_/ { next }
 		{ print FILENAME "\t" $0 }
 	' "$f"
 done | while IFS="$(printf '\t')" read -r file line; do

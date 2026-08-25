@@ -65,7 +65,14 @@ fn set(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     }
 }
 
-pub const TABLE: &[PrimDef] = &[PrimDef::op("def", def), PrimDef::op("set!", set)];
+crate::uniform_op!(def_u, def);
+crate::uniform_op!(set_u, set);
+
+#[rustfmt::skip]
+pub const TABLE: &[PrimDef] = &[
+    PrimDef::row(Some("def"), None, 0, def_u),
+    PrimDef::row(Some("set!"), None, 0, set_u),
+];
 
 #[cfg(test)]
 mod tests {
