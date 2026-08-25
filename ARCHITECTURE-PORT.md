@@ -15,7 +15,7 @@ So this document is a TRANSCRIPTION plan, not a design — and the plan is
 EXECUTED: all four increments are on `main`. The design exists, in
 `ext/x-engine-c` (via the x-lang checkout) and it is already paid for. Every
 increment below names the C structure it copies, landed it whole for one
-subsystem, and was judged by the ratchets — 114 conformance checks that pass on
+subsystem, and was judged by the ratchets — 122 conformance checks that pass on
 both engines, the spec suite, and this repo's unit tests. No increment merged
 red, and no increment "improves" on the reference: deviations are recorded in
 the commit that makes them, or not made.
@@ -47,8 +47,8 @@ use-after-free waiting for stress.
    accident of slot order. A token base IS a base. A type IS a spine of pairs
    the library walks. If the library can name it, it is made of pairs.
 4. **Behaviour is data walked by thin code.** The analyse slots, the ops
-   alists, the from-relations already moved; the remaining Rust `Family`/
-   dispatch special cases shrink to walkers as the structures above land.
+   alists, the from-relations already moved; the remaining Rust dispatch
+   special cases shrink to walkers as the structures above land.
 
 ## Increments, in leverage order — ALL FOUR COMPLETE
 
@@ -91,20 +91,22 @@ stores its entry in SLOT 0 and the dispatch is "read slot 0, call it with
 `(callable . args)`" — self rides in the args, and procedure/operative/
 primitive are which function sits in the slot, not kinds of a dispatcher.
 
-This engine's evaluator is the inverse: a Rust match over object kinds,
-with an eight-variant `Body` enum behind the primitive arm. Every
-semantic it hardcodes is a semantic no base can replace. The increments:
+This engine's evaluator WAS the inverse: a Rust match over object kinds,
+with an eight-variant `Body` enum behind the primitive arm — every
+semantic it hardcoded was a semantic no base could replace. The
+increments, ALL THREE COMPLETE (PRs #7-#12):
 
-- **E1. Eval dispatches through the type.** The eval core becomes the
+- **E1. Eval dispatches through the type.** COMPLETE. The eval core is the
   reference's: read the type word; a type with an eval handler decides, a
   value without one is itself. The current symbol and pair arms become
   ENGINE EVAL HANDLERS registered on every base's SYMBOL and PAIR types —
   replaceable per base from x-lang, like every other handler now is.
-- **E2. Application dispatches through the type.** The list handler resolves
+- **E2. Application dispatches through the type.** COMPLETE. The list
+  handler resolves
   its operator and applies through the operator's type's CALL handler;
   PROCEDURE, OPERATIVE and PRIMITIVE types register theirs, and the
   evaluator's kind-match dissolves. Class value-call joins natively.
-- **E3. One calling convention.** IN PROGRESS, spec-first. Landed: every
+- **E3. One calling convention.** COMPLETE, spec-first: every
   callable carries its ENTRY in slot 0 (a table index — the engine's
   spelling of the reference's function pointer) and its state in slot 1;
   a closure's state is the reference's `(params body env . bst)` spine,
@@ -112,11 +114,11 @@ semantic it hardcodes is a semantic no base can replace. The increments:
   `tests/x/conformance/core/handlers.spec.md` now states as law; the four
   per-kind call handlers collapsed into ONE door that reads slot 0 and never
   consults the callee's kind — a foreign address misses the table and
-  declines, keeping its invocation with the undeclared jit lane.
-  Remaining: `Body`'s variants collapse into uniform entries (fast paths
-  may survive INSIDE a uniform callable, as `x_prim_arith_binop` keeps
-  its `use_ops` flag inside one signature — never as dispatcher kinds),
-  and the environment convention settles.
+  declines, keeping its invocation with the undeclared jit lane; and
+  `Body` is DELETED — every row is one function shape that evaluates its
+  own arguments (fast paths survive INSIDE a uniform row, as
+  `x_prim_arith_binop` keeps its `use_ops` flag inside one signature —
+  never as dispatcher kinds). The environment convention settled below.
 
 THE ENVIRONMENT CONVENTION, SETTLED: the current environment is an
 ARGUMENT, as the base is. The reference keeps it on the base's
@@ -151,12 +153,14 @@ because the stale reference is in a map no mark walks. Grep `HashMap<Obj`.
 ## What remains
 
 Invariant 4's tail: the remaining Rust dispatch special cases shrink to
-walkers as their structures move. The known open is the token base — `base
-make-type` answers the type where the reference answers the name atom after
-filing, because the token base is not yet a base with a type-alist. The
-full-suite gap to the reference (181 of 2549, distribution: logo, math
-functions, Buf construction, numeric guards, posix tail) is tracked in
-x-lang's suite, not here.
+walkers as their structures move. (The token base open recorded here
+earlier closed with the tokenizer arc — it is a base with a type-alist
+now.) Two knowns stand: per-base STAMPING (the paragraph above), and the
+`Engine` struct itself — the eval state it still holds as Rust fields
+(the tail latch, the save counter, guard depth, the reader) belongs on
+the base spine, reached by route, like everything else that moved. The
+full-suite gap to the reference (95 of 2549, the failure set stable
+across runs) is tracked in x-lang's suite, not here.
 
 ## What is NOT ported
 
