@@ -14,10 +14,7 @@ use crate::obj::Obj;
 /// catalog and define `%coord`.
 ///
 /// It WALKS THE DECLARED ROUTE from `base-paths.x`, exactly as
-/// `tests/x/conformance/prelude.x` does. An earlier version hard-coded
-/// `(first (first (%base)))`, which was the base's shape at the time — so
-/// changing that shape broke thirty tests that were not about the base at all,
-/// while the conformance suite sailed through because it had asked properly.
+/// `tests/x/conformance/prelude.x` does.
 ///
 /// A test that reaches primitives by a private back door is not exercising the
 /// route the language uses, and will disagree with the language the moment the

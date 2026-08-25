@@ -42,20 +42,12 @@ fn marshal(e: &Engine, o: Obj) -> u64 {
     if e.objects.is_foreign(o) {
         return e.objects.foreign_addr(o);
     }
-    // A PTR INTO THIS ENGINE'S HEAP BECOMES A REAL ADDRESS, exactly as a string
-    // does. Strings were converted and pointers were not, so a pointer reached
-    // libc as a raw heap OFFSET — a small integer, not an address.
-    //
-    // `Sys wait` is the case that showed it: x-lang hands `waitpid` a four-byte
-    // region as `(%str->ptr s)`, and waitpid wrote nowhere. The region kept the
-    // space fill `str make` leaves, so `(%ptr-ref buf 0 4)` read 0x20202020 and
-    // the decode read its low seven bits as "killed by signal 32" — every
-    // `Proc run!` answered 160, whatever the child did, which is also the
-    // `cc failed with status 160` behind the compiled tower.
-    //
-    // The two address spaces do not overlap, which is what makes the test sound:
-    // a heap offset is bounded by the heap, and anything the foreign side hands
-    // back (a malloc result, a dlsym) is a process address far above it.
+    // A PTR into this engine's heap becomes a REAL ADDRESS, exactly as a
+    // string does: the heap is the engine's own array, so an address inside it
+    // must be resolved before it crosses the door — `Sys wait` hands `waitpid`
+    // a region as `(%str->ptr s)` and reads the status back through it. The
+    // two spaces do not overlap: a heap offset is bounded by the heap, and
+    // anything the foreign side hands back is a process address far above it.
     if e.objects.is_ptr(o) {
         let at = e.objects.as_ptr(o);
         if (at.raw() as usize) < e.objects.heap.words_len() * WORD {

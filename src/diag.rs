@@ -1,31 +1,16 @@
 //! Conditions, and how they are shown.
 //!
-//! Two things were fused before this file and are separated here.
-//!
-//! **What went wrong** is a SHORT LIST, and that is the point. An engine is a
+//! **What can go wrong** is a SHORT LIST, and that is the point. An engine is a
 //! machine: it reads words and applies operators. It does not know about types,
 //! it does not count arguments, and it has no opinion about dividing by zero —
-//! those belong to x-lang, one layer up.
+//! those belong to x-lang, one layer up, and x-lang's contract rules
+//! `first`/`rest` unchecked. What a machine can actually fail at: a name with
+//! no binding has no word to read, a file may not open, stdin may not be
+//! readable.
 //!
-//! This file used to carry eight `Kind` variants, an arity checker and a
-//! divide-by-zero policy, each individually defensible and collectively a layer
-//! violation: checking pulled DOWN into the machine because the machine could do
-//! it. x-lang's contract had already ruled `first`/`rest` unchecked; everything
-//! else here was the same rule, unapplied.
-//!
-//! What remains is what a machine can actually fail at: a name with no binding
-//! has no word to read, a file may not open, and stdin may not be readable.
-//!
-//! **How it is shown** was `eprintln!("*** ERROR: ...")` written twice in main.
-//! That prefix is contract layer E — the engine owes it to x-lang's wrapper — and
-//! it was a bare literal with no name, assumed to be correct for all time. It has
-//! one home now, [`PREFIX`], and nothing outside this file writes it.
-//!
-//! The split matters because the two have different dependencies. A condition is
-//! DATA and can be constructed anywhere. Rendering one needs the objects, because a
-//! raised value is an object and its text lives in storage. Fusing them is what
-//! forced every failure site to allocate a message immediately, whether anyone
-//! would ever read it or not.
+//! **How it is shown** is contract layer E: diagnostics go to stderr with the
+//! `*** ERROR: ` prefix the wrapper scrapes, named in `vocabulary.rs` like any
+//! other spelling the outside world depends on.
 
 use crate::obj::Obj;
 use crate::objects::Objects;
@@ -37,9 +22,7 @@ pub const PREFIX: &str = "*** ERROR: ";
 
 /// A condition in flight.
 ///
-/// `Debug` is derived, which is not decoration: without it `Result<Obj, _>` has
-/// no `expect`, and every test in this repo had to write `.ok().expect(...)` to
-/// get a failure message.
+/// `Debug` is derived so `Result<Obj, Cond>` has `expect`.
 #[derive(Debug)]
 pub enum Cond {
     /// `(error x)` — the program raised this value deliberately. The VALUE is
@@ -76,10 +59,9 @@ impl Cond {
 
     /// The value `guard` binds to its handler's name.
     ///
-    /// A deliberate raise hands back exactly what the program raised. Everything
-    /// else becomes a string, and only at this moment — a condition that is
-    /// caught and ignored never allocates one, which the old code could not
-    /// avoid because it built the message at the failure site.
+    /// A deliberate raise hands back exactly what the program raised.
+    /// Everything else becomes a string, and only at this moment — a condition
+    /// that is caught and ignored never allocates a message at all.
     pub fn value(&self, a: &mut Objects) -> Obj {
         match self {
             Cond::Raised(v) => *v,
@@ -141,10 +123,8 @@ pub fn value_text(a: &Objects, v: Obj) -> String {
 /// reader is not fidelity but IDENTIFICATION: an error is the last thing a run
 /// says, and it is the only channel a bare engine has.
 ///
-/// It used to answer the empty string for anything that was not a string, a
-/// symbol or an integer, so a raise carrying a pair — which is how x-lang's
-/// library raises, `(error (pair (lit unsupported-platform) x-machine))` — came
-/// out as `*** ERROR:` and nothing else. Three separate investigations here
+/// Pairs render recursively because that is how the library raises:
+/// `(error (pair (lit unsupported-platform) x-machine))`. Three separate investigations here
 /// started by having to find out what an empty error meant.
 ///
 /// Depth-bounded because a raised structure may be cyclic, and an error handler

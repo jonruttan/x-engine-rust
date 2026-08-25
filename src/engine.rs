@@ -416,31 +416,13 @@ impl Engine {
         self.base_syms.insert(base, Symbols::new());
         base
     }
-
-    /// Run `f` with `base`'s symbol table installed, restoring afterwards.
-    ///
-    /// Bracketed rather than assigned, because a base can evaluate into another
-    /// base: the table that was running has to come back, not the engine's own.
-    /// ALSO THE CURRENT BASE, not just the table. The reference has no
-    /// equivalent bracket because it needs none: `p_base` is an ARGUMENT,
-    /// threaded through every call, so "which base is current" is data flowing
-    /// through the program. This engine keeps it in a field — and the bracket
-    /// used to swap the symbol table while leaving the field alone, so under
-    /// `(b eval …)` every prim that consults the base (`resolve_tree`,
-    /// `file_type`, `make-instance`) read the HOST's registry while running the
-    /// child's code. A type filed in a child base could never be found by the
-    /// code that filed it.
-    ///
-    /// The displaced base rides `base_stack`, which the collector roots — the
-    /// host base may have no other reference while a child runs.
+    /// Run `f` with `base` current: its symbol table installed and the engine's
+    /// base field pointing at it, both restored afterwards. Identity when
+    /// `base` is already current — the active table lives on `Objects` and the
+    /// map holds only DISPLACED tables, so re-entering the running base must
+    /// not swap. The displaced base rides `base_stack`, which the collector
+    /// roots: a host base may have no other reference while a child runs.
     pub fn in_base<T>(&mut self, base: Obj, f: impl FnOnce(&mut Self) -> T) -> T {
-        // IDENTITY ON THE CURRENT BASE. The active table lives on Objects, not
-        // in the map — the map holds only DISPLACED tables — so bracketing into
-        // the base that is already running would swap in an empty table and
-        // every symbol interned inside would be a different object. That broke
-        // `$"…"` interpolation wholesale the day read_str started bracketing
-        // its handlers: the host base re-entered itself and its own names went
-        // strange.
         if base == self.base {
             return f(self);
         }

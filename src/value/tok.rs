@@ -18,22 +18,14 @@ impl Objects {
         o
     }
 
-    /// TRANSCRIBED from the reference: a buffer is
-    /// `(val . (read . write))` — x-lang's own walks depend on the shape.
-    /// `lib/x/reader/intrinsics.x` computes `%buffer-len` as
-    /// `(- (%cell-int (rest buffer)) (%cell-int buffer))` and `%buffer-unread`
-    /// writes the rest-cell's word directly, so `first(buffer)` MUST be the
-    /// val mark and `rest(buffer)` MUST be the object whose first word is the
-    /// read mark. The previous layout satisfied that by slot-order accident;
-    /// this one satisfies it by being the reference's structure.
+    /// A buffer is `(val . (read . write))`, as the reference lays it out:
+    /// `first(buffer)` is the val mark and `rest(buffer)` is the object whose
+    /// first word is the read mark — the shape `lib/x/reader/intrinsics.x`
+    /// walks with `%cell-int` and writes with `%buffer-unread`.
     ///
-    /// Two deviations, both forced by running a COLLECTOR the reference does
-    /// not run under stress, both invisible to x-lang:
-    ///   * marks are OFFSETS into the text, not raw pointers — subtraction
-    ///     still works, and an offset survives any future heap growth;
-    ///   * the text OBJECT rides in slot 2 and the RO flag in slot 3, past
-    ///     `rest`'s reach — the reference leaves the region's lifetime to the
-    ///     caller, which is sound only when nothing collects mid-use.
+    /// Marks are OFFSETS into the text rather than raw pointers, and the text
+    /// object and RO flag ride in slots past `rest`'s reach so the collector
+    /// can root the region; both are invisible to x-lang.
     pub fn buf_writable(&mut self, text: Obj, at: u64, write: u64) -> Obj {
         let marks = self.alloc(FLAG_BUFMARKS, 2);
         self.set_data(marks, 0, Word(at));

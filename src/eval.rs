@@ -33,9 +33,8 @@ impl Engine {
     /// reaches the machine operators without wrapping their names: types
     /// REGISTER ops, nothing wraps ambient `+`.
     ///
-    /// Without it `(+ 2.0 2.0)` added the two floats' operand words and answered
-    /// a machine integer — every generic-arithmetic check in ext/float.spec.md
-    /// and the whole numeric-tower spec.
+    /// Without it `(+ 2.0 2.0)` adds the two floats' operand words and answers
+    /// a machine integer.
     ///
     /// When BOTH sides carry a handler, the tie is broken by the conversions the
     /// types already declare rather than by an ordering invented here: the side
@@ -197,9 +196,7 @@ impl Engine {
         let env_slot = env_mark;
         let out = loop {
             // The armed ceiling. Collection is explicit-only, so between two
-            // `(heap collect)` calls nothing bounds a runaway loop but this —
-            // and unbounded allocation has taken this project's machine down
-            // before.
+            // `(heap collect)` calls nothing bounds a runaway loop but this.
             // Publish an interrupt the handler recorded. Between forms is soon
             // enough and is the only safe place: the handler runs at an
             // arbitrary instruction and may not touch the heap.
@@ -207,16 +204,10 @@ impl Engine {
                 let flag = self.sigint_flag;
                 self.objects.set_data(flag, 0, crate::obj::Word(1));
             }
-            // AND THEN ACT ON IT — but only while a guard can catch it. The
-            // reference raises `STOP` here, clearing the flag first so a handler
-            // that returns does not re-trip immediately, and it checks that an
-            // error handler is active because an uncatchable raise would end the
-            // run instead of interrupting the computation.
-            //
-            // Publishing the flag without reading it is what this did before, so
-            // x-lang could set `%sigint-flag` by hand — which is exactly how
-            // core/signal.spec.md tests it, no signal involved — and nothing
-            // happened.
+            // A set flag becomes a STOP only while a guard can catch it: the
+            // flag is cleared first so a handler that returns does not re-trip,
+            // and an uncatchable raise would end the run rather than interrupt
+            // the computation.
             if self.guard_depth > 0 {
                 let flag = self.sigint_flag;
                 if self.objects.as_int(flag) != 0 {
@@ -498,15 +489,12 @@ impl Engine {
             // Handed the object model and nothing else. It cannot evaluate, it
             // cannot see an environment, and it cannot read the input stream.
             Body::Value(f) => f(&mut self.objects, &vals),
-            // THE DYNAMIC BASE, as an argument. p_base in the reference is
-            // dynamic — it flows through the CALL, so a host-defined handler
-            // running under `(b eval …)` sees the child. Deriving it from the
-            // environment's frame was tried first and is WRONG: a closure's
-            // body frames chain to its definition env, which makes the derived
-            // value lexical, and logo's read handlers — host closures filing
-            // instances into the logo base — stamped unresolved handles again.
-            // The frame's base backpointer stays for the collector and for
-            // introspection; the RUNNING base is this value.
+            // The DYNAMIC base, as an argument: p_base flows through the call,
+            // so a host-defined handler running under `(b eval …)` sees the
+            // child. It is not derivable from the environment — a closure's
+            // body frames chain to its definition env, which is the LEXICAL
+            // base. The frame's base backpointer serves the collector and
+            // introspection; the running base is this value.
             Body::Applicative(f) => {
                 let base = self.base;
                 f(self, base, &vals)
@@ -758,11 +746,9 @@ impl Engine {
 mod tests {
     use crate::testkit::{eval_ok, int_of, raises, truthy};
 
-    // These exercise the EVALUATOR, not the instructions that ride on it. Every
-    // test in this crate used to reach it sideways through a primitive, which
-    // meant the rules below — what self-evaluates, what a non-callable head
-    // does, how arguments line up with names — were only ever asserted by
-    // accident.
+    // These exercise the EVALUATOR directly, not the instructions that ride
+    // on it: what self-evaluates, what a non-callable head does, how arguments
+    // line up with names.
 
     #[test]
     fn literals_evaluate_to_themselves() {

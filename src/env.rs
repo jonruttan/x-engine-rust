@@ -1,34 +1,21 @@
-//! Environments, ON THE HEAP.
+//! Environments.
 //!
-//! TRANSCRIBED from the reference (increment D1 of ARCHITECTURE-PORT.md). An
-//! environment there is not a struct anywhere — it is a spine of ordinary pair
-//! cells, `((sym . val) . rest)`, each spine cell tagged FRAME, shared
-//! structurally with its parent (`x_env_extend` conses and never mutates). The
-//! collector needs no special knowledge of it: the cells trace like any pair.
+//! An environment is heap data: a HOLDER object of three slots — chain head,
+//! parent holder, base — whose chain is a spine of ordinary spair cells,
+//! `((sym . val) . rest)`. The collector traces holders and cells like any
+//! other objects; no separate lifetime management exists.
 //!
-//! This file used to hold a Rust `Vec<Frame>` with `EnvId` as an index — and
-//! everything that representation forced: a mark/sweep FIXPOINT between objects
-//! and frames, a frame free-list, dead-frame traps, X_GC_POISON withholding of
-//! slots, and a hand-enumerated root for every frame. All of that machinery
-//! existed to compensate for the state living outside the tree. It is gone:
-//! frames are heap data now, and collection is plain marking again.
+//! `EnvId` is a newtype over the holder object, so the evaluator passes
+//! environments by handle while the representation stays on the heap.
 //!
-//! The HANDLE. `EnvId` survives as a newtype over the env-holder object so the
-//! evaluator's signatures did not all change in the same commit that changed
-//! the representation. A holder is three slots: the chain head, the parent
-//! holder, and the base the environment serves. `def` conses a FRAME cell and
-//! moves the head — the holder mutates, the cells never do, which preserves
-//! this engine's existing activation semantics while the cells themselves are
-//! the reference's. The holder's remaining distance from the reference — where
-//! the current env is BASE STATE under a save/restore protocol and needs no
-//! holder at all — is increment D2's to close.
+//! Binding conses a cell and moves the holder's head; rebinding a name already
+//! present in the frame updates its cell in place, so a REPL that redefines
+//! does not grow the chain. Lookup walks the chain, then the parent.
 //!
-//! THE INDEX. The reference pays for global lookup with a heap BST
-//! (`env_global_tree`); until D2 transcribes it, a Rust-side map shadows any
-//! holder that outgrows a scan. It is a CACHE over the heap truth — every
-//! write goes through `bind`/`set_existing`, so it can never disagree — and it
-//! holds nothing the collector needs to see, because everything it points at
-//! is reachable through the chain it mirrors.
+//! Frames that outgrow a linear scan gain a shadow map, keyed by holder. The
+//! map is a cache over the chain — every write path updates both — and holds
+//! nothing the collector needs, since everything it points at is reachable
+//! through the chain it mirrors.
 
 use crate::obj::{EnvId, Obj, NIL};
 use crate::objects::{Objects, FLAG_ENVH};
@@ -96,13 +83,8 @@ impl Envs {
         }
     }
 
-    /// Bind in THIS environment, shadowing any outer binding of the same name.
-    ///
-    /// A FRAME cell is consed onto the chain — `((sym . val) . rest)`, the
-    /// reference's `x_env_extend` shape — and the holder's head moves. A
-    /// REBINDING of a name already in this frame updates the existing cell
-    /// instead, which is what keeps a chain from growing with every `def` of
-    /// the same name at the REPL.
+    /// Bind in THIS frame, shadowing any outer binding of the same name.
+    /// Rebinding a name already present updates its cell in place.
     pub fn bind(&mut self, o: &mut Objects, env: EnvId, name: Obj, value: Obj) {
         let h = env.obj();
         if let Some(cell) = self.find_in_frame(o, env, name) {
@@ -180,8 +162,7 @@ impl Envs {
         }
     }
 
-    /// Holders made since the engine started — reporting only. The heap owns
-    /// their lifetimes now; there is nothing to sweep here.
+    /// Holders made since the engine started — reporting only.
     pub fn frame_count(&self) -> usize {
         self.made
     }

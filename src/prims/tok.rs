@@ -128,10 +128,8 @@ fn reset(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// `(buf append b s)` — extend the text being read.
 /// `(buf append b ch)` — ONE CHARACTER, written at the write mark INTO the
-/// region. This rebuilt the whole text as a fresh string instead — and read the
-/// character argument with `bytes_of`, which walks a str's bytes, so a CHAR
-/// contributed garbage. The region is shared state: writing in place is what
-/// makes the bytes visible to every view of it.
+/// region. The region is shared state: writing in place is what makes the byte
+/// visible to every view of it. Writes past the region's capacity are clamped.
 fn append(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
     let text = a_.buf_text(b);
@@ -146,13 +144,8 @@ fn append(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(b)
 }
 
-/// `(buf read-text b)` — everything from the retain mark to the end.
-/// `(buf read-text b)` — read ONE character; nil at end of input OR on a NUL.
-///
-/// The reference is `x_type_buffer_read` plus one test: NUL is end. This
-/// engine had invented a different operation under the same coordinate — it
-/// answered the remaining text as a string — which nothing in the reference
-/// does and the Buf class does not document.
+/// `(buf read-text b)` — read ONE character; nil at end of input OR on a NUL,
+/// which is `x_type_buffer_read` plus the NUL test.
 fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
     let got = read(a_, a)?;
@@ -207,31 +200,26 @@ pub(crate) fn better(score: i64, best: Option<i64>) -> bool {
 }
 
 /// THE ANALYSE CONTEST: which registered type claims the text at `at`, and how
-/// much of it. This is `x_token_analyse`, and both drives go through it.
+/// much of it — `x_token_analyse`, shared by both drives.
 ///
 /// ONE BUFFER for the whole contest, rewound to the token start between
-/// attempts. That is the part this engine had wrong at the representation level
-/// rather than in any single branch: it built a FRESH buffer per handler and
-/// then reconstructed the span with arithmetic, so an analyser's side effects on
-/// the buffer — `%buffer-unread` backing off a delimiter it only peeked at, the
-/// `retain` mark, `last-char` — could not accumulate the way the library expects
-/// them to. Every symptom that produced then needed its own patch.
+/// attempts, so an analyser's side effects — `%buffer-unread` backing off a
+/// delimiter it peeked at, the retain mark, `last-char` — accumulate the way
+/// the library expects.
 ///
-/// A handler's attempt ends in one of two ways, and they measure differently:
+/// A handler's attempt ends one of two ways, measured differently:
 ///
-///   * it RETURNS THE SCORE OBJECT — an accept, and the claim is the score's own
-///     value, which `%score-set` filled in from the buffer span. Setting the
+///   * it RETURNS THE SCORE OBJECT — an accept; the claim is the score's own
+///     value, which `%score-set` filled from the buffer span. Setting the
 ///     score is NOT an accept: `%float-first-frac` sets it on the first
 ///     fractional digit and returns the next state.
 ///   * it runs out of input with a score already set — the EOF auto-score,
-///     `sign(score) * consumed`. This is what claims an undelimited `3.14` at
-///     the end of a source.
+///     `sign(score) * consumed`, which claims an undelimited token at the end
+///     of a source.
 ///
-/// A handler answering nil rewinds first, so it claims nothing.
-///
-/// `better` decides the winner; `>=` means a later type takes a tie, which is
-/// how the library's registration order still settles equal-length claims while
-/// LENGTH settles unequal ones.
+/// A handler answering nil rewinds first, so it claims nothing. `better`
+/// decides the winner; `>=` means a later type takes a tie, so registration
+/// order settles equal-length claims while LENGTH settles unequal ones.
 pub(crate) fn analyse(
     e: &mut Engine,
     types: &[Obj],
@@ -471,19 +459,11 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(list)
 }
 
-/// `(tok read TB b)` — the same drive, over a buffer already positioned.
-/// `(tok read buffer)` — ONE FORM from the buffer, leaving its cursor after what
-/// was read.
-///
-/// ONE argument, the buffer. It was declared as taking two, `(tok read TB
-/// buffer)`, and read the second — so `lib/x/reader/lit-reader.x`'s
-/// `(%token-read buffer)` handed it a buffer it ignored and a nil it used, and
-/// `'x` came out as `(lit ())`.
+/// `(tok read buffer)` — ONE FORM from the buffer, leaving its cursor after
+/// what was read. ONE argument, the buffer.
 ///
 /// This is what a reader macro calls to read the form it prefixes: `%lit-read`
-/// answers `(lit X)` by reading X through here. It used to re-tokenize the
-/// buffer's whole text and answer a LIST of every token in it, which is a
-/// different instruction entirely.
+/// answers `(lit X)` by reading X through here.
 fn read_tok(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.read_form_at(a[0])
 }
@@ -498,22 +478,14 @@ fn make_tok(a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
 /// `(base make-type TARGET "NAME" handlers)` — register a type, ANSWERING ITS
 /// HANDLE.
 ///
-/// THE TARGET'S TYPE-ALIST IS THE REGISTRY. In the reference the first argument
-/// is a real base and the type is filed in ITS type-alist — the same list
+/// A real base files `(handle . tree)` in ITS type-alist — the one list
 /// `make-instance` resolves a handle through, `type ?` reads a name from, and
-/// the tokenizer contest iterates. One data structure, three consumers; apps
-/// depend on the identity (apps/logo makes a child base, prunes its alist with
-/// raw first/rest, and dispatches every token with `%type?`).
+/// the tokenizer contest iterates; apps depend on that identity (apps/logo
+/// registers a language on a child base and dispatches every token with
+/// `%type?`). A token base keeps its own list for the bare-protocol checks.
 ///
-/// This engine kept a SEPARATE tokbase object for the scorer's types, so a type
-/// registered for reading was invisible to `make-instance` and `type ?` — logo
-/// tokenized its words and then recognised none of them. The tokbase path stays
-/// for the conformance suite's bare-protocol checks; a real base files where
-/// the reference files.
-///
-/// The HANDLE comes back, not the tree: `x_prim_base_make_type` builds the name
-/// atom, files the tree, and answers the atom, because the handle is what
-/// everything downstream compares.
+/// The HANDLE comes back, not the tree, because the handle is what everything
+/// downstream compares — as `x_prim_base_make_type` answers its name atom.
 fn make_type(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let text = e.objects.str_val(a[1]);
     let name = e.objects.handle(&text);

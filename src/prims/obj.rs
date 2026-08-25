@@ -6,33 +6,12 @@ use crate::eval::EvalResult;
 use crate::obj::Obj;
 use crate::objects::Objects;
 use crate::prim::PrimDef;
-
-/// Identity, EXCEPT for numbers. Symbols are interned and nil is one value, so
-/// identity is right for those — but an integer is a boxed object here, so two
-/// spellings of 1 are two objects and a pure pointer compare answers false.
-///
-/// x-engine-c was asked rather than guessed at, and it draws the line in a
-/// specific place: `(eq? 1 1)` holds and `(eq? "a" "a")` does NOT. Numbers
-/// compare by value; strings, which are mutable, by identity.
-/// `(obj eq?)` — by VALUE for numbers and characters, by identity otherwise.
-///
-/// The character half was missing, and it is not a nicety: `%str-ref` answers a
-/// freshly made character, so every string comparison in x-lang's library comes
-/// down to `(eq? (%str-ref hay i) (%str-ref needle j))`. With identity those are
-/// never equal, and `lib/x/platform/syscall.x` could not find "darwin" inside
-/// "aarch64-apple-darwin" — the whole posix layer refused to load with
-/// `(unsupported-platform . aarch64-apple-darwin)`.
-///
-/// Asked of x-engine-c rather than assumed:
-///
-/// ```text
-/// (def %ic (prim-ref 'int '->char))
-/// (match ((eq? (%ic 100) (%ic 100)) 'EQ) (#t 'NOT-EQ))   =>  'EQ
-/// ```
-///
-/// Strings stay identity-compared, which the same interrogation confirmed
-/// earlier: `(eq? "a" "a")` does not hold. The reference reads slot 0 either
-/// way — for an atom that is its value, and for a string it is the pointer.
+/// `eq?` compares the OPERAND WORD, not the type: `a == b || (both non-nil &&
+/// word(a) == word(b))`, as `x_prim_eq` does. A CHARACTER therefore equals the
+/// INTEGER of its code, which the string printer's escape tables rely on.
+/// Strings compare by identity for free — a string's word is the address of
+/// its bytes. Objects that merely share a first word conflate here; identity
+/// questions belong to `same?`.
 fn eq(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     // THE OPERAND WORD, NOT THE TYPE. The reference is one expression:
     //
@@ -215,14 +194,9 @@ mod tests {
         assert!(truthy("(eq? (lit a) (lit a))"), "symbols are interned");
     }
 
-    /// TRUTHINESS IS NOT ENOUGH — which is exactly how this went wrong.
-    ///
-    /// `truth` answered the symbol `t` and nil for a long time. Both branch
-    /// correctly, so the test above passed, 102 conformance checks passed and 18
-    /// compliance rows passed, while `(null? ())` PRINTED as nothing and
-    /// seventeen of x-lang's list specs failed on it. A predicate's answer is a
-    /// VALUE that gets displayed, not just something to branch on, so assert the
-    /// identity rather than the truthiness.
+    /// TRUTHINESS IS NOT ENOUGH: a symbol and nil branch exactly like `#t`
+    /// and `#f`, and a predicate's answer is a VALUE that gets displayed. So
+    /// assert IDENTITY with the `#t`/`#f` objects, not truthiness.
     #[test]
     fn a_predicate_answers_the_very_objects_hash_t_and_hash_f() {
         assert!(truthy("(same? (eq? 1 1) #t)"));

@@ -28,13 +28,12 @@
 //! CONSERVATIVELY: a word is followed only if it could be an object here — in
 //! range and correctly aligned.
 //!
-//! That is a NARROW licence, and widening it was tried and reverted. Tracing
-//! every kind's words this way looks safer — "never free a live object" — but it
-//! is not: a word that passes the plausibility test may point into the MIDDLE of
-//! an object, and marking it writes the mark bit over whatever lives there. The
-//! failure mode is not retained garbage, it is a corrupted heap. Conservatism is
-//! only safe where the alternative is not knowing, which is instances; for every
-//! other kind the layout is known and precision is both cheaper and correct.
+//! That licence is NARROW. Conservative tracing of kinds with known layouts is
+//! unsound, not merely wasteful: a word that passes the plausibility test may
+//! point into the MIDDLE of an object, and marking it writes the mark bit over
+//! whatever lives there. Conservatism is only safe where the alternative is not
+//! knowing, which is instances; everywhere else the layout is known and
+//! precision is both cheaper and correct.
 
 use crate::obj::{EnvId, Flags, Obj, Word};
 use crate::objects::{
@@ -59,7 +58,7 @@ const MARK: u64 = 1 << 63;
 pub const POISON: u64 = 0x0BAD_0BAD_0BAD_0BAD;
 
 impl Objects {
-    fn flags_word(&self, o: Obj) -> u64 {
+    pub(crate) fn flags_word(&self, o: Obj) -> u64 {
         self.heap
             .word(o.addr().plus(crate::objects::SLOT_FLAGS * 8))
             .raw()
@@ -107,11 +106,9 @@ impl Objects {
             && (w / 8) as usize + crate::objects::META_LEN as usize <= self.heap.words_len()
     }
 
-    /// Mark everything reachable from `stack`.
-    ///
-    /// One walk, no fixpoint: since increment D1 an environment is heap data —
-    /// a holder whose slots are its chain, its parent holder and its base — so
-    /// a closure's captured env traces like any other slot.
+    /// Mark everything reachable from `stack`. One walk: an environment is
+    /// heap data — a holder whose slots are its chain, its parent holder and
+    /// its base — so a closure's captured env traces like any other slot.
     pub(crate) fn mark(&mut self, stack: &mut Vec<Obj>) {
         while let Some(o) = stack.pop() {
             if o.is_nil() || !self.plausible(o.word().raw()) || self.is_marked(o) {
@@ -265,18 +262,10 @@ impl crate::engine::Engine {
     /// can happen; it does not remove it, because x-lang can call
     /// `(heap collect)` from anywhere.
     fn root_set(&self) -> Vec<Obj> {
-        // THE REFERENCE'S ROOT SET IS THREE ENTRIES: the base tree, the root
-        // chain, and the registered mark-roots — because the interpreter state
-        // IS the base tree. This inventory is what remains after removing every
-        // entry provable from the base, each with its proof:
-        //
-        //   token_eof     bound as %token-eof in every base's env (setup binds
-        //                 it beside #t/#f), and env bindings are traced.
-        //   sigint_flag   bound as %sigint-flag the same way.
-        //   catalog       base slot 0 — the (prims base) route.
-        //   false_obj     the base's FALSE slot.
-        //
-        // Still engine-held, with the reason each stays:
+        // The root set. Anything reachable from the base needs no entry here:
+        // %token-eof and %sigint-flag are bound in every base's env, the
+        // catalog is base slot 0, and #f is the base's FALSE slot. What is
+        // listed is engine-held state with no path from the base:
         //
         //   spair/satom markers   sentinels the reference keeps as C statics;
         //                         nothing on the tree references them.
@@ -286,8 +275,8 @@ impl crate::engine::Engine {
         //   symbol tables         per-base interning, engine-held as the
         //                         reference's are; an interned-but-unbound
         //                         symbol has no other reference.
-        //   roots / env_roots /   the evaluator's Rust locals — the reference's
-        //   base_stack / tail       root CHAIN, in this engine's spelling.
+        //   roots / env_roots /   the evaluator's Rust locals, pushed and
+        //   base_stack / tail       truncated as evaluation proceeds.
         //   reader texts          the source being read.
         let mut r: Vec<Obj> = vec![
             self.base,
@@ -321,12 +310,10 @@ impl crate::engine::Engine {
         r.extend(self.base_stack.iter().copied());
         r.extend(self.roots.iter().copied());
 
-        // The library's OWN roots — `heap mark-root!`. The reference walks this
-        // list as a third mark pass, beside the base tree and the root chain,
-        // because its tree walk descends only spair-typed pairs and the list is
-        // built from ordinary ones. This engine traces both kinds, so the list
-        // was reached incidentally through the base; naming it here makes the
-        // guarantee the instruction promises independent of that accident.
+        // The library's OWN roots — `heap mark-root!`. Named explicitly, as
+        // the reference's third mark pass names them, so the guarantee the
+        // instruction promises does not depend on the list also being
+        // reachable through the base.
         let roots_list = crate::base::get(&self.objects, self.base, crate::base::MARK_ROOTS);
         r.extend(self.objects.list(roots_list));
         r
@@ -347,24 +334,10 @@ impl crate::engine::Engine {
 
     /// `(heap collect)` — reclaim what nothing can reach. Answers the count.
     ///
-    /// PLAIN MARKING, at last. Environments used to live outside the heap, and
-    /// collecting meant running objects and frames to a FIXPOINT — a closure
-    /// keeps a frame, a frame's bindings keep objects — with a seen-vector, a
-    /// frame sweep and a dead-frame trap compensating. Increment D1 of the
-    /// architecture port moved frames onto the heap as the reference has them
-    /// (holder objects whose chains are ordinary FRAME cells), so the tracer
-    /// walks them like anything else and the machinery above is simply gone.
+    /// One mark pass over the roots, then one sweep. Environments are heap
+    /// data, so their holders and chains trace like any other objects.
     pub fn collect(&mut self) -> usize {
-        // HOOKS FIRST, BEFORE ANY MARKING. Not a detail — the reference paid for
-        // this with a use-after-free. Everything a hook allocates is born
-        // unmarked, so if the hooks ran after the mark passes, an allocation
-        // that ESCAPED into reachable state (a `heap mark-root!` spine cell, an
-        // int a hook stored through `set!`) would be freed by this same sweep,
-        // leaving a reachable dangling pointer for the NEXT collection's mark
-        // walk to follow. Running them here means the later passes mark whatever
-        // escaped, while transient hook garbage is still swept — and a root
-        // registered from inside a hook counts in THIS cycle. See
-        // x_heap_mark_phase.
+        // HOOKS FIRST, BEFORE ANY MARKING.
         if !self.in_gc {
             self.in_gc = true;
             self.run_gc_hooks(crate::base::MARK_HOOKS);
@@ -380,18 +353,54 @@ impl crate::engine::Engine {
         self.run_gc_hooks(crate::base::FREE_HOOKS);
 
         let freed = self.objects.sweep();
+
+        // DEBUG (X_DBG_FREECHECK): nothing REACHABLE may sit on the free
+        // list. A missing root frees a live object; under reuse its chunk
+        // serves two owners and the corruption surfaces arbitrarily far away.
+        #[cfg(debug_assertions)]
+        if std::env::var("X_DBG_FREECHECK").is_ok() {
+            let mut stack = self.root_set();
+            for e in self.env_root_set() {
+                stack.push(e.obj());
+            }
+            self.objects.mark(&mut stack);
+            let mut victims = Vec::new();
+            for bucket in self.objects.free.values() {
+                for &o in bucket {
+                    if self.objects.is_marked(o) {
+                        victims.push(o);
+                    }
+                }
+            }
+            for &v in victims.iter().take(5) {
+                eprintln!(
+                    "FREECHECK: freed-but-REACHABLE {} held by {:?}",
+                    self.objects.describe_word(v.word().raw()),
+                    self.objects.holders_of(v)
+                );
+            }
+            let mut at = self.objects.heap_chain;
+            while !at.is_nil() {
+                self.objects.clear_mark(at);
+                at = self.objects.chain_next(at);
+            }
+            if !victims.is_empty() {
+                panic!(
+                    "FREECHECK: {} reachable objects on the free list",
+                    victims.len()
+                );
+            }
+        }
+
         self.in_gc = false;
         freed
     }
 
-    /// Invoke every callable on one of the base's hook lists, with NO arguments.
-    ///
-    /// The reference builds a one-cell call form per hook — `(hook)` — and runs
-    /// it through the trampoline, so a `fn` sees only its self parameter. These
-    /// lists are the library's, and an engine that merely COLLECTED registrations
-    /// without ever calling them would satisfy every spec that asks whether a
-    /// hook "survives a collect" while doing nothing at all. This engine did
-    /// exactly that, and the gc-hooks spec passed 13/13 throughout.
+    /// Invoke every callable on one of the base's hook lists, with NO
+    /// arguments — one call per hook per collection, as `x_heap_run_hooks`
+    /// does. A raising hook does not abort the collection. The engine is the
+    /// consuming layer: registration without invocation would satisfy any
+    /// check that only asks whether a hook survives.
     fn run_gc_hooks(&mut self, slot: usize) {
         let list = crate::base::get(&self.objects, self.base, slot);
         if list.is_nil() {
@@ -438,23 +447,19 @@ mod tests {
 
     use crate::engine::Engine;
 
-    /// A call's frame is gone once the call returns.
-    ///
-    /// This is the whole point of reclaiming frames: an activation that captured
-    /// nothing has no reason to outlive the call, and treating every frame as a
-    /// root — the earlier, sound-but-thriftless answer — left 46% of the heap
-    /// unreclaimable because each dead frame pinned everything it had bound.
+    /// A call's frame is gone once the call returns: an activation that
+    /// captured nothing has no reason to outlive the call.
     #[test]
     fn a_returned_call_leaves_no_frame_behind() {
-        // Frames are heap objects since D1, so "no frame survives a returned
-        // call" is now "the LIVE COUNT returns to its settled level" — the
-        // holders and their chains are ordinary garbage.
+        // Frames are heap objects, so "no frame survives a returned call"
+        // means the LIVE COUNT returns to its settled level — the holders and
+        // their chains are ordinary garbage.
         let mut e = Engine::new();
         e.eval_str("(def f (fn (self n) (+ n 1)))").unwrap();
-        // One round to settle whatever the first evaluation interns, then the
-        // guarantee: an IDENTICAL round leaves the live count exactly where it
-        // was. Any per-call leak — a holder, a chain cell, a binding — shows as
-        // growth here.
+        // One round settles whatever the first evaluation interns; an
+        // IDENTICAL second round must leave the live count exactly where it
+        // was. Any per-call leak — a holder, a chain cell, a binding — shows
+        // as growth here.
         e.eval_str("(f 1) (f 2) (f 3)").unwrap();
         e.collect();
         let settled = e.objects.live;
@@ -489,10 +494,8 @@ mod tests {
         assert_eq!(e.objects.as_int(v), 7);
     }
 
-    /// A process that calls forever must not grow forever. Frames are heap
-    /// objects since D1, so the invariant is the LIVE COUNT staying flat across
-    /// identical call-and-collect rounds — the holders and their chains are
-    /// ordinary garbage, reclaimed by the ordinary sweep.
+    /// A process that calls forever must not grow forever: the LIVE COUNT
+    /// stays flat across identical call-and-collect rounds.
     #[test]
     fn repeated_calls_hold_the_live_count_flat() {
         let mut e = Engine::new();

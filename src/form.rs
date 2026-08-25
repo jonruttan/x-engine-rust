@@ -7,12 +7,6 @@
 //! through `x_token_read`. So a reader macro the library installs changes every
 //! later read — `include` and the REPL included.
 //!
-//! This engine had two readers that never met: a hand-written one for its own
-//! input, and the `tok` instructions for the library to drive. `lib/x/reader/
-//! lit-reader.x` installed its quote macro correctly, onto a type the engine's
-//! reader never consulted, so `'x` read as a SYMBOL NAMED `'x` and surfaced far
-//! away as `Unbound SYMBOL ''str`.
-//!
 //! # The shape
 //!
 //! At every position where a form may begin, the registered analysers get first

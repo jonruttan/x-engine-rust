@@ -52,9 +52,8 @@ impl Engine {
     /// not see object growth at all.
     pub fn eval_top(&mut self, form: Obj) -> EvalResult {
         let env = self.root_env();
-        // The previous top-level result sits at the top of the stack; it is
-        // done with the moment the next form evaluates. Truncate to the BASE of
-        // the stack — top-level owns it — then root only this result.
+        // Top level owns the stack: the previous result is done with the
+        // moment the next form evaluates, so only this result stays rooted.
         let out = self.eval(form, env);
         if self.active_evals == 0 {
             self.root_truncate(0);
@@ -95,22 +94,12 @@ impl Engine {
         // reader in lib/x/type/vector.x does exactly that, and reaching past the
         // file ate a form off stdin — which is how the REPL launcher disappeared.
         self.loading.push(Reader::new(src));
-        // AT TOP LEVEL THE STACK IS OURS: the previous source's rooted result is
-        // done with the moment another source arrives, and leaving it meant one
-        // permanent root per eval_str for the life of the process — SYMBOL:f,
-        // then INT:1, INT:1, … on the probe that found this. Nested entry
-        // (include evaluates a file mid-eval) must NOT do this: the outer
-        // evaluation's roots live below us.
-        // The guard CANNOT be eval_depth: `include` hides the pending count for
-        // the duration of a load (hide_pending sets it to zero), so a nested
-        // load looked exactly like the top level and truncating destroyed the
-        // outer evaluation's roots — `self.roots[slot]` then indexed past the
-        // stack inside the trampoline. The loading stack is the honest witness:
-        // this source is the OUTERMOST one iff it is alone on it.
-        // `active_evals`, not `eval_depth`: include HIDES the depth for the
-        // duration of a load (that is what makes a loaded file's defs global),
-        // so a nested load looked top-level and truncating here destroyed the
-        // outer evaluation's roots.
+        // Top level owns the root stack; the previous source's rooted result
+        // is done with when another source arrives. Nested entry — include
+        // evaluates a file mid-eval — must not touch it: the outer
+        // evaluation's roots live below. The guard is `active_evals` because
+        // `hide_pending` zeroes `eval_depth` by design (a loaded file's defs
+        // must look top-level), so depth cannot carry this.
         if self.active_evals == 0 {
             self.root_truncate(0);
         }

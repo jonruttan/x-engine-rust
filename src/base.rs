@@ -5,12 +5,6 @@
 //! library reaches into it by walking the routes the engine commits to in
 //! `tools/contract/base-paths.x`.
 //!
-//! This engine had a two-element pair standing in for one. It satisfied the
-//! `core` profile and every conformance case that exists, because none of them
-//! looks, while the state a base is supposed to carry sat in a Rust struct that
-//! reflection cannot see. `make check-base-routes` in x-lang is what says so:
-//! the library walks sixteen routes by name and would have died on the first.
-//!
 //! # The shape
 //!
 //! A flat spine, one cell per route, so that a route ends at the CELL whose
@@ -98,10 +92,9 @@ const PRIMS_SLOT: usize = 0;
 /// Build a base spine with every route present and nil-valued, then fill the
 /// two the engine sets itself.
 ///
-/// Every cell EXISTS even when its value is nil. A route that resolved to
+/// Every cell EXISTS even when its value is nil: a route that resolved to
 /// nothing would be indistinguishable from a route the engine forgot, and the
-/// library's walk would answer nil rather than failing — which is the quiet
-/// half of the bug this replaces.
+/// library's walk would answer nil rather than failing.
 /// A spine of `n` cells, each holding a fresh one-word cell the library can read
 /// with `%cell-int` and write with `%set-cell-int!`.
 ///
@@ -227,9 +220,8 @@ mod tests {
 
     /// EVERY route in base-paths.x must resolve on a base this engine builds.
     ///
-    /// This is the check the whole session was missing: a base with fewer cells
-    /// than declared routes walks off the end and answers nil, which reads as "no
-    /// value" rather than "no such route".
+    /// A base with fewer cells than declared routes walks off the end and
+    /// answers nil, which reads as "no value" rather than "no such route".
     #[test]
     fn every_declared_route_resolves() {
         let mut o = Objects::new();

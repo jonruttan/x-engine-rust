@@ -226,18 +226,11 @@ impl Reader {
         }
     }
 
-    /// A string literal is BYTES, and the accumulator must be too.
-    ///
-    /// This pushed onto a Rust `String` through `u8 as char`, which is Latin-1
-    /// promotion: the byte 0xC2 became U+00C2 and re-encoded as C3 82, so every
-    /// multi-byte literal in a source file DOUBLE-ENCODED — `"¢"` (C2 A2) read
-    /// as four bytes and `Str8 ref` answered 195 where the file held 194. The
-    /// utf8 and str-class specs fail wholesale on that.
-    ///
-    /// The escape set is the reference's (sexp/str.c): `\" \\ n t r 0` and
-    /// `\xNN` with exactly two hex digits. An UNKNOWN escape keeps the
-    /// backslash AND the character — this dropped the backslash, which is a
-    /// different string.
+    /// A string literal is BYTES; the accumulator must be too — pushing
+    /// `u8 as char` onto a `String` is Latin-1 promotion and re-encodes every
+    /// byte above 0x7F. Escapes are the reference's set (`\" \\ n t r 0`,
+    /// `\xNN` with exactly two hex digits); an UNKNOWN escape keeps the
+    /// backslash AND the character.
     pub(crate) fn read_string(&mut self, a: &mut Objects) -> Obj {
         let mut bytes: Vec<u8> = Vec::new();
         while let Some(c) = self.peek() {

@@ -490,9 +490,32 @@ impl Objects {
     ///
     /// One rule in one place: `first` and `rest` had their own nil guards before
     /// this, which is the same rule written twice.
+    #[cfg(debug_assertions)]
+    fn flags_word_raw(&self, o: Obj) -> u64 {
+        self.heap
+            .word(
+                o.addr()
+                    .plus(crate::objects::SLOT_FLAGS * crate::obj::WORD as u64),
+            )
+            .raw()
+    }
+
     pub fn data(&self, o: Obj, i: u64) -> Word {
         if o.is_nil() {
             return Word(0);
+        }
+        // Reads trap too under poison, in debug builds: first/rest are plain
+        // data reads and touch neither the flags word nor the store path.
+        #[cfg(debug_assertions)]
+        if self.poison_freed && self.flags_word_raw(o) == crate::collect::POISON {
+            let was = self.freed_kind.get(&o);
+            panic!(
+                "read of a FREED object at {:?} slot {} (was {:?})\n  held by: {:?}",
+                o,
+                i,
+                was,
+                self.holders_of(o)
+            );
         }
         self.heap.word(Self::slot(o, i))
     }
@@ -537,18 +560,10 @@ impl Objects {
         self.true_obj
     }
 
-    /// x-lang's truth answer: `#t` or `#f`, NEVER a symbol and never nil.
-    ///
-    /// This answered the symbol `t` and nil for a while. Both are correctly
-    /// truthy and falsy, so nothing that merely BRANCHED on a predicate could
-    /// tell — 102 conformance checks and 18 compliance rows never noticed. What
-    /// notices is printing one: `(null? ())` rendered as nothing where x-lang's
-    /// spec suite expects `#t`, and seventeen list specs failed on it.
-    ///
-    /// The reference settles it. `x_prim_eq`, `x_prim_same`, `x_prim_lt` and
-    /// `type`'s predicates all answer `x_firstobj(x_eval_field_true(p_base))` or
-    /// the matching false field — base fields a child base INHERITS
-    /// (`x-prim/base.c`), never a symbol and never nil.
+    /// x-lang's truth answer: the `#t` and `#f` OBJECTS, never a symbol and
+    /// never nil. A predicate's answer is a value that gets DISPLAYED, not just
+    /// branched on; the reference returns its base's TRUE/FALSE fields
+    /// (`x_prim_eq`, x-prim/pred.c), which child bases inherit.
     pub fn truth(&self, b: bool) -> Obj {
         if b {
             self.true_obj
@@ -609,7 +624,6 @@ impl Objects {
     }
 
     /// A one-line description of a raw word, for the collector's trap.
-    #[cfg(debug_assertions)]
     pub(crate) fn describe_word(&self, w: u64) -> String {
         let o = Word(w).as_obj();
         if o.is_nil() {

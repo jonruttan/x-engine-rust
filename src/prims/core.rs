@@ -100,15 +100,12 @@ fn atomic(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 /// zz          =>  7
 /// ```
 ///
-/// Nested evaluation here answered `Unbound SYMBOL 'zz`: the definition landed
-/// in `myif`'s caller frame and died with it. `lib/x/doc/doc.x` is built on this
-/// exact behaviour — its comment says the final tail-eval "must run in the op's
-/// own tail so it defines the symbol in the caller's env" — so `(doc (def or …))`
-/// defined nothing, and `or` was Unbound a hundred lines later with no error at
-/// the point of loss.
+/// `lib/x/doc/doc.x` is built on this exact behaviour — its comment says the
+/// final tail-eval "must run in the op's own tail so it defines the symbol in
+/// the caller's env".
 fn tail_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
-    // An env operand that is not an env is a caller error, not a licence to pick
-    // one. Falling back to the root used to hide exactly the bug above.
+    // An env operand that is not an env is a caller error, not a licence to
+    // pick one.
     if !e.objects.is_env(a[1]) {
         return Err(Cond::NotAnEnvironment(a[1]));
     }
