@@ -1,10 +1,7 @@
 # The architecture port
 
-This engine was written structured around CODE — enums, match arms, Rust-side
-records with accessor prims in front — where the reference is structured around
-DATA: one self-describing object tree that behaviour emerges from by walking.
-The author's diagnosis, verbatim, after a night of fixes that each moved one
-more piece across that gap:
+The reference is structured around DATA: one self-describing object tree that
+behaviour emerges from by walking. The design's author, verbatim:
 
 > The C version is structured around data. Your version is structured around
 > code.
@@ -22,21 +19,15 @@ both engines, the spec suite, and this repo's unit tests. No increment merges
 red, and no increment "improves" on the reference: deviations are recorded in
 the commit that makes them, or not made.
 
-## Why whittling lost
+## Why transcription, not derivation
 
-Each mismatch fixed tonight was one symptom of the same fault, and they got
-MORE structural as they went: `byte-sub` was a function, the buffer was a data
-model, `in_base` was the evaluation model. The pattern every time:
-
-- the reference has a STRUCTURE x-lang itself can walk;
-- this engine had a Rust record with prims in front;
-- x-lang's library reached where the record didn't anticipate — `intrinsics.x`
-  poking buffer cells, logo pruning a type-alist, `reflect.x` replacing prims —
-  and the wall it hit looked like an isolated bug.
-
-The collector's root set says it numerically: the reference enumerates THREE
-roots, because the interpreter state IS the base tree. This engine hand-lists
-about twenty, and every one it forgot was a use-after-free found by stress.
+The reference has STRUCTURES x-lang itself can walk; a Rust record with prims
+in front presents the same surface until the library reaches where the record
+didn't anticipate — `intrinsics.x` poking buffer cells, logo pruning a
+type-alist, `reflect.x` replacing prims. The collector's root set states the
+same point numerically: the reference enumerates THREE roots because the
+interpreter state IS the base tree, and every root a hand-kept list omits is a
+use-after-free waiting for stress.
 
 ## Target invariants (all from the C; none invented here)
 
