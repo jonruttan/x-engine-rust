@@ -135,7 +135,7 @@ mod tests {
     /// `getdirentries64` has a NUL in its fifth byte and real data for ninety
     /// more. Slicing the value stopped there, so x-lang's dirent decoder read
     /// every entry NAME as empty, `File list-dir` answered a list of empty
-    /// strings, and pin's tree walk joined one onto its path and recursed into
+    /// strings, and pin's type walk joined one onto its path and recursed into
     /// the same directory until the allocation ceiling — 138 s to walk five
     /// files. `byte-ref` beside this always addressed raw bytes; they must agree.
     #[test]

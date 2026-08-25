@@ -37,15 +37,15 @@ use-after-free waiting for stress.
    program, and `(b eval …)` needs no bracket, no swap, no compensating root
    stack. The `in_base` bracket and the `base` field are approximations to
    retire.
-2. **Interpreter state lives on the base tree.** Catalog, hooks, roots, the
+2. **Interpreter state lives on the base tree.** Catalog, handlers, roots, the
    sigint flag, the token-eof sentinel, the type-alist — base fields, reached
    by route. The collector's root set becomes: the base, the root chain, the
    registered roots. Frames follow last (the env model is the largest piece).
 3. **Runtime structures are object trees x-lang can walk.** A buffer IS
    `(val . (read . write))` — cells, so `%cell-int`/`%buffer-unread` in
    `lib/x/reader/intrinsics.x` work by construction rather than by the
-   accident of slot order. A token base IS a base. A type IS its descriptor
-   spine. If the library can name it, it is made of pairs.
+   accident of slot order. A token base IS a base. A type IS a spine of pairs
+   the library walks. If the library can name it, it is made of pairs.
 4. **Behaviour is data walked by thin code.** The analyse slots, the ops
    alists, the from-relations already moved; the remaining Rust `Family`/
    dispatch special cases shrink to walkers as the structures above land.
@@ -72,14 +72,14 @@ four are on `main`; D landed via PR #5.
   are deleted: one plain mark traces holders and cells like any other
   objects. Landing it surfaced a rule the plan now records below.
 
-## E. Evaluation is a type hook — ALL FOUR ABOVE WERE PRELUDE
+## E. Evaluation is a type handler — ALL FOUR ABOVE WERE PRELUDE
 
 The reference's machine is `x_eval`: nil answers nil, an untyped value
-answers itself, and EVERYTHING ELSE is one line — call the value's type
-tree's EVAL hook with the argument frame. Symbol lookup is the SYMBOL
+answers itself, and EVERYTHING ELSE is one line — call the value's type's
+EVAL handler with the argument frame. Symbol lookup is the SYMBOL
 type's registered eval (`x_type_symbol_eval`); application is the LIST
 type's, which evaluates the head and dispatches through the OPERATOR'S
-type's CALL hook; a callable is any value whose type registers call. The
+type's CALL handler; a callable is any value whose type registers call. The
 author's statement of what this buys, verbatim:
 
 > The design of the C engine allows for the interpreter to change to
@@ -95,22 +95,22 @@ This engine's evaluator is the inverse: a Rust match over object kinds,
 with an eight-variant `Body` enum behind the primitive arm. Every
 semantic it hardcodes is a semantic no base can replace. The increments:
 
-- **E1. Eval dispatches through the tree.** The eval core becomes the
-  reference's: read the type word; a tree with an eval hook decides, a
+- **E1. Eval dispatches through the type.** The eval core becomes the
+  reference's: read the type word; a type with an eval handler decides, a
   value without one is itself. The current symbol and pair arms become
-  ENGINE EVAL HOOKS registered on every base's SYMBOL and PAIR trees —
-  replaceable per base from x-lang, like every other hook now is.
-- **E2. Application dispatches through the tree.** The list hook resolves
-  its operator and applies through the operator's type's CALL hook;
-  PROCEDURE, OPERATIVE and PRIMITIVE trees register theirs, and the
+  ENGINE EVAL HANDLERS registered on every base's SYMBOL and PAIR types —
+  replaceable per base from x-lang, like every other handler now is.
+- **E2. Application dispatches through the type.** The list handler resolves
+  its operator and applies through the operator's type's CALL handler;
+  PROCEDURE, OPERATIVE and PRIMITIVE types register theirs, and the
   evaluator's kind-match dissolves. Class value-call joins natively.
 - **E3. One calling convention.** IN PROGRESS, spec-first. Landed: every
   callable carries its ENTRY in slot 0 (a table index — the engine's
   spelling of the reference's function pointer) and its state in slot 1;
   a closure's state is the reference's `(params body env . bst)` spine,
   which `lib/x/tool/cov.x` reads and
-  `tests/x/conformance/core/hooks.spec.md` now states as law; the four
-  per-kind call hooks collapsed into ONE door that reads slot 0 and never
+  `tests/x/conformance/core/handlers.spec.md` now states as law; the four
+  per-kind call handlers collapsed into ONE door that reads slot 0 and never
   consults the callee's kind — a foreign address misses the table and
   declines, keeping its invocation with the undeclared jit lane.
   Remaining: `Body`'s variants collapse into uniform entries (fast paths
@@ -124,17 +124,17 @@ ARGUMENT, as the base is. The reference keeps it on the base's
 compound-save/restore machinery exists to repair that mutation; passing
 the environment beside the base gives the same dynamic value without the
 dance, and is the same philosophy as invariant 1. The library-visible
-door follows: where the reference's hooks read the current environment
-off the base's routes, this engine's library eval hooks RECEIVE it — the
-value first, the environment second, and a one-parameter hook never sees
+door follows: where the reference's handlers read the current environment
+off the base's routes, this engine's library eval handlers RECEIVE it — the
+value first, the environment second, and a one-parameter handler never sees
 the extra argument. The doors differ per engine as base routes do under
-decision L1; the LAW (hooks govern, and can resolve names in the scope
+decision L1; the LAW (handlers govern, and can resolve names in the scope
 they run in) is the same.
 
 Known remaining after the arc: per-base STAMPING. Values are stamped
-with the engine base's trees, so replacing a ROOT tree's hook poisons
+with the engine base's types, so replacing a ROOT type's handler poisons
 the replacer's own body — on the reference, a re-aimed base's values
-carry that base's trees and the host's carry the host's. The re-aiming
+carry that base's types and the host's carry the host's. The re-aiming
 story is complete for made types today and completes for builtin kinds
 when stamping follows the allocating base.
 
@@ -152,7 +152,7 @@ because the stale reference is in a map no mark walks. Grep `HashMap<Obj`.
 
 Invariant 4's tail: the remaining Rust dispatch special cases shrink to
 walkers as their structures move. The known open is the token base — `base
-make-type` answers the tree where the reference answers the name atom after
+make-type` answers the type where the reference answers the name atom after
 filing, because the token base is not yet a base with a type-alist. The
 full-suite gap to the reference (181 of 2549, distribution: logo, math
 functions, Buf construction, numeric guards, posix tail) is tracked in

@@ -162,7 +162,7 @@ fn read_text(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// A reader type's handler for one family.
 ///
-/// Read from the TYPE TREE, the same place the library reads `write` and
+/// Read from the TYPE TYPE, the same place the library reads `write` and
 /// `display` from. The reader's `analyse` and `read` are ordinary families, not
 /// a private arrangement, so a type built by `base make-tok` and one built by
 /// `type make` carry their handlers identically.
@@ -426,7 +426,7 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
         e.root_push(ty);
         let reader = handler(e, ty, Family::Read);
         e.root_push(reader);
-        // A type with NO read hook DISCARDS its span — whitespace, comments —
+        // A type with NO read handler DISCARDS its span — whitespace, comments —
         // and the drive fetches another token, as `x_token_read` does.
         if reader.is_nil() {
             e.root_truncate(rmark);
@@ -487,7 +487,7 @@ fn read_tok(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 // --- the engine's integer token type -----------------------------------------
 // TRANSCRIBED from the reference's `x-token/sexp/int.c`: five analyser states
 // (sign, prefix, base, digits, xdigits) and a reader, installed on every
-// base's INTEGER tree. The states answer SELF while consuming; on the first
+// base's INTEGER type. The states answer SELF while consuming; on the first
 // non-member character they unread it and accept with a POSITIVE score of the
 // span — deterministic, as the sexp analysers are — or decline when nothing
 // was consumed. State indexes into `Objects::int_states`.
@@ -638,13 +638,13 @@ fn make_tok(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
 /// `(base make-type TARGET "NAME" handlers)` — register a type, ANSWERING ITS
 /// HANDLE.
 ///
-/// A real base files `(handle . tree)` in ITS type-alist — the one list
+/// A real base files `(handle . type)` in ITS type-alist — the one list
 /// `make-instance` resolves a handle through, `type ?` reads a name from, and
 /// the tokenizer contest iterates; apps depend on that identity (apps/logo
 /// registers a language on a child base and dispatches every token with
 /// `%type?`). A token base keeps its own list for the bare-protocol checks.
 ///
-/// The HANDLE comes back, not the tree, because the handle is what everything
+/// The HANDLE comes back, not the type, because the handle is what everything
 /// downstream compares — as `x_prim_base_make_type` answers its name atom.
 fn make_type(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let text = e.objects.str_val(a[1]);

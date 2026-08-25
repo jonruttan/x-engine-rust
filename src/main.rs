@@ -34,7 +34,7 @@ fn main() {
     // channel a bare engine has: there is no printer here, because `display` and
     // `write` are x-lang.
     if std::env::var("X_HEAP_STATS").is_ok() {
-        // one-off measurement hook
+        // one-off measurement handler
     }
     while let Some(form) = engine.next_form() {
         if let Err(cond) = engine.eval_top(form) {

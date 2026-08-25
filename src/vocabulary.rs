@@ -82,7 +82,7 @@ impl Family {
     }
 }
 
-/// Every family, in no particular order — the tree's layout is base-paths.x's
+/// Every family, in no particular order — the type's layout is base-paths.x's
 /// business, not this list's.
 pub const ALL: &[Family] = &[
     Family::Mark,

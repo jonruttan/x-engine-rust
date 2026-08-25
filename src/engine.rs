@@ -123,16 +123,16 @@ pub struct Engine {
     /// here, between forms. That is soon enough: x-lang's own case reads the
     /// flag in the form AFTER the one that raises.
     pub(crate) sigint_flag: Obj,
-    /// The render handler installed on builtin trees; see prims::io.
+    /// The render handler installed on builtin types; see prims::io.
     pub(crate) engine_render: Obj,
     /// The integer token reader installed beside the analyser states.
     pub(crate) int_read: Obj,
 }
 
-/// The kinds whose trees carry an engine call hook, and which. `FLAG_WRAP`
-/// shares the procedure hook: one type, the flag on the object, as the
+/// The kinds whose types carry an engine call handler, and which. `FLAG_WRAP`
+/// shares the procedure handler: one type, the flag on the object, as the
 /// reference has it.
-const CALL_HOOK_KINDS: &[(crate::obj::Flags, usize)] = &[
+const CALL_HANDLER_KINDS: &[(crate::obj::Flags, usize)] = &[
     (crate::objects::FLAG_FN, 0),
     (crate::objects::FLAG_WRAP, 0),
     (crate::objects::FLAG_OP, 1),
@@ -140,8 +140,8 @@ const CALL_HOOK_KINDS: &[(crate::obj::Flags, usize)] = &[
     (crate::objects::FLAG_CONT, 3),
 ];
 
-/// The kinds whose trees carry the engine's render handler — the set the
-/// reference's per-kind registration gives write/display hooks that the
+/// The kinds whose types carry the engine's render handler — the set the
+/// reference's per-kind registration gives write/display handlers that the
 /// library's own boot pushes then shadow.
 const RENDERED_KINDS: &[crate::obj::Flags] = &[
     crate::objects::FLAG_INT,
@@ -218,7 +218,7 @@ impl Engine {
         }
         e.catalog = e.file_catalog(&coords);
 
-        // The trees' own render handler: in the table so it is callable,
+        // The types' own render handler: in the table so it is callable,
         // deliberately outside the catalog and bound nowhere.
         let render_idx = e.prims.len();
         e.prims.push(crate::prims::io::ENGINE_RENDER);
@@ -235,13 +235,13 @@ impl Engine {
         e.prims.push(crate::prims::tok::INT_READ);
         e.int_read = e.objects.prim(idx);
 
-        // The eval hooks: what a SYMBOL and a LIST mean when evaluated,
-        // registered on the trees like every other hook — the machine reads
+        // The eval handlers: what a SYMBOL and a LIST mean when evaluated,
+        // registered on the types like every other handler — the machine reads
         // the type word and calls what it finds.
-        for (i, def) in crate::prims::core::EVAL_HOOKS.iter().enumerate() {
+        for (i, def) in crate::prims::core::EVAL_HANDLERS.iter().enumerate() {
             let idx = e.prims.len();
             e.prims.push(*def);
-            e.objects.eval_hooks[i] = e.objects.prim(idx);
+            e.objects.eval_handlers[i] = e.objects.prim(idx);
         }
         // The callable ENTRIES: the rows a constructor stamps into slot 0.
         // Minted before anything can build a closure, because the very first
@@ -251,10 +251,10 @@ impl Engine {
             e.prims.push(*def);
             e.objects.entry_words[i] = crate::obj::Word::from_usize(idx);
         }
-        // And the one call door every callable kind's tree carries.
+        // And the one call door every callable kind's type carries.
         let idx = e.prims.len();
         e.prims.push(crate::prims::core::CALLABLE_CALL);
-        e.objects.callable_call_hook = e.objects.prim(idx);
+        e.objects.callable_call_handler = e.objects.prim(idx);
 
         // The `%isa-values` objects, made BEFORE the first base, because every
         // base binds them and the root base is made the same way as any other.
@@ -271,10 +271,10 @@ impl Engine {
     /// File every builtin type in the base's `type-alist`, keyed by the handle
     /// `type of` answers.
     ///
-    /// The library reaches a type's tree ONLY through this table:
+    /// The library reaches a type's type ONLY through this table:
     /// `lib/x/boot/printer.x` looks a handle up with
     /// `(%registry-assoc-rest handle (first %reflect-type-alist-cell))` and then
-    /// pushes its render handler into the tree it gets back.
+    /// pushes its render handler into the type it gets back.
     ///
     /// An empty table does not fail politely. The lookup answers nil,
     /// `%reflect-step` nil-propagates as designed, and `%set-first!` then writes
@@ -282,7 +282,7 @@ impl Engine {
     /// out truthy, which sent every later branch the wrong way with nothing
     /// raised. The table has to be populated before any library loads.
     ///
-    /// Handle and tree are the SAME object here, because `type of` answers the
+    /// Handle and type are the SAME object here, because `type of` answers the
     /// type object itself; the reference keys by a separate sentinel. The alist
     /// shape is what matters to the library, not which of the two it holds.
     fn register_builtin_types(&mut self) {
@@ -309,7 +309,7 @@ impl Engine {
             },
         ];
         for v in samples {
-            let _ = self.objects.type_tree_of(v);
+            let _ = self.objects.obj_type(v);
         }
         // The callables and the reader's own kinds too. A type made only when
         // something first asks for it leaves every object allocated BEFORE that
@@ -328,7 +328,7 @@ impl Engine {
             self.file_type(t);
         }
 
-        // BACKFILL the allocations that predate the trees. Everything made
+        // BACKFILL the allocations that predate the types. Everything made
         // during registration — every vocabulary symbol among them — was
         // stamped nil because its type did not exist yet, and the library
         // reads the raw word: the printer renders a nil-typed value as
@@ -350,9 +350,9 @@ impl Engine {
             at = self.objects.chain_next(at);
         }
 
-        // The render handler on the printable kinds' trees, root base
+        // The render handler on the printable kinds' types, root base
         // included: the reference's per-kind registration installs a write
-        // hook the library's boot pushes then shadow — the stacks' SHAPE is
+        // handler the library's boot pushes then shadow — the stacks' SHAPE is
         // contract (core/sandbox reads a child's as strictly shorter than the
         // parent's and non-empty).
         for k in RENDERED_KINDS {
@@ -364,61 +364,61 @@ impl Engine {
             self.install_int_tok(t);
         }
         if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_SYM) {
-            self.install_eval_hook(t, 0);
+            self.install_eval_handler(t, 0);
         }
         if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_PAIR) {
-            self.install_eval_hook(t, 1);
+            self.install_eval_handler(t, 1);
         }
-        for (flags, _) in CALL_HOOK_KINDS {
+        for (flags, _) in CALL_HANDLER_KINDS {
             if let Some(&t) = self.objects.builtin_types.get(flags) {
-                self.install_call_hook(t);
+                self.install_call_handler(t);
             }
         }
     }
 
-    /// The shared call door onto a tree's call stack.
-    fn install_call_hook(&mut self, tree: Obj) {
-        let h = self.objects.callable_call_hook;
+    /// The shared call door onto a type's call stack.
+    fn install_call_handler(&mut self, ty: Obj) {
+        let h = self.objects.callable_call_handler;
         self.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Call, h);
+            .type_set_handler(ty, crate::vocabulary::Family::Call, h);
     }
 
-    /// One of the engine's eval hooks onto a tree's eval stack.
-    fn install_eval_hook(&mut self, tree: Obj, which: usize) {
-        let h = self.objects.eval_hooks[which];
+    /// One of the engine's eval handlers onto a type's eval stack.
+    fn install_eval_handler(&mut self, ty: Obj, which: usize) {
+        let h = self.objects.eval_handlers[which];
         self.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Eval, h);
+            .type_set_handler(ty, crate::vocabulary::Family::Eval, h);
     }
 
-    /// The render handler onto one tree's write and display stacks.
-    fn install_render(&mut self, tree: Obj) {
+    /// The render handler onto one type's write and display stacks.
+    fn install_render(&mut self, ty: Obj) {
         let h = self.engine_render;
         self.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Write, h);
+            .type_set_handler(ty, crate::vocabulary::Family::Write, h);
         self.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Display, h);
+            .type_set_handler(ty, crate::vocabulary::Family::Display, h);
     }
 
-    /// The integer token type's analyser and reader onto an INTEGER tree — the
+    /// The integer token type's analyser and reader onto an INTEGER type — the
     /// engine-side registration `x_type_int_register` performs, which is what
     /// keeps a number a NUMBER through `tok read-str` on any base carrying the
-    /// tree (apps/logo prunes a child's alist down to exactly these).
-    fn install_int_tok(&mut self, tree: Obj) {
+    /// type (apps/logo prunes a child's alist down to exactly these).
+    fn install_int_tok(&mut self, ty: Obj) {
         let sign = self.objects.int_states[crate::prims::tok::ST_SIGN];
         self.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Analyse, sign);
+            .type_set_handler(ty, crate::vocabulary::Family::Analyse, sign);
         let read = self.int_read;
         self.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Read, read);
+            .type_set_handler(ty, crate::vocabulary::Family::Read, read);
     }
 
-    /// FRESH builtin trees for a new base, as `x_type_*_register(child, child)`
+    /// FRESH builtin types for a new base, as `x_type_*_register(child, child)`
     /// builds them: a child's types are its own — handles do not intern into
-    /// the parent, and a handler pushed on a child tree is invisible outside
+    /// the parent, and a handler pushed on a child type is invisible outside
     /// it. The printable kinds carry the engine's render handler, which is the
-    /// C-registration hook the library's boot pushes shadow on a base that
+    /// C-registration handler the library's boot pushes shadow on a base that
     /// boots one; a child base never does, so this is what its stacks hold.
-    fn file_fresh_builtin_trees(&mut self, base: Obj) {
+    fn file_fresh_builtin_types(&mut self, base: Obj) {
         for (flags, text) in crate::objects::STAMPED_KINDS {
             let name = self.objects.kind_handle(*flags, text);
             let t = self.objects.type_new(name, NIL);
@@ -429,32 +429,32 @@ impl Engine {
                 self.install_int_tok(t);
             }
             if *flags == crate::objects::FLAG_SYM {
-                self.install_eval_hook(t, 0);
+                self.install_eval_handler(t, 0);
             }
             if *flags == crate::objects::FLAG_PAIR {
-                self.install_eval_hook(t, 1);
+                self.install_eval_handler(t, 1);
             }
-            for (cf, _) in CALL_HOOK_KINDS {
+            for (cf, _) in CALL_HANDLER_KINDS {
                 if cf == flags {
-                    self.install_call_hook(t);
+                    self.install_call_handler(t);
                 }
             }
             self.file_type_in(base, t);
         }
     }
 
-    /// The TREE a handle names, resolved through the base's type-alist.
+    /// The TYPE a handle names, resolved through the base's type-alist.
     ///
     /// The alist is the library's index and the only complete one: a type
     /// `make-type` built lives there and nowhere else. A value that is already a
-    /// tree passes through, so callers need not know which they hold.
-    pub(crate) fn resolve_tree(&mut self, t: Obj) -> Obj {
+    /// type passes through, so callers need not know which they hold.
+    pub(crate) fn resolve_type(&mut self, t: Obj) -> Obj {
         let base = self.base;
-        self.resolve_tree_in(base, t)
+        self.resolve_type_in(base, t)
     }
 
     /// Resolve against a NAMED base — the threaded-`p_base` spelling.
-    pub(crate) fn resolve_tree_in(&mut self, base: Obj, t: Obj) -> Obj {
+    pub(crate) fn resolve_type_in(&mut self, base: Obj, t: Obj) -> Obj {
         if !self.objects.is_handle(t) {
             return t;
         }
@@ -480,7 +480,7 @@ impl Engine {
     /// `lib/x/type/promise.x` pushes a call handler straight into what it gets
     /// back, so an unfiled type turned into a write through nil.
     ///
-    /// Handle and tree are the same object here; the reference keys by a
+    /// Handle and type are the same object here; the reference keys by a
     /// separate sentinel. The library only cares about the alist's shape.
     pub(crate) fn file_type(&mut self, t: Obj) {
         let base = self.base;
@@ -488,10 +488,10 @@ impl Engine {
     }
 
     pub(crate) fn file_type_in(&mut self, base: Obj, t: Obj) {
-        // Keyed by the HANDLE, valued by the TREE — the shape x-lang walks:
-        // `type by-atom` is handed what `type of` answered and expects the tree
+        // Keyed by the HANDLE, valued by the TYPE — the shape x-lang walks:
+        // `type by-atom` is handed what `type of` answered and expects the type
         // back.
-        let handle = self.objects.type_handle_of_tree(t);
+        let handle = self.objects.handle_of_type(t);
         let entry = self.objects.spair(handle, t);
         let head = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
         let cell = self.objects.spair(entry, head);
@@ -589,11 +589,11 @@ impl Engine {
         // The root frame serves the spine just built — stamped after, because
         // the spine cannot exist before its env does.
         self.envs.set_base(&mut self.objects, env, base);
-        // Fresh builtin trees, except for the engine's own base: registration
-        // has not run yet when it is built, and it gets the engine-wide trees
+        // Fresh builtin types, except for the engine's own base: registration
+        // has not run yet when it is built, and it gets the engine-wide types
         // (the stamp source) filed by register_builtin_types instead.
         if !self.objects.builtin_types.is_empty() {
-            self.file_fresh_builtin_trees(base);
+            self.file_fresh_builtin_types(base);
         }
         // A fresh base interns for itself, from empty. NOT a snapshot of the
         // parent's table: x-engine-c was asked, and a symbol the host interned

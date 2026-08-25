@@ -44,8 +44,8 @@ impl Engine {
     /// Ops-less types have a nil ops alist, so int/int arithmetic costs a couple
     /// of slot reads and falls through.
     pub(crate) fn op_try(&mut self, op: &str, a: Obj, b: Obj) -> Result<Option<Obj>, Cond> {
-        let ta = self.objects.type_tree_of(a);
-        let tb = self.objects.type_tree_of(b);
+        let ta = self.objects.obj_type(a);
+        let tb = self.objects.obj_type(b);
         let ops_a = if ta.is_nil() {
             NIL
         } else {
@@ -69,8 +69,8 @@ impl Engine {
             (None, Some(h)) => h,
             (Some(h), Some(_)) if ta == tb => h,
             (Some(h), Some(other)) => {
-                let name_b = self.objects.type_handle_of_tree(tb);
-                let name_a = self.objects.type_handle_of_tree(ta);
+                let name_b = self.objects.handle_of_type(tb);
+                let name_a = self.objects.handle_of_type(ta);
                 if self.declares_from(ta, name_b) {
                     h
                 } else if self.declares_from(tb, name_a) {
@@ -239,28 +239,25 @@ impl Engine {
             }
             // THE MACHINE, as `x_eval` draws it: a value whose type word is
             // nil or a raw marker is ITSELF, and everything else is decided by
-            // its type tree's EVAL hook — symbol lookup is the SYMBOL type's
+            // its type's EVAL handler — symbol lookup is the SYMBOL type's
             // registered behaviour, application is the LIST type's, and a
-            // value whose tree registers nothing is itself. What evaluation
+            // value whose type registers nothing is itself. What evaluation
             // MEANS is data on the base, replaceable per type, per base.
-            let tree = self.objects.type_of_word(form);
-            if tree.is_nil()
-                || tree == self.objects.spair_marker
-                || tree == self.objects.satom_marker
-            {
+            let ty = self.objects.type_of_word(form);
+            if ty.is_nil() || ty == self.objects.spair_marker || ty == self.objects.satom_marker {
                 break Ok(form);
             }
             let hook = self
                 .objects
-                .type_handler(tree, crate::vocabulary::Family::Eval);
+                .type_handler(ty, crate::vocabulary::Family::Eval);
             if hook.is_nil() {
                 break Ok(form);
             }
-            // An engine hook is operative-shaped and takes the form raw; a
-            // LIBRARY hook — logo registers one on its block type — is a
+            // An engine handler is operative-shaped and takes the form raw; a
+            // LIBRARY handler — logo registers one on its block type — is a
             // closure applied to the VALUE with no argument evaluation, the
             // reference's raw-args call. The quoting door would resolve `lit`
-            // through the very hook being called.
+            // through the very handler being called.
             let r = if self.objects.is_prim(hook) {
                 let idx = self.objects.prim_idx(hook);
                 match self.prims.get(idx).copied() {
@@ -269,11 +266,11 @@ impl Engine {
                 }
             } else if self.objects.is_closure(hook) {
                 // THE SETTLED ENVIRONMENT CONVENTION: the current environment
-                // is an argument, as the base is. The reference's hooks read
+                // is an argument, as the base is. The reference's handlers read
                 // it from the base's env field — its spelling under the
-                // one-context-pointer constraint — so a library hook here
+                // one-context-pointer constraint — so a library handler here
                 // RECEIVES it, as this engine's declared door: the value
-                // first, the environment second. A one-parameter hook (logo's
+                // first, the environment second. A one-parameter handler (logo's
                 // block eval) never sees the extra argument.
                 let env_obj = self.objects.env_obj(env);
                 self.apply_closure_values(hook, &[form, env_obj])
@@ -336,13 +333,13 @@ impl Engine {
     /// not a combiner at all — the caller decides whether that is data or an
     /// error, because those two answers differ by context.
     /// A CALLABLE IS A VALUE WHOSE TYPE REGISTERS CALL — `x_type_list_eval`'s
-    /// rule, and the whole of it: the operator's type tree names its call
-    /// hook, procedure and operative and primitive included, and a tree with
-    /// no hook makes the form data. This is also how x-lang's class layer is
+    /// rule, and the whole of it: the operator's type names its call
+    /// handler, procedure and operative and primitive included, and a type with
+    /// no handler makes the form data. This is also how x-lang's class layer is
     /// reached: `lib/x/type/class.x` installs `%class-call-handler` on a
     /// class's type, and the engine finds it exactly as it finds its own.
     pub(crate) fn combine(&mut self, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-        let ty = self.objects.type_tree_of(callee);
+        let ty = self.objects.obj_type(callee);
         if ty.is_nil() {
             return None;
         }
@@ -524,9 +521,9 @@ impl Engine {
 
     /// Apply a closure to VALUES, with no argument evaluation — the reference's
     /// `x_callable_call` shape, where args arrive raw. The quote-and-re-evaluate
-    /// door (`call_with_values`) cannot serve a hook that redefines what a
+    /// door (`call_with_values`) cannot serve a handler that redefines what a
     /// SYMBOL means: evaluating its quoted arguments resolves `lit` through the
-    /// hook being called, which recurses without end.
+    /// handler being called, which recurses without end.
     pub(crate) fn apply_closure_values(&mut self, callee: Obj, vals: &[Obj]) -> EvalResult {
         // ROOTED: the values arrive in a Rust slice, and binding them
         // allocates cells.
@@ -812,15 +809,15 @@ mod tests {
         );
     }
 
-    /// The settled environment convention, observable: a library eval hook
+    /// The settled environment convention, observable: a library eval handler
     /// receives the environment of the evaluation as its second argument, so
-    /// a hook that decides what its instances mean can resolve names in the
+    /// a handler that decides what its instances mean can resolve names in the
     /// scope they are evaluated in — the door a JavaScript interpreter needs
-    /// open. On a MADE type: a hook replacing the SYMBOL tree would resolve
+    /// open. On a MADE type: a handler replacing the SYMBOL type would resolve
     /// its own body through itself, which is the per-base stamping question,
     /// not this one.
     #[test]
-    fn a_library_eval_hook_receives_the_environment() {
+    fn a_library_eval_handler_receives_the_environment() {
         let program = format!(
             "{}{}",
             crate::testkit::CATALOG,
@@ -839,43 +836,39 @@ mod tests {
         );
     }
 
-    /// THE ARC'S ACCEPTANCE: what evaluation MEANS is tree data. Replace the
-    /// SYMBOL type's eval hook and every symbol means something else; restore
+    /// THE ARC'S ACCEPTANCE: what evaluation MEANS is type data. Replace the
+    /// SYMBOL type's eval handler and every symbol means something else; restore
     /// it and the old meaning returns. This is the door a JavaScript
     /// interpreter — or a CPU — walks in through.
     #[test]
-    fn evaluation_is_replaceable_through_the_tree() {
+    fn evaluation_is_replaceable_through_the_type() {
         let mut e = crate::engine::Engine::new();
         let hook = e.eval_str("(fn (_ s) 42)").unwrap();
-        let tree = e.objects.builtin_types[&crate::objects::FLAG_SYM];
-        let old = e
-            .objects
-            .type_handler(tree, crate::vocabulary::Family::Eval);
+        let ty = e.objects.builtin_types[&crate::objects::FLAG_SYM];
+        let old = e.objects.type_handler(ty, crate::vocabulary::Family::Eval);
         e.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Eval, hook);
+            .type_set_handler(ty, crate::vocabulary::Family::Eval, hook);
         let v = e.eval_str("certainly-unbound").unwrap();
         assert_eq!(e.objects.as_int(v), 42, "the replaced meaning governs");
         e.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Eval, old);
+            .type_set_handler(ty, crate::vocabulary::Family::Eval, old);
         assert!(
             e.eval_str("certainly-unbound").is_err(),
             "and the restored one raises unbound again"
         );
     }
 
-    /// E2's acceptance, the twin of E1's: what APPLICATION means is tree
-    /// data. Replace the PROCEDURE type's call hook and calling any closure
+    /// E2's acceptance, the twin of E1's: what APPLICATION means is type
+    /// data. Replace the PROCEDURE type's call handler and calling any closure
     /// means something else; restore it and application returns.
     #[test]
-    fn application_is_replaceable_through_the_tree() {
+    fn application_is_replaceable_through_the_type() {
         let mut e = crate::engine::Engine::new();
         let hook = e.eval_str("(op (f . a) env 99)").unwrap();
-        let tree = e.objects.builtin_types[&crate::objects::FLAG_FN];
-        let old = e
-            .objects
-            .type_handler(tree, crate::vocabulary::Family::Call);
+        let ty = e.objects.builtin_types[&crate::objects::FLAG_FN];
+        let old = e.objects.type_handler(ty, crate::vocabulary::Family::Call);
         e.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Call, hook);
+            .type_set_handler(ty, crate::vocabulary::Family::Call, hook);
         let v = e.eval_str("((fn (self x) x) 7)").unwrap();
         assert_eq!(
             e.objects.as_int(v),
@@ -883,7 +876,7 @@ mod tests {
             "the replaced meaning governs every closure call"
         );
         e.objects
-            .type_set_handler(tree, crate::vocabulary::Family::Call, old);
+            .type_set_handler(ty, crate::vocabulary::Family::Call, old);
         let v = e.eval_str("((fn (self x) x) 7)").unwrap();
         assert_eq!(e.objects.as_int(v), 7, "and the restored one applies again");
     }
