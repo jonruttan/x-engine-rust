@@ -150,12 +150,19 @@ fn syscall(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(e.objects.int(foreign::kernel(n, &args)))
 }
 
+crate::uniform_engine!(dlopen_u, dlopen, 2);
+crate::uniform_engine!(dlsym_u, dlsym, 2);
+crate::uniform_engine!(ptr_call_u, ptr_call, 1);
+crate::uniform_engine!(ffi_call_u, ffi_call, 2);
+crate::uniform_engine!(syscall_u, syscall, 1);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed_full("ffi", "dlopen", 2, dlopen),
-    PrimDef::filed_full("ffi", "dlsym", 2, dlsym),
-    PrimDef::var_both("ptr-call", "ptr", "call", 1, ptr_call),
-    PrimDef::var_both("ffi-call", "ffi", "call", 2, ffi_call),
-    PrimDef::var_bare("syscall", 1, syscall),
+    PrimDef::row(None, Some(("ffi", "dlopen")), 2, dlopen_u),
+    PrimDef::row(None, Some(("ffi", "dlsym")), 2, dlsym_u),
+    PrimDef::row(Some("ptr-call"), Some(("ptr", "call")), 1, ptr_call_u),
+    PrimDef::row(Some("ffi-call"), Some(("ffi", "call")), 2, ffi_call_u),
+    PrimDef::row(Some("syscall"), None, 1, syscall_u),
 ];
 
 #[cfg(test)]

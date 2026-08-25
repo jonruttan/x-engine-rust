@@ -165,17 +165,29 @@ fn heap_check(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.objects.int(bad))
 }
 
+crate::uniform_engine!(count_u, count, 0);
+crate::uniform_engine!(collect_u, collect, 0);
+crate::uniform_engine!(mark_u, mark, 0);
+crate::uniform_engine!(sweep_u, sweep, 0);
+crate::uniform_engine!(pin_u, pin, 1);
+crate::uniform_engine!(heap_check_u, heap_check, 0);
+crate::uniform_engine!(mark_hook_u, mark_hook, 1);
+crate::uniform_engine!(free_hook_u, free_hook, 1);
+crate::uniform_engine!(mark_root_u, mark_root, 1);
+crate::uniform_engine!(alloc_limit_u, alloc_limit, 1);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed_full("heap", "count", 0, count),
-    PrimDef::both_full("heap-collect", "heap", "collect", 0, collect),
-    PrimDef::filed_full("heap", "mark", 0, mark),
-    PrimDef::filed_full("heap", "sweep", 0, sweep),
-    PrimDef::filed_full("heap", "pin!", 1, pin),
-    PrimDef::filed_full("heap", "check", 0, heap_check),
-    PrimDef::filed_full("heap", "mark-hook!", 1, mark_hook),
-    PrimDef::filed_full("heap", "free-hook!", 1, free_hook),
-    PrimDef::filed_full("heap", "mark-root!", 1, mark_root),
-    PrimDef::both_full("alloc-limit!", "alloc", "limit!", 1, alloc_limit),
+    PrimDef::row(None, Some(("heap", "count")), 0, count_u),
+    PrimDef::row(Some("heap-collect"), Some(("heap", "collect")), 0, collect_u),
+    PrimDef::row(None, Some(("heap", "mark")), 0, mark_u),
+    PrimDef::row(None, Some(("heap", "sweep")), 0, sweep_u),
+    PrimDef::row(None, Some(("heap", "pin!")), 1, pin_u),
+    PrimDef::row(None, Some(("heap", "check")), 0, heap_check_u),
+    PrimDef::row(None, Some(("heap", "mark-hook!")), 1, mark_hook_u),
+    PrimDef::row(None, Some(("heap", "free-hook!")), 1, free_hook_u),
+    PrimDef::row(None, Some(("heap", "mark-root!")), 1, mark_root_u),
+    PrimDef::row(Some("alloc-limit!"), Some(("alloc", "limit!")), 1, alloc_limit_u),
 ];
 
 #[cfg(test)]

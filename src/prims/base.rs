@@ -41,10 +41,15 @@ fn base_bind(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(a[2])
 }
 
+crate::uniform_engine!(base_make_u, base_make, 0);
+crate::uniform_engine!(base_eval_u, base_eval, 2);
+crate::uniform_engine!(base_bind_u, base_bind, 3);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::both_full("make-base", "base", "make", 0, base_make),
-    PrimDef::filed_full("base", "eval", 2, base_eval),
-    PrimDef::filed_full("base", "bind", 3, base_bind),
+    PrimDef::row(Some("make-base"), Some(("base", "make")), 0, base_make_u),
+    PrimDef::row(None, Some(("base", "eval")), 2, base_eval_u),
+    PrimDef::row(None, Some(("base", "bind")), 3, base_bind_u),
 ];
 
 #[cfg(test)]

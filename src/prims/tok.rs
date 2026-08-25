@@ -592,15 +592,17 @@ fn int_read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 /// The state table, in `Objects::int_states` order.
+#[rustfmt::skip]
 pub(crate) const INT_STATES: &[PrimDef] = &[
-    PrimDef::bare("%int-tok-sign", 3, int_sign),
-    PrimDef::bare("%int-tok-prefix", 3, int_prefix),
-    PrimDef::bare("%int-tok-base", 3, int_base),
-    PrimDef::bare("%int-tok-digits", 3, int_digits),
-    PrimDef::bare("%int-tok-xdigits", 3, int_xdigits),
+    PrimDef::row(Some("%int-tok-sign"), None, 3, int_sign_u),
+    PrimDef::row(Some("%int-tok-prefix"), None, 3, int_prefix_u),
+    PrimDef::row(Some("%int-tok-base"), None, 3, int_base_u),
+    PrimDef::row(Some("%int-tok-digits"), None, 3, int_digits_u),
+    PrimDef::row(Some("%int-tok-xdigits"), None, 3, int_xdigits_u),
 ];
 
-pub(crate) const INT_READ: PrimDef = PrimDef::bare("%int-tok-read", 1, int_read);
+#[rustfmt::skip]
+pub(crate) const INT_READ: PrimDef = PrimDef::row(Some("%int-tok-read"), None, 1, int_read_u);
 
 trait AsciiDigitU32 {
     fn is_ascii_digit_u32(&self) -> bool;
@@ -655,19 +657,39 @@ fn make_type(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(name)
 }
 
+crate::uniform_value!(int_sign_u, int_sign, 3);
+crate::uniform_value!(int_prefix_u, int_prefix, 3);
+crate::uniform_value!(int_base_u, int_base, 3);
+crate::uniform_value!(int_digits_u, int_digits, 3);
+crate::uniform_value!(int_xdigits_u, int_xdigits, 3);
+crate::uniform_value!(int_read_u, int_read, 1);
+crate::uniform_value!(make_u, make, 1);
+crate::uniform_value!(read_u, read, 1);
+crate::uniform_value!(tok_u, tok, 1);
+crate::uniform_value!(last_char_u, last_char, 1);
+crate::uniform_value!(retain_u, retain, 1);
+crate::uniform_value!(reset_u, reset, 1);
+crate::uniform_value!(append_u, append, 2);
+crate::uniform_value!(read_text_u, read_text, 1);
+crate::uniform_engine!(read_str_u, read_str, 2);
+crate::uniform_engine!(read_tok_u, read_tok, 1);
+crate::uniform_engine!(make_tok_u, make_tok, 0);
+crate::uniform_engine!(make_type_u, make_type, 3);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed("buf", "make", 1, make),
-    PrimDef::filed("buf", "read", 1, read),
-    PrimDef::filed("buf", "tok", 1, tok),
-    PrimDef::filed("buf", "last-char", 1, last_char),
-    PrimDef::filed("buf", "retain", 1, retain),
-    PrimDef::filed("buf", "reset", 1, reset),
-    PrimDef::filed("buf", "append", 2, append),
-    PrimDef::filed("buf", "read-text", 1, read_text),
-    PrimDef::both_full("token-read-string", "tok", "read-str", 2, read_str),
-    PrimDef::filed_full("tok", "read", 1, read_tok),
-    PrimDef::filed_full("base", "make-tok", 0, make_tok),
-    PrimDef::filed_full("base", "make-type", 3, make_type),
+    PrimDef::row(None, Some(("buf", "make")), 1, make_u),
+    PrimDef::row(None, Some(("buf", "read")), 1, read_u),
+    PrimDef::row(None, Some(("buf", "tok")), 1, tok_u),
+    PrimDef::row(None, Some(("buf", "last-char")), 1, last_char_u),
+    PrimDef::row(None, Some(("buf", "retain")), 1, retain_u),
+    PrimDef::row(None, Some(("buf", "reset")), 1, reset_u),
+    PrimDef::row(None, Some(("buf", "append")), 2, append_u),
+    PrimDef::row(None, Some(("buf", "read-text")), 1, read_text_u),
+    PrimDef::row(Some("token-read-string"), Some(("tok", "read-str")), 2, read_str_u),
+    PrimDef::row(None, Some(("tok", "read")), 1, read_tok_u),
+    PrimDef::row(None, Some(("base", "make-tok")), 0, make_tok_u),
+    PrimDef::row(None, Some(("base", "make-type")), 3, make_type_u),
 ];
 
 #[cfg(test)]

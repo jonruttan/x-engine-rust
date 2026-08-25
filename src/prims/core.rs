@@ -45,57 +45,58 @@ pub(crate) fn list_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
 /// consulted. A word that misses the table (a foreign address — its
 /// invocation ABI belongs to the jit lane, undeclared here) declines, and
 /// the form stays data.
-fn callable_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+fn callable_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
     let idx = e.objects.data(callee, 0).as_usize();
-    match e.prims.get(idx).map(|d| d.body) {
-        Some(crate::prim::Body::CallHook(g)) => g(e, callee, args, env),
-        Some(_) => {
-            let def = e.prims[idx];
-            Some(e.call_prim(&def, args, env))
-        }
-        None => None,
+    match e.prims.get(idx).copied() {
+        Some(def) => (def.f)(e, callee, args, env),
+        // A word that misses the table — a foreign address, whose invocation
+        // ABI belongs to the undeclared jit lane — is not callable. The form
+        // is data; `combine`'s caller keeps that contract, so the answer here
+        // is the callee, as `eval_call` answers a non-combiner.
+        None => Ok(callee),
     }
 }
 
 /// The four ENTRIES. Each is the whole behaviour of applying its kind — the
 /// fast paths and argument handling live INSIDE, never as dispatcher cases.
-fn procedure_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    Some(e.apply_closure(callee, args, env))
+fn procedure_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    e.apply_closure(callee, args, env)
 }
 
-fn operative_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    Some(e.apply_op(callee, args, env))
+fn operative_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    e.apply_op(callee, args, env)
 }
 
-fn wrap_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    Some(e.apply_wrapper(callee, args, env))
+fn wrap_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    e.apply_wrapper(callee, args, env)
 }
 
-fn cont_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    let v = match e.eval_args(args, env) {
-        Ok(vals) => vals.first().copied().unwrap_or(crate::obj::NIL),
-        Err(c) => return Some(Err(c)),
-    };
-    Some(e.invoke_cont(callee, v))
+fn cont_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    let vals = e.eargs(args, env, 1)?;
+    e.invoke_cont(callee, vals[0])
 }
 
 /// The entry table, minted at registration in `Objects::entry_words` order:
 /// procedure, operative, wrap, continuation — then the shared door.
+#[rustfmt::skip]
 pub(crate) const CALL_ENTRIES: &[PrimDef] = &[
-    PrimDef::call_hook("%procedure-entry", procedure_entry),
-    PrimDef::call_hook("%operative-entry", operative_entry),
-    PrimDef::call_hook("%wrap-entry", wrap_entry),
-    PrimDef::call_hook("%cont-entry", cont_entry),
+    PrimDef::row(Some("%procedure-entry"), None, 0, procedure_entry),
+    PrimDef::row(Some("%operative-entry"), None, 0, operative_entry),
+    PrimDef::row(Some("%wrap-entry"), None, 0, wrap_entry),
+    PrimDef::row(Some("%cont-entry"), None, 0, cont_entry),
 ];
 
-pub(crate) const CALLABLE_CALL: PrimDef = PrimDef::call_hook("%callable-call", callable_call);
+#[rustfmt::skip]
+pub(crate) const CALLABLE_CALL: PrimDef =
+    PrimDef::row(Some("%callable-call"), None, 0, callable_call);
 
 /// The hook table, minted at registration: symbol, then list. Operative-shaped
 /// — a hook receives the FORM raw and the environment, which is the engine
 /// dispatch's own hand-off.
+#[rustfmt::skip]
 pub(crate) const EVAL_HOOKS: &[PrimDef] = &[
-    PrimDef::op("%sym-eval", sym_eval),
-    PrimDef::op("%list-eval", list_eval),
+    PrimDef::row(Some("%sym-eval"), None, 0, sym_eval_u),
+    PrimDef::row(Some("%list-eval"), None, 0, list_eval_u),
 ];
 
 /// `(eval expr env)` — in the environment given, which is how an operative
@@ -215,15 +216,27 @@ fn tail_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(e.park_tail(a[0], target))
 }
 
+crate::uniform_op!(sym_eval_u, sym_eval);
+crate::uniform_op!(list_eval_u, list_eval);
+crate::uniform_op!(eval_in_u, eval_in);
+crate::uniform_op!(eval_here_u, eval_here);
+crate::uniform_op!(apply_u, apply);
+crate::uniform_op!(atomic_u, atomic);
+crate::uniform_value!(wrap_u, wrap, 1);
+crate::uniform_value!(unwrap_u, unwrap, 1);
+crate::uniform_engine!(tail_eval_u, tail_eval, 2);
+crate::uniform_engine!(base_u, base, 0);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::op("eval", eval_in),
-    PrimDef::op("eval!", eval_here),
-    PrimDef::op("apply", apply),
-    PrimDef::op("atomic", atomic),
-    PrimDef::bare("wrap", 1, wrap),
-    PrimDef::bare("unwrap", 1, unwrap),
-    PrimDef::bare_full("tail-eval", 2, tail_eval),
-    PrimDef::bare_full("%base", 0, base),
+    PrimDef::row(Some("eval"), None, 0, eval_in_u),
+    PrimDef::row(Some("eval!"), None, 0, eval_here_u),
+    PrimDef::row(Some("apply"), None, 0, apply_u),
+    PrimDef::row(Some("atomic"), None, 0, atomic_u),
+    PrimDef::row(Some("wrap"), None, 1, wrap_u),
+    PrimDef::row(Some("unwrap"), None, 1, unwrap_u),
+    PrimDef::row(Some("tail-eval"), None, 2, tail_eval_u),
+    PrimDef::row(Some("%base"), None, 0, base_u),
 ];
 
 #[cfg(test)]

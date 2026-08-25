@@ -40,7 +40,9 @@ pub(crate) fn engine_render(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// Not part of the instruction set: in the prim table so trees can hold a
 /// callable, never bound and never filed in the catalog.
-pub(crate) const ENGINE_RENDER: PrimDef = PrimDef::bare("%engine-render", 1, engine_render);
+#[rustfmt::skip]
+pub(crate) const ENGINE_RENDER: PrimDef =
+    PrimDef::row(Some("%engine-render"), None, 1, engine_render_u);
 
 fn write_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let text = a_.str_val(a[0]);
@@ -126,12 +128,20 @@ fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     r
 }
 
+crate::uniform_value!(engine_render_u, engine_render, 1);
+crate::uniform_op!(include_u, include);
+crate::uniform_value!(write_str_u, write_str, 1);
+crate::uniform_engine!(read_char_u, read_char, 0);
+crate::uniform_engine!(read_form_u, read_form, 0);
+crate::uniform_engine!(repl_read_u, repl_read, 0);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::op("include", include),
-    PrimDef::filed("io", "write-str", 1, write_str),
-    PrimDef::filed_full("io", "read-char", 0, read_char),
-    PrimDef::filed_full("io", "read", 0, read_form),
-    PrimDef::filed_full("io", "repl-read", 0, repl_read),
+    PrimDef::row(Some("include"), None, 0, include_u),
+    PrimDef::row(None, Some(("io", "write-str")), 1, write_str_u),
+    PrimDef::row(None, Some(("io", "read-char")), 0, read_char_u),
+    PrimDef::row(None, Some(("io", "read")), 0, read_form_u),
+    PrimDef::row(None, Some(("io", "repl-read")), 0, repl_read_u),
 ];
 
 #[cfg(test)]

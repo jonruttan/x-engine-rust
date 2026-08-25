@@ -58,9 +58,13 @@ impl Engine {
     }
 }
 
+crate::uniform_engine!(call_cc_u, call_cc, 1);
+crate::uniform_engine!(cc_invoke_u, cc_invoke, 2);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::both_full("call/cc", "ctrl", "call/cc", 1, call_cc),
-    PrimDef::bare_full("%cc-invoke", 2, cc_invoke),
+    PrimDef::row(Some("call/cc"), Some(("ctrl", "call/cc")), 1, call_cc_u),
+    PrimDef::row(Some("%cc-invoke"), None, 2, cc_invoke_u),
 ];
 
 #[cfg(test)]

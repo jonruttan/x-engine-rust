@@ -154,18 +154,31 @@ fn make_callable(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.foreign(at.raw()))
 }
 
+crate::uniform_value!(eq_u, eq, 2);
+crate::uniform_value!(same_u, same, 2);
+crate::uniform_value!(first_u, first, 1);
+crate::uniform_value!(rest_u, rest, 1);
+crate::uniform_value!(pair_u, pair, 2);
+crate::uniform_engine!(type_make_u, type_make, 2);
+crate::uniform_engine!(type_of_u, type_of, 1);
+crate::uniform_value!(type_is_u, type_is, 2);
+crate::uniform_engine!(make_instance_u, make_instance, 2);
+crate::uniform_engine!(obj_make_u, obj_make, 2);
+crate::uniform_value!(make_callable_u, make_callable, 1);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::both("eq?", "obj", "eq?", 2, eq),
-    PrimDef::both("same?", "obj", "same?", 2, same),
-    PrimDef::bare("first", 1, first),
-    PrimDef::bare("rest", 1, rest),
-    PrimDef::bare("pair", 2, pair),
-    PrimDef::both_full("make-type", "type", "make", 2, type_make),
-    PrimDef::both_full("type-of", "type", "of", 1, type_of),
-    PrimDef::both("type?", "type", "?", 2, type_is),
-    PrimDef::both_full("make-instance", "type", "make-instance", 2, make_instance),
-    PrimDef::filed_full("obj", "make", 2, obj_make),
-    PrimDef::filed("obj", "make-callable", 1, make_callable),
+    PrimDef::row(Some("eq?"), Some(("obj", "eq?")), 2, eq_u),
+    PrimDef::row(Some("same?"), Some(("obj", "same?")), 2, same_u),
+    PrimDef::row(Some("first"), None, 1, first_u),
+    PrimDef::row(Some("rest"), None, 1, rest_u),
+    PrimDef::row(Some("pair"), None, 2, pair_u),
+    PrimDef::row(Some("make-type"), Some(("type", "make")), 2, type_make_u),
+    PrimDef::row(Some("type-of"), Some(("type", "of")), 1, type_of_u),
+    PrimDef::row(Some("type?"), Some(("type", "?")), 2, type_is_u),
+    PrimDef::row(Some("make-instance"), Some(("type", "make-instance")), 2, make_instance_u),
+    PrimDef::row(None, Some(("obj", "make")), 2, obj_make_u),
+    PrimDef::row(None, Some(("obj", "make-callable")), 1, make_callable_u),
 ];
 
 #[cfg(test)]

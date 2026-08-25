@@ -11,14 +11,13 @@
 //! semantics are a wrapper over that, not the other way round, and the
 //! conformance suite tests the difference with an unbound symbol — an engine
 //! that evaluated an operative's arguments dies rather than merely differing.
-//! `Body::Applicative` is therefore a CONVENIENCE the dispatcher provides, not a
-//! second evaluation model: it evaluates the spine and checks arity so that a
-//! hundred primitives do not each do it by hand.
+//! The `uniform_*` row macros are a CONVENIENCE over that, not a second
+//! evaluation model: a row that wants values calls `eargs` for itself, as
+//! every reference primitive calls `x_eargs`.
 
 use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::obj::{EnvId, Obj, NIL};
-use crate::prim::{Body, PrimDef};
 
 pub type EvalResult = Result<Obj, Cond>;
 
@@ -264,9 +263,9 @@ impl Engine {
             // through the very hook being called.
             let r = if self.objects.is_prim(hook) {
                 let idx = self.objects.prim_idx(hook);
-                match self.prims.get(idx).map(|d| d.body) {
-                    Some(crate::prim::Body::Operative(f)) => f(self, form, env),
-                    _ => self.call_with_values(hook, &[form], env),
+                match self.prims.get(idx).copied() {
+                    Some(def) => (def.f)(self, hook, form, env),
+                    None => Ok(form),
                 }
             } else if self.objects.is_closure(hook) {
                 self.apply_closure_values(hook, &[form])
@@ -347,8 +346,8 @@ impl Engine {
         }
         if self.objects.is_prim(hook) {
             let idx = self.objects.prim_idx(hook);
-            if let Some(crate::prim::Body::CallHook(f)) = self.prims.get(idx).map(|d| d.body) {
-                return f(self, callee, args, env);
+            if let Some(def) = self.prims.get(idx).copied() {
+                return Some((def.f)(self, callee, args, env));
             }
         }
         // A LIBRARY handler is an OPERATIVE taking `(obj . args)`: the
@@ -445,105 +444,25 @@ impl Engine {
 
     /// THE ARGUMENT BOUNDARY. Arity is checked and arguments are evaluated here,
     /// once, for every applicative in the engine.
-    pub(crate) fn call_prim(&mut self, def: &PrimDef, args: Obj, env: EnvId) -> EvalResult {
-        // The ARGUMENT SPINE is rooted for the whole call. It hangs off the form
-        // being evaluated, which is rooted too — but an operative may park a
-        // tail and let that form go, and then the spine is held in Rust alone.
+    /// Evaluate an argument spine into VALUES — `x_eargs`, as every uniform
+    /// row calls it for itself. The spine is rooted for the duration, and the
+    /// result is padded to `n` with nil: a body indexing a slot needs the
+    /// slot to exist, but a missing operand is nil, not an error — counting
+    /// arguments is x-lang's job, one layer up.
+    pub fn eargs(&mut self, args: Obj, env: EnvId, n: usize) -> Result<Vec<Obj>, Cond> {
         let mark = self.root_mark();
         self.root_push(args);
-
-        // An operative takes the spine as written; everything else wants values.
-        if let Body::Operative(f) = def.body {
-            let out = f(self, args, env);
-            self.root_truncate(mark);
-            return out;
-        }
-        let mut vals = match self.eval_args(args, env) {
-            Ok(v) => v,
-            Err(c) => {
-                self.root_truncate(mark);
-                return Err(c);
-            }
-        };
-        // The values are already rooted -- `eval_args` leaves them so, because
-        // every applicative needs the same thing and one place is easier to keep
-        // right than ninety.
-        // PADDED, not checked. A body indexes the slots its arity declares, so
-        // the slots must exist -- but a missing operand is nil, not an error.
-        // x-engine-c raises "+: operand is nil" here; that is the same layer
-        // violation, and copying it would import someone else's.
-        vals.resize(def.arity.0.max(vals.len()), NIL);
-        let out = match def.body {
-            // Already handled above; the compiler cannot know that.
-            Body::Operative(_) => unreachable!("operatives return early"),
-            // Handed the object model and nothing else. It cannot evaluate, it
-            // cannot see an environment, and it cannot read the input stream.
-            Body::Value(f) => f(&mut self.objects, &vals),
-            // The DYNAMIC base, as an argument: p_base flows through the call,
-            // so a host-defined handler running under `(b eval …)` sees the
-            // child. It is not derivable from the environment — a closure's
-            // body frames chain to its definition env, which is the LEXICAL
-            // base. The frame's base backpointer serves the collector and
-            // introspection; the running base is this value.
-            Body::Applicative(f) => {
-                let base = self.base;
-                f(self, base, &vals)
-            }
-            // The pure kinds: unwrap, apply the operator, re-box. This preamble
-            // was repeated in eleven primitive bodies before the operator became
-            // the primitive.
-            // TOWER OPS: the registry gets first refusal, then the machine.
-            Body::TowerBinop(op, f) => match self.op_try(op, vals[0], vals[1])? {
-                Some(v) => Ok(v),
-                None => {
-                    let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
-                    Ok(self.objects.int(f(x, y)))
-                }
-            },
-            Body::TowerPred(op, f) => match self.op_try(op, vals[0], vals[1])? {
-                Some(v) => Ok(v),
-                None => {
-                    let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
-                    Ok(self.objects.truth(f(x, y)))
-                }
-            },
-            Body::IntBinop(f) => {
-                // The bitwise family guards nil ITSELF (x-lang #239): a
-                // `(Base make)` child gets these raw, with no library wrapper
-                // in front, and a nil operand must raise catchably — the
-                // reference's message, "<op>: operand is nil".
-                if vals[0].is_nil() || vals[1].is_nil() {
-                    Err(self.nil_operand(def))
-                } else {
-                    let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
-                    Ok(self.objects.int(f(x, y)))
-                }
-            }
-            Body::IntPred(f) => {
-                let (x, y) = (self.objects.as_int(vals[0]), self.objects.as_int(vals[1]));
-                Ok(self.objects.truth(f(x, y)))
-            }
-            Body::IntUnop(f) => {
-                if vals[0].is_nil() {
-                    Err(self.nil_operand(def))
-                } else {
-                    let x = self.objects.as_int(vals[0]);
-                    Ok(self.objects.int(f(x)))
-                }
-            }
-            // A call hook reaches application through `combine`, never through
-            // the table as an instruction.
-            Body::CallHook(_) => unreachable!("call hooks dispatch through combine"),
-        };
+        let out = self.eval_args(args, env);
         self.root_truncate(mark);
-        out
+        let mut vals = out?;
+        if vals.len() < n {
+            vals.resize(n, NIL);
+        }
+        Ok(vals)
     }
 
     /// The #239 raise: "<op>: operand is nil", as the reference words it.
-    fn nil_operand(&mut self, def: &crate::prim::PrimDef) -> Cond {
-        // Every IntBinop/IntUnop row carries a bare name; the fallback is
-        // for the type system, not for a reachable case.
-        let name = def.bare.unwrap_or_default();
+    pub fn nil_operand(&mut self, name: &str) -> Cond {
         let v = self.objects.str_new(&format!("{}: operand is nil", name));
         Cond::Raised(v)
     }

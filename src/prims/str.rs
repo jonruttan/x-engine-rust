@@ -81,15 +81,25 @@ fn bytes_to_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.str_from_bytes(&bytes))
 }
 
+crate::uniform_value!(make_u, make, 1);
+crate::uniform_value!(byte_len_u, byte_len, 1);
+crate::uniform_value!(byte_ref_u, byte_ref, 2);
+crate::uniform_value!(byte_sub_u, byte_sub, 3);
+crate::uniform_value!(append_u, append, 2);
+crate::uniform_value!(to_sym_u, to_sym, 1);
+crate::uniform_value!(sym_to_str_u, sym_to_str, 1);
+crate::uniform_value!(bytes_to_str_u, bytes_to_str, 1);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
-    PrimDef::filed("str", "make", 1, make),
-    PrimDef::both("str-byte-len", "str", "byte-len", 1, byte_len),
-    PrimDef::both("str-byte-ref", "str", "byte-ref", 2, byte_ref),
-    PrimDef::both("str-byte-sub", "str", "byte-sub", 3, byte_sub),
-    PrimDef::both("str-append", "str", "append", 2, append),
-    PrimDef::filed("str", "->sym", 1, to_sym),
-    PrimDef::both("symbol->str", "sym", "->str", 1, sym_to_str),
-    PrimDef::both("bytes->str", "bytes", "->str", 1, bytes_to_str),
+    PrimDef::row(None, Some(("str", "make")), 1, make_u),
+    PrimDef::row(Some("str-byte-len"), Some(("str", "byte-len")), 1, byte_len_u),
+    PrimDef::row(Some("str-byte-ref"), Some(("str", "byte-ref")), 2, byte_ref_u),
+    PrimDef::row(Some("str-byte-sub"), Some(("str", "byte-sub")), 3, byte_sub_u),
+    PrimDef::row(Some("str-append"), Some(("str", "append")), 2, append_u),
+    PrimDef::row(None, Some(("str", "->sym")), 1, to_sym_u),
+    PrimDef::row(Some("symbol->str"), Some(("sym", "->str")), 1, sym_to_str_u),
+    PrimDef::row(Some("bytes->str"), Some(("bytes", "->str")), 1, bytes_to_str_u),
 ];
 
 #[cfg(test)]
