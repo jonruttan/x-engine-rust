@@ -226,13 +226,10 @@ pub(crate) fn better(score: i64, best: Option<i64>) -> bool {
 pub(crate) fn analyse(
     e: &mut Engine,
     types: &[Obj],
-    text: Obj,
-    at: u64,
+    buf: Obj,
     env: EnvId,
 ) -> Result<Option<(Obj, i64)>, Cond> {
     let mark = e.root_mark();
-    e.root_push(text);
-    let buf = e.objects.buf(text, at);
     e.root_push(buf);
     let score = e.objects.int(0);
     e.root_push(score);
@@ -383,10 +380,22 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let target = a[0];
     let env = e.root_env();
     let mut tokens: Vec<Obj> = Vec::new();
-    let mut at = 0u64;
-    while at < len {
-        // The same contest the form reader runs. See `analyse`.
-        let claim = e.in_base(target, |e| analyse(e, &types, text, at, env))?;
+    // ONE buffer for the whole drive, as `x_prim_token_read_string` builds one:
+    // a read handler may consume PAST its own span — a block reader reads its
+    // nested tokens recursively — and the drive must continue from wherever the
+    // reads left the cursor. A per-token buffer clipped to the claimed span cut
+    // logo's `[` reader off from its block's contents.
+    let buf = e.objects.buf(text, 0);
+    e.root_push(buf);
+    loop {
+        let at = e.objects.buf_retain(buf);
+        if at >= len {
+            break;
+        }
+        // The same contest the form reader runs. See `analyse`. The contest
+        // rewinds the cursor to the retain mark between handlers, so the
+        // buffer comes back positioned where it started.
+        let claim = e.in_base(target, |e| analyse(e, &types, buf, env))?;
         let Some((ty, claim)) = claim else {
             if falls_back {
                 // No registered type claims here: the engine's own reader takes
@@ -397,7 +406,9 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
                 let Some(form) = form else { break };
                 e.root_push(form);
                 tokens.push(form);
-                at = r.pos() as u64;
+                let pos = r.pos() as u64;
+                e.objects.set_buf_retain(buf, pos);
+                e.objects.set_buf_cursor(buf, pos);
                 continue;
             }
             break;
@@ -408,35 +419,28 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
             break;
         }
 
-        // The winner's `read` runs against a buffer positioned on exactly the
-        // span it claimed: retain at the start, cursor at the end.
-        let buf = e.objects.buf(text, at);
+        // The winner's `read` runs with the cursor at the end of the claimed
+        // span and the retain mark at its start — and may keep reading.
         e.objects.set_buf_cursor(buf, at + n);
-        // The winner and its buffer, live until the read returns.
         let rmark = e.root_mark();
         e.root_push(ty);
-        e.root_push(buf);
         let reader = handler(e, ty, Family::Read);
         e.root_push(reader);
-        // As with the analysers, the slot may be a LIST. A reader DECLINES by
-        // answering nil without consuming, so the next one sees the same buffer
-        // — which is why each attempt gets a buffer positioned identically
-        // rather than one carried over from a reader that already looked.
         // A type with NO read hook DISCARDS its span — whitespace, comments —
         // and the drive fetches another token, as `x_token_read` does.
         if reader.is_nil() {
             e.root_truncate(rmark);
-            at += n;
+            e.objects.set_buf_retain(buf, at + n);
             continue;
         }
+        // The slot may be a LIST. A reader DECLINES by answering nil without
+        // consuming, so each attempt starts from the same position.
         let mut token = NIL;
         for r in handler_list(e, reader) {
-            let fresh = e.objects.buf(text, at);
-            e.objects.set_buf_cursor(fresh, at + n);
+            e.objects.set_buf_cursor(buf, at + n);
             let fmark = e.root_mark();
-            e.root_push(fresh);
             e.root_push(r);
-            let got = e.in_base(target, |e| e.call_with_values(r, &[fresh], env))?;
+            let got = e.in_base(target, |e| e.call_with_values(r, &[buf], env))?;
             e.root_truncate(fmark);
             if !got.is_nil() {
                 token = got;
@@ -451,7 +455,15 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
         }
         e.root_push(token);
         tokens.push(token);
-        at += n;
+        // Everything the read consumed is done with: retain to the cursor, as
+        // `x_token_read` retains after each delivered token.
+        let end = e.objects.buf_cursor(buf);
+        e.objects.set_buf_retain(buf, end.max(at + n));
+        // A read that walked the cursor BACKWARD cannot be allowed to wedge
+        // the drive; the claimed span is the floor.
+        if e.objects.buf_retain(buf) <= at {
+            break;
+        }
     }
 
     let mut list = NIL;
