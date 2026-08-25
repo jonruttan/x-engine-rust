@@ -98,8 +98,8 @@ impl Engine {
         // is done with when another source arrives. Nested entry — include
         // evaluates a file mid-eval — must not touch it: the outer
         // evaluation's roots live below. The guard is `active_evals` because
-        // `hide_pending` zeroes `eval_depth` by design (a loaded file's defs
-        // must look top-level), so depth cannot carry this.
+        // `hide_pending` zeroes the save count by design (a loaded file's
+        // defs must look top-level), so saves cannot carry this.
         if self.active_evals == 0 {
             self.root_truncate(0);
         }

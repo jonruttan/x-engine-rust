@@ -35,7 +35,12 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     } else {
         env
     };
-    e.eval(expr, target)
+    // With-env SAVES, as x_prim_eval pushes its compound save: a `def` inside
+    // binds into the given environment, not globally.
+    e.saves += 1;
+    let out = e.eval(expr, target);
+    e.saves -= 1;
+    out
 }
 
 /// `(eval! expr)` — in the CURRENT environment. The REPL's door, and what lets a

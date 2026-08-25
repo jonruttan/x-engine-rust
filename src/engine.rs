@@ -64,9 +64,8 @@ pub struct Engine {
     pub(crate) env_roots: Vec<EnvId>,
     /// Already collecting: a hook's own evaluation must not recurse on hooks.
     pub(crate) in_gc: bool,
-    /// Evaluations on the Rust stack RIGHT NOW. Unlike `eval_depth`, `include`
-    /// does not hide this: it exists so the top-of-stack owner check cannot be
-    /// fooled by a load, whose whole purpose is to fool `eval_depth`.
+    /// Evaluations on the Rust stack RIGHT NOW: the top-of-stack owner check
+    /// for the root stack, which a load must not be able to fool.
     pub(crate) active_evals: u32,
     /// Bases displaced by `in_base`, still live while their children run.
     pub(crate) base_stack: Vec<Obj>,
@@ -106,8 +105,9 @@ pub struct Engine {
     /// `tco-expr` and `tco-env`, which is what makes tail calls not grow the
     /// stack.
     pub(crate) tail: Option<(Obj, EnvId)>,
-    /// How many evaluations are stacked. See [`Engine::nothing_pending`].
-    pub(crate) eval_depth: usize,
+    /// The reference's save-stack depth: how many closure bodies and
+    /// with-env evaluations are active. See [`Engine::nothing_pending`].
+    pub(crate) saves: u32,
     /// The one end-of-input sentinel, bound to every base as `%token-eof`.
     ///
     /// SHARED across bases, like the reference's static — asked and confirmed:
@@ -176,7 +176,7 @@ impl Engine {
             base_syms: HashMap::new(),
             alloc_limit: None,
             tail: None,
-            eval_depth: 0,
+            saves: 0,
             token_eof: NIL,
             sigint_flag: NIL,
             engine_render: NIL,

@@ -138,11 +138,9 @@ impl Engine {
     /// — so a `def` inside one is local. At depth 1 nothing is waiting, the form
     /// is in tail position from the top level, and a `def` is global.
     pub fn eval(&mut self, form: Obj, env: EnvId) -> EvalResult {
-        self.eval_depth += 1;
         self.active_evals += 1;
         let r = self.eval_pending(form, env);
         self.active_evals -= 1;
-        self.eval_depth -= 1;
         // THE RESULT IS ROOTED until the enclosing evaluation moves on.
         //
         // A value that has just been computed is reachable from nothing: it sits
@@ -160,22 +158,27 @@ impl Engine {
         r
     }
 
-    /// Hide what is pending for the duration of a LOAD, answering what was
-    /// hidden. See `include`.
-    pub fn hide_pending(&mut self) -> usize {
-        std::mem::replace(&mut self.eval_depth, 0)
+    /// Hide the active saves for the duration of a LOAD, answering what was
+    /// hidden. Each form read from a file IS a top-level form, and its `def`s
+    /// bind globally however deep the load was triggered — the reference does
+    /// the same to its save stack.
+    pub fn hide_pending(&mut self) -> u32 {
+        std::mem::replace(&mut self.saves, 0)
     }
 
-    pub fn restore_pending(&mut self, outer: usize) {
-        self.eval_depth = outer;
+    pub fn restore_pending(&mut self, outer: u32) {
+        self.saves = outer;
     }
 
-    /// True when nothing is waiting on the current evaluation.
-    ///
-    /// `def` asks this to decide global-vs-local, exactly as the reference asks
-    /// whether its save stack is empty.
+    /// True when the save stack is empty, which is the reference's `def`
+    /// question: no closure body and no with-env evaluation is active, so the
+    /// form is in tail position from the top level and a definition persists.
+    /// Depth is NOT the question — `do` and every operative evaluate their
+    /// forms without saving, and a `def` inside them at the top level is
+    /// global (core/sandbox relies on it: one form's `(do … (def %buf-tok …))`
+    /// serves the next form's tests).
     pub fn nothing_pending(&self) -> bool {
-        self.eval_depth <= 1
+        self.saves == 0
     }
 
     fn eval_pending(&mut self, form: Obj, env: EnvId) -> EvalResult {
@@ -626,7 +629,14 @@ impl Engine {
         let env_mark = self.env_root_mark();
         self.env_root_push(frame);
         self.bind_params(frame, params, &bound);
+        // THE SAVE, as `x_tco_compound_save` draws its lifetime: held over the
+        // body's non-tail forms — a `def` there is the activation's own — and
+        // released before the parked tail runs, which is why a tail `def`
+        // binds globally. Operatives do not save; the reference's own answer
+        // to a def reaching through an op's tail-eval says so.
+        self.saves += 1;
         let out = self.eval_body_tail(body, frame);
+        self.saves -= 1;
         self.env_root_truncate(env_mark);
         out
     }
@@ -824,13 +834,32 @@ mod tests {
         assert!(truthy("(eq? ((fn (self . more) more) ) ())"));
     }
 
-    /// The frame hangs off the DEFINING environment, not the caller's. Dynamic
-    /// scope would find the caller's `n` here and answer 2.
+    /// The frame hangs off the DEFINING environment, not the caller's — but
+    /// the probe must use a NON-tail def: a def in a closure's TAIL runs after
+    /// the save is released and binds globally, exactly as the reference's
+    /// x_prim_define documents ("the settled tail-def-binds-globally
+    /// semantics"). Asked of x-engine-c: the tail shape answers 2 and updates
+    /// the global; the non-tail shape stays the activation's own.
     #[test]
     fn a_closure_resolves_names_where_it_was_written() {
         assert_eq!(
-            int_of("(def n 1) (def get (fn (self) n)) (def call (fn (self) (%seq (def n 2) (get)))) (call)"),
+            int_of("(def m 1) (def get (fn (self) m)) (def call (fn (self) (%seq (def m 5) ()) (get))) (call)"),
             1
+        );
+    }
+
+    /// A def that is (part of) a closure's parked tail binds GLOBALLY: the
+    /// save covers the body's non-tail forms only. include/import and the
+    /// doc-wrapping machinery rely on it.
+    #[test]
+    fn a_tail_def_binds_globally() {
+        assert_eq!(
+            int_of("(def n 1) (def get (fn (self) n)) (def call (fn (self) (%seq (def n 2) (get)))) (call)"),
+            2
+        );
+        assert_eq!(
+            int_of("(def n 1) (def call (fn (self) (%seq (def n 2) ()))) (call) n"),
+            2
         );
     }
 
