@@ -42,13 +42,13 @@
 //! // The host's definitions are not.
 //! e.eval_str("(def host-only 99)").unwrap();
 //! let name = e.objects.sym("host-only");
-//! assert!(e.envs.lookup(env, name).is_none());
+//! assert!(e.envs.lookup(&e.objects, env, name).is_none());
 //!
 //! // Until one is handed over.
 //! let answer = e.objects.sym("answer");
 //! let v = e.objects.int(42);
-//! e.envs.bind(env, answer, v);
-//! assert_eq!(e.envs.lookup(env, answer), Some(v));
+//! e.envs.bind(&mut e.objects, env, answer, v);
+//! assert_eq!(e.envs.lookup(&e.objects, env, answer), Some(v));
 //! ```
 //!
 //! # The layers
