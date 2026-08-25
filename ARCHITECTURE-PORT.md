@@ -104,10 +104,19 @@ semantic it hardcodes is a semantic no base can replace. The increments:
   its operator and applies through the operator's type's CALL hook;
   PROCEDURE, OPERATIVE and PRIMITIVE trees register theirs, and the
   evaluator's kind-match dissolves. Class value-call joins natively.
-- **E3. One calling convention.** Every callable carries its entry in
-  slot 0; `Body`'s variants collapse into uniform entries (fast paths may
-  survive INSIDE a uniform callable, as `x_prim_arith_binop` keeps its
-  `use_ops` flag inside one signature — never as dispatcher kinds).
+- **E3. One calling convention.** IN PROGRESS, spec-first. Landed: every
+  callable carries its ENTRY in slot 0 (a table index — the engine's
+  spelling of the reference's function pointer) and its state in slot 1;
+  a closure's state is the reference's `(params body env . bst)` spine,
+  which `lib/x/tool/cov.x` reads and
+  `tests/x/conformance/core/hooks.spec.md` now states as law; the four
+  per-kind call hooks collapsed into ONE door that reads slot 0 and never
+  consults the callee's kind — a foreign address misses the table and
+  declines, keeping its invocation with the undeclared jit lane.
+  Remaining: `Body`'s variants collapse into uniform entries (fast paths
+  may survive INSIDE a uniform callable, as `x_prim_arith_binop` keeps
+  its `use_ops` flag inside one signature — never as dispatcher kinds),
+  and the environment convention settles.
 
 Recorded deviation to resolve along the way: the reference's CURRENT
 environment lives on the base (`env-alist` field), so a hook needs no env

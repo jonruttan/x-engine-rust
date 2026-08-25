@@ -243,13 +243,18 @@ impl Engine {
             e.prims.push(*def);
             e.objects.eval_hooks[i] = e.objects.prim(idx);
         }
-        // And the call hooks: what APPLYING a value of each callable type
-        // means, registered the same way.
-        for (i, def) in crate::prims::core::CALL_HOOKS.iter().enumerate() {
+        // The callable ENTRIES: the rows a constructor stamps into slot 0.
+        // Minted before anything can build a closure, because the very first
+        // base's bindings are built out of callables.
+        for (i, def) in crate::prims::core::CALL_ENTRIES.iter().enumerate() {
             let idx = e.prims.len();
             e.prims.push(*def);
-            e.objects.call_hooks[i] = e.objects.prim(idx);
+            e.objects.entry_words[i] = crate::obj::Word::from_usize(idx);
         }
+        // And the one call door every callable kind's tree carries.
+        let idx = e.prims.len();
+        e.prims.push(crate::prims::core::CALLABLE_CALL);
+        e.objects.callable_call_hook = e.objects.prim(idx);
 
         // The `%isa-values` objects, made BEFORE the first base, because every
         // base binds them and the root base is made the same way as any other.
@@ -364,16 +369,16 @@ impl Engine {
         if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_PAIR) {
             self.install_eval_hook(t, 1);
         }
-        for (flags, which) in CALL_HOOK_KINDS {
+        for (flags, _) in CALL_HOOK_KINDS {
             if let Some(&t) = self.objects.builtin_types.get(flags) {
-                self.install_call_hook(t, *which);
+                self.install_call_hook(t);
             }
         }
     }
 
-    /// One of the engine's call hooks onto a tree's call stack.
-    fn install_call_hook(&mut self, tree: Obj, which: usize) {
-        let h = self.objects.call_hooks[which];
+    /// The shared call door onto a tree's call stack.
+    fn install_call_hook(&mut self, tree: Obj) {
+        let h = self.objects.callable_call_hook;
         self.objects
             .type_set_handler(tree, crate::vocabulary::Family::Call, h);
     }
@@ -429,9 +434,9 @@ impl Engine {
             if *flags == crate::objects::FLAG_PAIR {
                 self.install_eval_hook(t, 1);
             }
-            for (cf, which) in CALL_HOOK_KINDS {
+            for (cf, _) in CALL_HOOK_KINDS {
                 if cf == flags {
-                    self.install_call_hook(t, *which);
+                    self.install_call_hook(t);
                 }
             }
             self.file_type_in(base, t);

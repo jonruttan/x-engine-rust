@@ -142,22 +142,12 @@ impl Objects {
                     stack.push(self.data(o, 0).as_obj());
                     stack.push(self.data(o, 1).as_obj());
                 }
-                // params and body are objects; the third word is the captured
-                // ENVIRONMENT, which keeps that frame and its parents alive.
-                f if f == FLAG_FN => {
-                    stack.push(self.data(o, 0).as_obj());
+                // A callable: slot 0 is a TABLE INDEX (raw, never traced);
+                // slot 1 is the state — a spine for closures and operatives,
+                // the combiner for a wrap — and the captured environment rides
+                // the spine, traced like everything else on it.
+                f if f == FLAG_FN || f == FLAG_OP || f == FLAG_WRAP => {
                     stack.push(self.data(o, 1).as_obj());
-                    stack.push(self.closure_env(o).obj());
-                }
-                // params, env NAME, body — the fourth is the captured env.
-                f if f == FLAG_OP => {
-                    stack.push(self.data(o, 0).as_obj());
-                    stack.push(self.data(o, 1).as_obj());
-                    stack.push(self.data(o, 2).as_obj());
-                    stack.push(self.op_env(o).obj());
-                }
-                f if f == FLAG_WRAP => {
-                    stack.push(self.data(o, 0).as_obj());
                 }
                 // An environment OBJECT names a holder and nothing else.
                 f if f == FLAG_ENV => {
@@ -301,7 +291,7 @@ impl crate::engine::Engine {
         r.extend(self.objects.kind_handles.values().copied());
         r.extend(self.objects.int_states.iter().copied());
         r.extend(self.objects.eval_hooks.iter().copied());
-        r.extend(self.objects.call_hooks.iter().copied());
+        r.push(self.objects.callable_call_hook);
         r.extend(self.objects.unfiled_types.iter().copied());
         r.extend(self.objects.interned());
         for (name, obj) in &self.prim_bindings {

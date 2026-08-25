@@ -46,15 +46,24 @@ impl Objects {
         self.data(o, 0).raw()
     }
 
-    /// A closure: params, body, and the environment it was written in. Lexical
-    /// scope is the whole reason the third word is here — a closure that looked
-    /// its names up in the CALLER'S environment would be dynamic scope wearing
-    /// the same syntax.
+    /// THE CALLING CONVENTION: every callable's slot 0 is its ENTRY — an index
+    /// into the instruction table — and slot 1 is its state. The reference
+    /// stores a function pointer where this engine stores an index; the
+    /// dispatch is the same one read either way, and the KINDS are which
+    /// entry the slot holds, not cases of a dispatcher.
+    ///
+    /// A closure: entry in slot 0; slot 1 is the STATE SPINE
+    /// `(params body env . bst)` — the reference's `x_procstate` shape, which
+    /// the library reads (`lib/x/tool/cov.x` walks slot 1 for the body). The
+    /// bst tail is nil here: this engine's globals live in the frame chain.
     pub fn closure(&mut self, params: Obj, body: Obj, env: EnvId) -> Obj {
-        let o = self.alloc(FLAG_FN, 3);
-        self.set_data(o, 0, params.word());
-        self.set_data(o, 1, body.word());
-        self.set_data(o, 2, env.word());
+        let env_obj = self.env_obj(env);
+        let s3 = self.spair(env_obj, crate::obj::NIL);
+        let s2 = self.spair(body, s3);
+        let state = self.spair(params, s2);
+        let o = self.alloc(FLAG_FN, 2);
+        self.set_data(o, 0, self.entry_words[0]);
+        self.set_data(o, 1, state.word());
         o
     }
 
@@ -62,26 +71,33 @@ impl Objects {
         self.is(o, FLAG_FN)
     }
 
-    pub fn closure_params(&self, o: Obj) -> Obj {
-        self.data(o, 0).as_obj()
-    }
-
-    pub fn closure_body(&self, o: Obj) -> Obj {
+    fn state_of(&self, o: Obj) -> Obj {
         self.data(o, 1).as_obj()
     }
 
-    pub fn closure_env(&self, o: Obj) -> EnvId {
-        EnvId::from_word(self.data(o, 2))
+    pub fn closure_params(&self, o: Obj) -> Obj {
+        self.first(self.state_of(o))
     }
 
-    /// An operative: params, the name its caller's environment binds to, body,
-    /// and the environment it was written in.
+    pub fn closure_body(&self, o: Obj) -> Obj {
+        self.first(self.rest(self.state_of(o)))
+    }
+
+    pub fn closure_env(&self, o: Obj) -> EnvId {
+        self.env_id(self.first(self.rest(self.rest(self.state_of(o)))))
+    }
+
+    /// An operative: entry, then the state spine
+    /// `(params envname body . env)` — `x_opstate`'s shape, env in the DOTTED
+    /// tail as the reference keeps it.
     pub fn operative(&mut self, params: Obj, envname: Obj, body: Obj, env: EnvId) -> Obj {
-        let o = self.alloc(FLAG_OP, 4);
-        self.set_data(o, 0, params.word());
-        self.set_data(o, 1, envname.word());
-        self.set_data(o, 2, body.word());
-        self.set_data(o, 3, env.word());
+        let env_obj = self.env_obj(env);
+        let s3 = self.spair(body, env_obj);
+        let s2 = self.spair(envname, s3);
+        let state = self.spair(params, s2);
+        let o = self.alloc(FLAG_OP, 2);
+        self.set_data(o, 0, self.entry_words[1]);
+        self.set_data(o, 1, state.word());
         o
     }
 
@@ -90,19 +106,19 @@ impl Objects {
     }
 
     pub fn op_params(&self, o: Obj) -> Obj {
-        self.data(o, 0).as_obj()
+        self.first(self.state_of(o))
     }
 
     pub fn op_envname(&self, o: Obj) -> Obj {
-        self.data(o, 1).as_obj()
+        self.first(self.rest(self.state_of(o)))
     }
 
     pub fn op_body(&self, o: Obj) -> Obj {
-        self.data(o, 2).as_obj()
+        self.first(self.rest(self.rest(self.state_of(o))))
     }
 
     pub fn op_env(&self, o: Obj) -> EnvId {
-        EnvId::from_word(self.data(o, 3))
+        self.env_id(self.rest(self.rest(self.rest(self.state_of(o)))))
     }
 
     pub fn env_obj(&mut self, id: EnvId) -> Obj {
@@ -120,8 +136,9 @@ impl Objects {
     }
 
     pub fn cont(&mut self, id: u64) -> Obj {
-        let o = self.alloc(FLAG_CONT, 1);
-        self.set_data(o, 0, Word(id));
+        let o = self.alloc(FLAG_CONT, 2);
+        self.set_data(o, 0, self.entry_words[3]);
+        self.set_data(o, 1, Word(id));
         o
     }
 
@@ -130,12 +147,17 @@ impl Objects {
     }
 
     pub fn cont_id(&self, o: Obj) -> u64 {
-        self.data(o, 0).raw()
+        self.data(o, 1).raw()
     }
 
+    /// A wrap: entry, then the combiner. The reference spells a wrap as a
+    /// procedure with a flag bit and the combiner in the env slot; this engine
+    /// keeps the kind but the convention is identical — slot 0 says how to
+    /// apply, slot 1 is what the application uses.
     pub fn wrapper(&mut self, inner: Obj) -> Obj {
-        let o = self.alloc(FLAG_WRAP, 1);
-        self.set_data(o, 0, inner.word());
+        let o = self.alloc(FLAG_WRAP, 2);
+        self.set_data(o, 0, self.entry_words[2]);
+        self.set_data(o, 1, inner.word());
         o
     }
 
@@ -144,7 +166,7 @@ impl Objects {
     }
 
     pub fn wrapper_inner(&self, o: Obj) -> Obj {
-        self.data(o, 0).as_obj()
+        self.data(o, 1).as_obj()
     }
 }
 
