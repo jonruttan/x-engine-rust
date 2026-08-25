@@ -279,6 +279,11 @@ mod tests {
     fn the_route_list_is_exactly_what_base_paths_declares() {
         let paths = std::fs::read_to_string("tools/contract/base-paths.x")
             .expect("the engine's own committed paths");
+        // Spine rows only: a base-rooted row whose steps are all `r` names a
+        // cell of the spine ROUTES builds. A row with an `f` step is DERIVED —
+        // it walks INTO a value (env-alist goes through the env object) and
+        // owns no spine cell, so it is judged by its own resolution test
+        // rather than by this list.
         let declared: Vec<String> = paths
             .lines()
             .filter_map(|l| {
@@ -286,13 +291,49 @@ mod tests {
                 let body = body.split(';').next().unwrap_or("");
                 let mut w = body.trim().trim_end_matches(')').split_whitespace();
                 let name = w.next()?;
-                (w.next()? == "base").then(|| name.to_string())
+                let root = w.next()?;
+                (root == "base" && w.all(|s| s == "r")).then(|| name.to_string())
             })
             .collect();
         let ours: Vec<String> = ROUTES.iter().map(|r| r.to_string()).collect();
         assert_eq!(
             ours, declared,
             "ROUTES and base-paths.x disagree; they are one list in two files"
+        );
+    }
+
+    /// The derived env-alist route lands on the frame chain: seven rests to the
+    /// env cell, first into the env object, first into its holder — whose first
+    /// is the alist of `(sym . val)` cells. Walked with the same raw first/rest
+    /// the library's registry uses, on a REAL engine, so a change to either the
+    /// spine or the env representation fails here rather than in a spec.
+    #[test]
+    fn the_env_alist_route_reaches_the_bindings() {
+        let mut e = crate::engine::Engine::new();
+        e.eval_str("(def env-alist-probe 77)").unwrap();
+        let mut at = e.base;
+        for _ in 0..ENV_SLOT {
+            at = e.objects.rest(at);
+        }
+        let holder = {
+            let env_obj = e.objects.first(at);
+            e.objects.first(env_obj)
+        };
+        let mut chain = e.objects.first(holder);
+        let name = e.objects.sym("env-alist-probe");
+        let mut found = false;
+        while !chain.is_nil() {
+            let pair = e.objects.first(chain);
+            if e.objects.first(pair) == name {
+                assert_eq!(e.objects.as_int(e.objects.rest(pair)), 77);
+                found = true;
+                break;
+            }
+            chain = e.objects.rest(chain);
+        }
+        assert!(
+            found,
+            "the bound name is not on the chain the route reaches"
         );
     }
 }

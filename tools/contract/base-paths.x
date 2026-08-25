@@ -37,6 +37,10 @@
   (file-registry base r r r r r)
   (obj-meta-extra base r r r r r r)
   (env base r r r r r r r)    ; this base's environment, as a first-class value
+  ; DERIVED, not a spine cell: through the env object (f) into its holder (f),
+  ; whose first is the frame chain -- the alist of (sym . val) cells, as the
+  ; reference's env-alist is.  Expressible only because frames are heap data.
+  (env-alist base r r r r r r r f f)
 
   ; --- the heap's registration lists, and the allocation ceiling ---
   ; LISTS the engine prepends to, not collector internals: a registered callable
