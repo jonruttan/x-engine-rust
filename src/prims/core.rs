@@ -38,6 +38,61 @@ pub(crate) fn list_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
     }
 }
 
+/// The PROCEDURE type's call hook: closures apply with evaluated arguments;
+/// a `wrap` applicative — same tree, flag on the object — unwraps and quotes.
+fn proc_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    if e.objects.is_closure(callee) {
+        Some(e.apply_closure(callee, args, env))
+    } else if e.objects.is_wrapper(callee) {
+        Some(e.apply_wrapper(callee, args, env))
+    } else {
+        None
+    }
+}
+
+/// The OPERATIVE type's: the spine as written, the caller's env as a value.
+fn op_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    if e.objects.is_op(callee) {
+        Some(e.apply_op(callee, args, env))
+    } else {
+        None
+    }
+}
+
+/// The PRIMITIVE type's: through the instruction table. A FOREIGN callable
+/// shares this tree and is DECLINED for now — this engine never applied one
+/// at head position, and E3's slot-0 unification is where it becomes a prim
+/// in the reference's sense.
+fn prim_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    if e.objects.is_prim(callee) {
+        let def = e.prims[e.objects.prim_idx(callee)];
+        Some(e.call_prim(&def, args, env))
+    } else {
+        None
+    }
+}
+
+/// The CONTINUATION type's: one evaluated value, then the unwind.
+fn cont_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    if !e.objects.is_cont(callee) {
+        return None;
+    }
+    let v = match e.eval_args(args, env) {
+        Ok(vals) => vals.first().copied().unwrap_or(crate::obj::NIL),
+        Err(c) => return Some(Err(c)),
+    };
+    Some(e.invoke_cont(callee, v))
+}
+
+/// The call-hook table, minted at registration: procedure, operative,
+/// primitive, continuation.
+pub(crate) const CALL_HOOKS: &[PrimDef] = &[
+    PrimDef::call_hook("%proc-call", proc_call),
+    PrimDef::call_hook("%op-call", op_call),
+    PrimDef::call_hook("%prim-call", prim_call),
+    PrimDef::call_hook("%cont-call", cont_call),
+];
+
 /// The hook table, minted at registration: symbol, then list. Operative-shaped
 /// — a hook receives the FORM raw and the environment, which is the engine
 /// dispatch's own hand-off.

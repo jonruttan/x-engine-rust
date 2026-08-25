@@ -42,3 +42,4 @@
 "read of a FREED {} at {:?}\n  still held by: {:?}\n  -- a root is missing"	poison-trap panic; an engine bug, never reachable from x-lang
 "collect: freed {} objects, {} live; {} envs made (heap-owned)"	(heap check) diagnostic summary; data, not a name
 "read of a FREED object at {:?} slot {} (was {:?})\n  held by: {:?}"	poison read-trap panic; an engine bug, never reachable from x-lang
+"call hooks dispatch through combine"	a Rust unreachable! message; never reaches x-lang

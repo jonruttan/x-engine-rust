@@ -328,69 +328,40 @@ impl Engine {
     /// Apply a callee to an UNEVALUATED argument spine. `None` when the callee is
     /// not a combiner at all — the caller decides whether that is data or an
     /// error, because those two answers differ by context.
+    /// A CALLABLE IS A VALUE WHOSE TYPE REGISTERS CALL — `x_type_list_eval`'s
+    /// rule, and the whole of it: the operator's type tree names its call
+    /// hook, procedure and operative and primitive included, and a tree with
+    /// no hook makes the form data. This is also how x-lang's class layer is
+    /// reached: `lib/x/type/class.x` installs `%class-call-handler` on a
+    /// class's type, and the engine finds it exactly as it finds its own.
     pub(crate) fn combine(&mut self, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-        if self.objects.is_prim(callee) {
-            let def = self.prims[self.objects.prim_idx(callee)];
-            return Some(self.call_prim(&def, args, env));
-        }
-        if self.objects.is_closure(callee) {
-            return Some(self.apply_closure(callee, args, env));
-        }
-        if self.objects.is_op(callee) {
-            return Some(self.apply_op(callee, args, env));
-        }
-        if self.objects.is_wrapper(callee) {
-            return Some(self.apply_wrapper(callee, args, env));
-        }
-        if self.objects.is_cont(callee) {
-            let v = match self.eval_args(args, env) {
-                Ok(vals) => vals.first().copied().unwrap_or(NIL),
-                Err(c) => return Some(Err(c)),
-            };
-            return Some(self.invoke_cont(callee, v));
-        }
-        // VALUE-CALL DISPATCH, and it is the last thing tried on purpose: a
-        // value whose TYPE carries a `call` handler is callable.
-        //
-        // This is how x-lang's whole class layer is reached. `(Type of 1)` has a
-        // CLASS at its head, not a closure — `lib/x/type/class.x` installs
-        // `%class-call-handler` on the class's type, and the engine's job is to
-        // find it and hand the form over. Without this the head is simply not
-        // callable, the form falls through to the data rule, and `(Type of 1)`
-        // evaluates to the LIST `(Type of 1)`. Nothing raises; every class call
-        // in the library quietly answers its own source text.
-        //
-        // The handler is an OPERATIVE taking `(obj . args)`, so the arguments
-        // stay unevaluated and the SUBJECT goes first — the selector and the
-        // rest are the handler's to interpret, not this engine's.
-        if let Some(handler) = self.call_handler_for(callee) {
-            let spine = self.objects.pair(callee, args);
-            return Some(self.eval_call(handler, spine, env));
-        }
-        None
-    }
-
-    /// The `call` handler installed on a value's type, if any.
-    fn call_handler_for(&mut self, callee: Obj) -> Option<Obj> {
-        // The TREE, not the handle: handlers live in the tree.
         let ty = self.objects.type_tree_of(callee);
         if ty.is_nil() {
             return None;
         }
-        let h = self
+        let hook = self
             .objects
             .type_handler(ty, crate::vocabulary::Family::Call);
-        if h.is_nil() {
-            None
-        } else {
-            Some(h)
+        if hook.is_nil() {
+            return None;
         }
+        if self.objects.is_prim(hook) {
+            let idx = self.objects.prim_idx(hook);
+            if let Some(crate::prim::Body::CallHook(f)) = self.prims.get(idx).map(|d| d.body) {
+                return f(self, callee, args, env);
+            }
+        }
+        // A LIBRARY handler is an OPERATIVE taking `(obj . args)`: the
+        // arguments stay unevaluated and the SUBJECT goes first — the
+        // selector and the rest are the handler's to interpret.
+        let spine = self.objects.pair(callee, args);
+        Some(self.eval_call(hook, spine, env))
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the
     /// inner operative quoted, so it does not evaluate them a second time. That
     /// is the whole of what "applicative" means here.
-    fn apply_wrapper(&mut self, w: Obj, args: Obj, env: EnvId) -> EvalResult {
+    pub(crate) fn apply_wrapper(&mut self, w: Obj, args: Obj, env: EnvId) -> EvalResult {
         let inner = self.objects.wrapper_inner(w);
         let vals = self.eval_args(args, env)?;
 
@@ -474,7 +445,7 @@ impl Engine {
 
     /// THE ARGUMENT BOUNDARY. Arity is checked and arguments are evaluated here,
     /// once, for every applicative in the engine.
-    fn call_prim(&mut self, def: &PrimDef, args: Obj, env: EnvId) -> EvalResult {
+    pub(crate) fn call_prim(&mut self, def: &PrimDef, args: Obj, env: EnvId) -> EvalResult {
         // The ARGUMENT SPINE is rooted for the whole call. It hangs off the form
         // being evaluated, which is rooted too — but an operative may park a
         // tail and let that form go, and then the spine is held in Rust alone.
@@ -560,6 +531,9 @@ impl Engine {
                     Ok(self.objects.int(f(x)))
                 }
             }
+            // A call hook reaches application through `combine`, never through
+            // the table as an instruction.
+            Body::CallHook(_) => unreachable!("call hooks dispatch through combine"),
         };
         self.root_truncate(mark);
         out
@@ -588,7 +562,7 @@ impl Engine {
     /// argument two being read after it was freed. Rooting here covers every
     /// caller, where rooting at each of them would have covered the ones I
     /// thought of.
-    fn eval_args(&mut self, args: Obj, env: EnvId) -> Result<Vec<Obj>, Cond> {
+    pub(crate) fn eval_args(&mut self, args: Obj, env: EnvId) -> Result<Vec<Obj>, Cond> {
         // Collected first so the iterator's borrow of the objects ends before
         // `eval` needs it mutably.
         let forms: Vec<Obj> = self.objects.list(args).collect();
@@ -653,7 +627,7 @@ impl Engine {
     /// CLOSURE ITSELF — x-lang's self-passing convention, which is why every
     /// function in the conformance prelude is written with a leading `self`. It
     /// recurses without ever having been named.
-    fn apply_closure(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    pub(crate) fn apply_closure(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
         let vals = self.eval_args(args, env)?;
         self.apply_closure_bound(callee, vals)
     }
@@ -696,7 +670,7 @@ impl Engine {
     /// The body runs off the OPERATIVE's own environment, so its scope is lexical
     /// like everything else; the caller's environment is reachable only through
     /// the name the operative asked for, which makes reaching into it deliberate.
-    fn apply_op(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    pub(crate) fn apply_op(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
         let params = self.objects.op_params(callee);
         let envname = self.objects.op_envname(callee);
         let body = self.objects.op_body(callee);
@@ -933,6 +907,31 @@ mod tests {
             e.eval_str("certainly-unbound").is_err(),
             "and the restored one raises unbound again"
         );
+    }
+
+    /// E2's acceptance, the twin of E1's: what APPLICATION means is tree
+    /// data. Replace the PROCEDURE type's call hook and calling any closure
+    /// means something else; restore it and application returns.
+    #[test]
+    fn application_is_replaceable_through_the_tree() {
+        let mut e = crate::engine::Engine::new();
+        let hook = e.eval_str("(op (f . a) env 99)").unwrap();
+        let tree = e.objects.builtin_types[&crate::objects::FLAG_FN];
+        let old = e
+            .objects
+            .type_handler(tree, crate::vocabulary::Family::Call);
+        e.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Call, hook);
+        let v = e.eval_str("((fn (self x) x) 7)").unwrap();
+        assert_eq!(
+            e.objects.as_int(v),
+            99,
+            "the replaced meaning governs every closure call"
+        );
+        e.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Call, old);
+        let v = e.eval_str("((fn (self x) x) 7)").unwrap();
+        assert_eq!(e.objects.as_int(v), 7, "and the restored one applies again");
     }
 
     /// An operative gets its spine AS WRITTEN, so an unbound name survives.
