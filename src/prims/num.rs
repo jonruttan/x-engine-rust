@@ -53,26 +53,43 @@ fn int_to_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.char_new(v as u32))
 }
 
+crate::uniform_tower2!(u_op_1, "+", i64::wrapping_add);
+crate::uniform_tower2!(u_op_2, "-", i64::wrapping_sub);
+crate::uniform_tower2!(u_op_3, "*", i64::wrapping_mul);
+crate::uniform_int2!(u_op_4, "&", |x, y| x & y);
+crate::uniform_int2!(u_op_5, "|", |x, y| x | y);
+crate::uniform_int2!(u_op_6, "^", |x, y| x ^ y);
+crate::uniform_int2!(u_op_7, "<<", shl);
+crate::uniform_int2!(u_op_8, ">>", shr);
+crate::uniform_int1!(u_op_9, "~", |x| !x);
+crate::uniform_tower_pred!(u_op_10, "<", |x, y| x < y);
+crate::uniform_tower_pred!(u_op_11, "=", |x, y| x == y);
+crate::uniform_tower2!(u_op_12, "/", div);
+crate::uniform_tower2!(u_op_13, "%", rem);
+crate::uniform_value!(char_to_int_u, char_to_int, 1);
+crate::uniform_value!(int_to_char_u, int_to_char, 1);
+
+#[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
     // Wrapping throughout: x-lang's fixnums are machine integers, and overflow
     // is a value here rather than a crash.
-    PrimDef::tower2("+", "int", "+", i64::wrapping_add),
-    PrimDef::tower2("-", "int", "-", i64::wrapping_sub),
-    PrimDef::tower2("*", "int", "*", i64::wrapping_mul),
-    PrimDef::int2("&", "int", "&", |x, y| x & y),
-    PrimDef::int2("|", "int", "|", |x, y| x | y),
-    PrimDef::int2("^", "int", "^", |x, y| x ^ y),
-    PrimDef::int2("<<", "int", "<<", shl),
-    PrimDef::int2(">>", "int", ">>", shr),
-    PrimDef::int1("~", "int", "~", |x| !x),
-    PrimDef::tower_pred("<", "int", "<", |x, y| x < y),
-    PrimDef::tower_pred("=", "int", "=", |x, y| x == y),
-    PrimDef::tower2("/", "int", "/", div),
-    PrimDef::tower2("%", "int", "%", rem),
+    PrimDef::row(Some("+"), Some(("int", "+")), 2, u_op_1),
+    PrimDef::row(Some("-"), Some(("int", "-")), 2, u_op_2),
+    PrimDef::row(Some("*"), Some(("int", "*")), 2, u_op_3),
+    PrimDef::row(Some("&"), Some(("int", "&")), 2, u_op_4),
+    PrimDef::row(Some("|"), Some(("int", "|")), 2, u_op_5),
+    PrimDef::row(Some("^"), Some(("int", "^")), 2, u_op_6),
+    PrimDef::row(Some("<<"), Some(("int", "<<")), 2, u_op_7),
+    PrimDef::row(Some(">>"), Some(("int", ">>")), 2, u_op_8),
+    PrimDef::row(Some("~"), Some(("int", "~")), 1, u_op_9),
+    PrimDef::row(Some("<"), Some(("int", "<")), 2, u_op_10),
+    PrimDef::row(Some("="), Some(("int", "=")), 2, u_op_11),
+    PrimDef::row(Some("/"), Some(("int", "/")), 2, u_op_12),
+    PrimDef::row(Some("%"), Some(("int", "%")), 2, u_op_13),
     // The char door has no bare spelling in either direction: it is reachable
     // only through the catalog, which is the reference engine's arrangement.
-    PrimDef::both("char->integer", "char", "->int", 1, char_to_int),
-    PrimDef::both("integer->char", "int", "->char", 1, int_to_char),
+    PrimDef::row(Some("char->integer"), Some(("char", "->int")), 1, char_to_int_u),
+    PrimDef::row(Some("integer->char"), Some(("int", "->char")), 1, int_to_char_u),
 ];
 
 #[cfg(test)]

@@ -20,11 +20,9 @@
 //! row and a `coord` entry is an `%isa-catalog` row. The manifest and the engine
 //! say the same thing because they are the same list.
 
-use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::eval::EvalResult;
 use crate::obj::{EnvId, Obj};
-use crate::objects::Objects;
 
 /// How a primitive receives its arguments — the fexpr distinction, in the type
 /// rather than in a convention.
@@ -45,53 +43,159 @@ use crate::objects::Objects;
 /// handed the reader, the environment chain, the primitive table and the base
 /// object, so nothing could be reasoned about locally and nothing could be
 /// exercised without constructing an entire engine.
-#[derive(Clone, Copy)]
-pub enum Body {
-    /// Needs only the OBJECT MODEL: allocate, read slots, compare. Most
-    /// instructions are here — arithmetic conversions, strings, pointers, pairs,
-    /// the type registry. They cannot reach the evaluator at all.
-    Value(fn(&mut Objects, &[Obj]) -> Result<Obj, Cond>),
-    /// Needs to reach back into EVALUATION or the input stream: iterators drive
-    /// a step function, `io read` consumes the program's own text.
-    /// The BASE arrives as the reference's `p_base` does — an argument, derived
-    /// from the running environment's frame, so `(b eval …)` needs no bracket
-    /// for these to see the right registry.
-    Applicative(fn(&mut Engine, Obj, &[Obj]) -> EvalResult),
-    /// Arguments arrive AS WRITTEN, with the environment they were written in.
-    /// `lit`, `def`, `fn`, `op`, `match`, `guard`, `set!` — everything whose
-    /// whole purpose is to decide what gets evaluated.
-    Operative(fn(&mut Engine, Obj, EnvId) -> EvalResult),
-    /// A TOWER operator: the same pure integer operation, but offered to the
-    /// type-ops registry first so a typed operand reaches its own handler. The
-    /// spelling travels with it because that is the alist key.
-    ///
-    /// Only `+ - * / %` and the comparisons carry this. The bitwise family
-    /// deliberately does not: ruling #52 says bitwise has no tower semantics —
-    /// there is no float `&` — so the dispatch is not offered there.
-    TowerBinop(&'static str, fn(i64, i64) -> i64),
-    /// The same, for a comparison.
-    TowerPred(&'static str, fn(i64, i64) -> bool),
+/// THE CALLING CONVENTION — one signature for every instruction, the
+/// reference's `f(p_base, p_args)` with self in the call:
+/// `(engine, callee, args, env)`. The callee is the primitive OBJECT itself
+/// for an ordinary instruction (mostly ignored) and the callable being
+/// applied for an entry row; args arrive AS WRITTEN, and a row that wants
+/// values evaluates them itself, exactly as `x_eargs` does inside every C
+/// primitive.
+///
+/// The leaf functions behind the rows keep their narrow shapes — an
+/// integer operation is still a function of integers, testable with no
+/// engine in existence — and the `uniform_*` macros generate the row
+/// functions that wrap them. Fast paths live INSIDE a uniform row, never
+/// as dispatcher kinds.
+pub type PrimFn = fn(&mut Engine, Obj, Obj, EnvId) -> EvalResult;
 
-    // The three below are PURE FUNCTIONS OF INTEGERS. They do not receive the
-    // engine at all, which is the point: eleven of the thirteen machine
-    // operations were bodies that differed from each other in exactly one
-    // operator, and each one repeated the same unwrap-two-integers-and-rebox
-    // preamble. Expressed this way the operator IS the primitive, and the
-    // preamble is written once in the dispatcher.
-    //
-    // They are also the only primitives testable with no engine in existence.
-    /// `(op a b)` on two integers.
-    IntBinop(fn(i64, i64) -> i64),
-    /// `(op a b)` answering a truth value.
-    IntPred(fn(i64, i64) -> bool),
-    /// `(op a)` on one integer.
-    IntUnop(fn(i64) -> i64),
-    /// A type tree's CALL hook: how a value of this type is APPLIED. Answers
-    /// `None` to say the value is not callable after all — the form stays
-    /// data. Interim shape until E3's single convention; the reference's
-    /// hooks never decline, but this engine's foreign door predates its
-    /// slot-0 unification.
-    CallHook(fn(&mut Engine, Obj, Obj, EnvId) -> Option<EvalResult>),
+/// Wrap a VALUE leaf — needs only the object model — as a uniform row.
+#[macro_export]
+macro_rules! uniform_value {
+    ($name:ident, $leaf:path, $n:expr) => {
+        fn $name(
+            e: &mut $crate::engine::Engine,
+            _c: $crate::obj::Obj,
+            args: $crate::obj::Obj,
+            env: $crate::obj::EnvId,
+        ) -> $crate::eval::EvalResult {
+            let vals = e.eargs(args, env, $n)?;
+            $leaf(&mut e.objects, &vals)
+        }
+    };
+}
+
+/// Wrap an ENGINE leaf — evaluation, the reader — as a uniform row. The
+/// base arrives as the reference's `p_base` does: the one that is running.
+#[macro_export]
+macro_rules! uniform_engine {
+    ($name:ident, $leaf:path, $n:expr) => {
+        fn $name(
+            e: &mut $crate::engine::Engine,
+            _c: $crate::obj::Obj,
+            args: $crate::obj::Obj,
+            env: $crate::obj::EnvId,
+        ) -> $crate::eval::EvalResult {
+            let vals = e.eargs(args, env, $n)?;
+            let base = e.base;
+            $leaf(e, base, &vals)
+        }
+    };
+}
+
+/// Wrap an OPERATIVE leaf: the spine as written, the caller's environment.
+#[macro_export]
+macro_rules! uniform_op {
+    ($name:ident, $leaf:path) => {
+        fn $name(
+            e: &mut $crate::engine::Engine,
+            _c: $crate::obj::Obj,
+            args: $crate::obj::Obj,
+            env: $crate::obj::EnvId,
+        ) -> $crate::eval::EvalResult {
+            $leaf(e, args, env)
+        }
+    };
+}
+
+/// A tower operator row: the type-ops registry is offered the operands
+/// first, then the machine operation runs. Only `+ - * / %` and the
+/// comparisons — ruling #52 keeps bitwise out of the tower.
+#[macro_export]
+macro_rules! uniform_tower2 {
+    ($name:ident, $spell:literal, $op:expr) => {
+        fn $name(
+            e: &mut $crate::engine::Engine,
+            _c: $crate::obj::Obj,
+            args: $crate::obj::Obj,
+            env: $crate::obj::EnvId,
+        ) -> $crate::eval::EvalResult {
+            let vals = e.eargs(args, env, 2)?;
+            match e.op_try($spell, vals[0], vals[1])? {
+                Some(v) => Ok(v),
+                None => {
+                    let f: fn(i64, i64) -> i64 = $op;
+                    let (x, y) = (e.objects.as_int(vals[0]), e.objects.as_int(vals[1]));
+                    Ok(e.objects.int(f(x, y)))
+                }
+            }
+        }
+    };
+}
+
+/// The comparison twin.
+#[macro_export]
+macro_rules! uniform_tower_pred {
+    ($name:ident, $spell:literal, $op:expr) => {
+        fn $name(
+            e: &mut $crate::engine::Engine,
+            _c: $crate::obj::Obj,
+            args: $crate::obj::Obj,
+            env: $crate::obj::EnvId,
+        ) -> $crate::eval::EvalResult {
+            let vals = e.eargs(args, env, 2)?;
+            match e.op_try($spell, vals[0], vals[1])? {
+                Some(v) => Ok(v),
+                None => {
+                    let f: fn(i64, i64) -> bool = $op;
+                    let (x, y) = (e.objects.as_int(vals[0]), e.objects.as_int(vals[1]));
+                    Ok(e.objects.truth(f(x, y)))
+                }
+            }
+        }
+    };
+}
+
+/// A bitwise row: raw machine integers, and the nil guard the reference
+/// keeps in the prims themselves (#239) — no library wrapper fronts these
+/// in a child base.
+#[macro_export]
+macro_rules! uniform_int2 {
+    ($name:ident, $spell:literal, $op:expr) => {
+        fn $name(
+            e: &mut $crate::engine::Engine,
+            _c: $crate::obj::Obj,
+            args: $crate::obj::Obj,
+            env: $crate::obj::EnvId,
+        ) -> $crate::eval::EvalResult {
+            let vals = e.eargs(args, env, 2)?;
+            if vals[0].is_nil() || vals[1].is_nil() {
+                return Err(e.nil_operand($spell));
+            }
+            let f: fn(i64, i64) -> i64 = $op;
+            let (x, y) = (e.objects.as_int(vals[0]), e.objects.as_int(vals[1]));
+            Ok(e.objects.int(f(x, y)))
+        }
+    };
+}
+
+/// Its one-operand twin.
+#[macro_export]
+macro_rules! uniform_int1 {
+    ($name:ident, $spell:literal, $op:expr) => {
+        fn $name(
+            e: &mut $crate::engine::Engine,
+            _c: $crate::obj::Obj,
+            args: $crate::obj::Obj,
+            env: $crate::obj::EnvId,
+        ) -> $crate::eval::EvalResult {
+            let vals = e.eargs(args, env, 1)?;
+            if vals[0].is_nil() {
+                return Err(e.nil_operand($spell));
+            }
+            let f: fn(i64) -> i64 = $op;
+            Ok(e.objects.int(f(e.objects.as_int(vals[0]))))
+        }
+    };
 }
 
 /// One instruction.
@@ -109,247 +213,23 @@ pub struct PrimDef {
     /// missing operand is nil, not an error. Counting arguments and rejecting a
     /// call is x-lang's job, one layer up.
     pub arity: (usize, Option<usize>),
-    pub body: Body,
+    pub f: PrimFn,
 }
 
 impl PrimDef {
-    /// A machine operation on two integers, bound bare and filed.
-    pub const fn int2(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
-        f: fn(i64, i64) -> i64,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
-            arity: (2, Some(2)),
-            body: Body::IntBinop(f),
-        }
-    }
-
-    /// A tower operator: type-ops dispatch, then the integer operation.
-    pub const fn tower2(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
-        f: fn(i64, i64) -> i64,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
-            arity: (2, Some(2)),
-            body: Body::TowerBinop(bare, f),
-        }
-    }
-
-    /// A tower comparison: type-ops dispatch, then the integer comparison.
-    pub const fn tower_pred(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
-        f: fn(i64, i64) -> bool,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
-            arity: (2, Some(2)),
-            body: Body::TowerPred(bare, f),
-        }
-    }
-
-    /// A machine comparison on two integers.
-    pub const fn int_pred(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
-        f: fn(i64, i64) -> bool,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
-            arity: (2, Some(2)),
-            body: Body::IntPred(f),
-        }
-    }
-
-    /// A machine operation on one integer.
-    pub const fn int1(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
-        f: fn(i64) -> i64,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
-            arity: (1, Some(1)),
-            body: Body::IntUnop(f),
-        }
-    }
-
-    /// An object-model instruction bound bare and filed at a coordinate.
-    pub const fn both(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
+    /// One row. The names and arity are the ISA's; the function is the
+    /// convention's.
+    pub const fn row(
+        bare: Option<&'static str>,
+        coord: Option<(&'static str, &'static str)>,
         n: usize,
-        f: fn(&mut Objects, &[Obj]) -> Result<Obj, Cond>,
+        f: PrimFn,
     ) -> Self {
         PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
+            bare,
+            coord,
             arity: (n, Some(n)),
-            body: Body::Value(f),
-        }
-    }
-
-    /// An object-model instruction reachable only through the catalog.
-    pub const fn filed(
-        ns: &'static str,
-        method: &'static str,
-        n: usize,
-        f: fn(&mut Objects, &[Obj]) -> Result<Obj, Cond>,
-    ) -> Self {
-        PrimDef {
-            bare: None,
-            coord: Some((ns, method)),
-            arity: (n, Some(n)),
-            body: Body::Value(f),
-        }
-    }
-
-    /// An object-model instruction bound bare only.
-    pub const fn bare(
-        bare: &'static str,
-        n: usize,
-        f: fn(&mut Objects, &[Obj]) -> Result<Obj, Cond>,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: None,
-            arity: (n, Some(n)),
-            body: Body::Value(f),
-        }
-    }
-
-    /// An evaluator-reaching instruction bound bare AND filed at a coordinate.
-    pub const fn both_full(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
-        n: usize,
-        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
-            arity: (n, Some(n)),
-            body: Body::Applicative(f),
-        }
-    }
-
-    /// An evaluator-reaching instruction reachable only through the catalog.
-    pub const fn filed_full(
-        ns: &'static str,
-        method: &'static str,
-        n: usize,
-        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
-    ) -> Self {
-        PrimDef {
-            bare: None,
-            coord: Some((ns, method)),
-            arity: (n, Some(n)),
-            body: Body::Applicative(f),
-        }
-    }
-
-    /// A VARIADIC evaluator-reaching instruction, filed at a coordinate.
-    ///
-    /// `ptr call` and `ffi call` take a function and however many arguments the
-    /// callee wants, so a fixed arity would cap what the library can call.
-    pub const fn var_full(
-        ns: &'static str,
-        method: &'static str,
-        min: usize,
-        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
-    ) -> Self {
-        PrimDef {
-            bare: None,
-            coord: Some((ns, method)),
-            arity: (min, None),
-            body: Body::Applicative(f),
-        }
-    }
-
-    /// A VARIADIC evaluator-reaching instruction bound BOTH ways.
-    ///
-    /// `ptr call` and `ffi call` are filed AND bare in the reference, and the
-    /// library reaches them by their bare spellings.
-    pub const fn var_both(
-        bare: &'static str,
-        ns: &'static str,
-        method: &'static str,
-        min: usize,
-        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: Some((ns, method)),
-            arity: (min, None),
-            body: Body::Applicative(f),
-        }
-    }
-
-    /// A VARIADIC evaluator-reaching instruction bound bare.
-    pub const fn var_bare(
-        bare: &'static str,
-        min: usize,
-        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: None,
-            arity: (min, None),
-            body: Body::Applicative(f),
-        }
-    }
-
-    /// An evaluator-reaching instruction bound bare only.
-    pub const fn call_hook(
-        bare: &'static str,
-        f: fn(&mut Engine, Obj, Obj, EnvId) -> Option<EvalResult>,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: None,
-            arity: (2, None),
-            body: Body::CallHook(f),
-        }
-    }
-
-    pub const fn bare_full(
-        bare: &'static str,
-        n: usize,
-        f: fn(&mut Engine, Obj, &[Obj]) -> EvalResult,
-    ) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: None,
-            arity: (n, Some(n)),
-            body: Body::Applicative(f),
-        }
-    }
-
-    /// An operative bound bare. Arity is not checked for these: an operative's
-    /// argument spine is its syntax, and `match` legitimately takes any number of
-    /// arms.
-    pub const fn op(bare: &'static str, f: fn(&mut Engine, Obj, EnvId) -> EvalResult) -> Self {
-        PrimDef {
-            bare: Some(bare),
-            coord: None,
-            arity: (0, None),
-            body: Body::Operative(f),
+            f,
         }
     }
 }
@@ -358,15 +238,16 @@ impl PrimDef {
 mod tests {
     use super::*;
 
-    fn never_op(_: &mut Engine, _: Obj, _: EnvId) -> EvalResult {
-        unreachable!("arity is not checked for operatives")
+    fn never_row(_: &mut Engine, _: Obj, _: Obj, _: EnvId) -> EvalResult {
+        unreachable!("the row is data here, never called")
     }
 
-    /// An operative declares no operand slots: its spine is its syntax, and
-    /// `match` legitimately takes any number of arms.
+    /// Every row is ONE function shape; the names and arity are ISA data
+    /// beside it, not a second dispatch.
     #[test]
-    fn an_operative_declares_no_slots() {
-        let d = PrimDef::op("thing", never_op);
-        assert_eq!(d.arity, (0, None));
+    fn a_row_is_one_shape() {
+        let d = PrimDef::row(Some("thing"), None, 2, never_row);
+        assert_eq!(d.arity, (2, Some(2)));
+        assert_eq!(d.bare, Some("thing"));
     }
 }
