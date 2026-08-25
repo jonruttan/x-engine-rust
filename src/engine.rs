@@ -262,6 +262,28 @@ impl Engine {
         for t in self.objects.take_unfiled_types() {
             self.file_type(t);
         }
+
+        // BACKFILL the allocations that predate the trees. Everything made
+        // during registration — every vocabulary symbol among them — was
+        // stamped nil because its type did not exist yet, and the library
+        // reads the raw word: the printer renders a nil-typed value as
+        // NOTHING, so every instruction-name symbol (`+`, `tok`, `q`)
+        // printed as empty while a symbol interned after boot printed fine.
+        // One walk of the young heap closes the gap.
+        //
+        // `#t` is exempt: the reference leaves it nil-typed, and the printer
+        // renders it by identity before the type dispatch.
+        let t_true = self.objects.true_obj();
+        let mut at = self.objects.heap_chain;
+        while !at.is_nil() {
+            if at != t_true && self.objects.type_of_word(at).is_nil() {
+                let key = crate::objects::reported_kind(self.objects.flags(at));
+                if let Some(&t) = self.objects.builtin_types.get(&key) {
+                    self.objects.set_type_word(at, t);
+                }
+            }
+            at = self.objects.chain_next(at);
+        }
     }
 
     /// The TREE a handle names, resolved through the base's type-alist.
