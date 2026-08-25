@@ -276,9 +276,13 @@ pub struct Objects {
     pub(crate) kind_handles: HashMap<Flags, Obj>,
     /// The engine's eval-hook objects: symbol, list. See prims::core.
     pub(crate) eval_hooks: [Obj; 2],
-    /// The engine's call-hook objects: procedure, operative, primitive,
-    /// continuation. See prims::core.
-    pub(crate) call_hooks: [Obj; 4],
+    /// The shared callable-call hook object, installed on every callable
+    /// kind's tree. See prims::core.
+    pub(crate) callable_call_hook: Obj,
+    /// The instruction-table indexes of the four callable ENTRIES —
+    /// procedure, operative, wrap, continuation — as the words a
+    /// constructor stamps into slot 0. Written once at registration.
+    pub(crate) entry_words: [crate::obj::Word; 4],
 }
 
 /// The kinds whose type word is stamped at birth.
@@ -353,7 +357,8 @@ impl Objects {
             int_states: [crate::obj::NIL; 5],
             kind_handles: HashMap::new(),
             eval_hooks: [crate::obj::NIL; 2],
-            call_hooks: [crate::obj::NIL; 4],
+            callable_call_hook: crate::obj::NIL,
+            entry_words: [crate::obj::Word(0); 4],
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
         // REST as scratch: lib/x/boot/module.x hangs the include list there with

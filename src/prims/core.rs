@@ -38,45 +38,40 @@ pub(crate) fn list_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
     }
 }
 
-/// The PROCEDURE type's call hook: closures apply with evaluated arguments;
-/// a `wrap` applicative — same tree, flag on the object — unwraps and quotes.
-fn proc_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    if e.objects.is_closure(callee) {
-        Some(e.apply_closure(callee, args, env))
-    } else if e.objects.is_wrapper(callee) {
-        Some(e.apply_wrapper(callee, args, env))
-    } else {
-        None
+/// THE ONE CALL DOOR — `x_callable_call` in table-index spelling. Every
+/// callable's slot 0 is its ENTRY: for an instruction, the instruction
+/// itself; for a closure, operative, wrap or continuation, the entry row a
+/// constructor stamped. One read, one dispatch — the callee's KIND is never
+/// consulted. A word that misses the table (a foreign address — its
+/// invocation ABI belongs to the jit lane, undeclared here) declines, and
+/// the form stays data.
+fn callable_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    let idx = e.objects.data(callee, 0).as_usize();
+    match e.prims.get(idx).map(|d| d.body) {
+        Some(crate::prim::Body::CallHook(g)) => g(e, callee, args, env),
+        Some(_) => {
+            let def = e.prims[idx];
+            Some(e.call_prim(&def, args, env))
+        }
+        None => None,
     }
 }
 
-/// The OPERATIVE type's: the spine as written, the caller's env as a value.
-fn op_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    if e.objects.is_op(callee) {
-        Some(e.apply_op(callee, args, env))
-    } else {
-        None
-    }
+/// The four ENTRIES. Each is the whole behaviour of applying its kind — the
+/// fast paths and argument handling live INSIDE, never as dispatcher cases.
+fn procedure_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    Some(e.apply_closure(callee, args, env))
 }
 
-/// The PRIMITIVE type's: through the instruction table. A FOREIGN callable
-/// shares this tree and is DECLINED for now — this engine never applied one
-/// at head position, and E3's slot-0 unification is where it becomes a prim
-/// in the reference's sense.
-fn prim_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    if e.objects.is_prim(callee) {
-        let def = e.prims[e.objects.prim_idx(callee)];
-        Some(e.call_prim(&def, args, env))
-    } else {
-        None
-    }
+fn operative_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    Some(e.apply_op(callee, args, env))
 }
 
-/// The CONTINUATION type's: one evaluated value, then the unwind.
-fn cont_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
-    if !e.objects.is_cont(callee) {
-        return None;
-    }
+fn wrap_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+    Some(e.apply_wrapper(callee, args, env))
+}
+
+fn cont_entry(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
     let v = match e.eval_args(args, env) {
         Ok(vals) => vals.first().copied().unwrap_or(crate::obj::NIL),
         Err(c) => return Some(Err(c)),
@@ -84,14 +79,16 @@ fn cont_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> Option<EvalR
     Some(e.invoke_cont(callee, v))
 }
 
-/// The call-hook table, minted at registration: procedure, operative,
-/// primitive, continuation.
-pub(crate) const CALL_HOOKS: &[PrimDef] = &[
-    PrimDef::call_hook("%proc-call", proc_call),
-    PrimDef::call_hook("%op-call", op_call),
-    PrimDef::call_hook("%prim-call", prim_call),
-    PrimDef::call_hook("%cont-call", cont_call),
+/// The entry table, minted at registration in `Objects::entry_words` order:
+/// procedure, operative, wrap, continuation — then the shared door.
+pub(crate) const CALL_ENTRIES: &[PrimDef] = &[
+    PrimDef::call_hook("%procedure-entry", procedure_entry),
+    PrimDef::call_hook("%operative-entry", operative_entry),
+    PrimDef::call_hook("%wrap-entry", wrap_entry),
+    PrimDef::call_hook("%cont-entry", cont_entry),
 ];
+
+pub(crate) const CALLABLE_CALL: PrimDef = PrimDef::call_hook("%callable-call", callable_call);
 
 /// The hook table, minted at registration: symbol, then list. Operative-shaped
 /// — a hook receives the FORM raw and the environment, which is the engine
@@ -170,10 +167,10 @@ fn wrap(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.wrapper(a[0]))
 }
 
-/// `(unwrap w)` — the operative back out, unchecked like every other operand
-/// read: the data word is the answer.
+/// `(unwrap w)` — the operative back out: a wrap's STATE slot holds the
+/// combiner, its entry slot how to apply it.
 fn unwrap(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    Ok(a_.data(a[0], 0).as_obj())
+    Ok(a_.wrapper_inner(a[0]))
 }
 
 /// `(atomic body...)` — its body's value.
