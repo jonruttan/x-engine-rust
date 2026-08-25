@@ -129,6 +129,17 @@ pub struct Engine {
     pub(crate) int_read: Obj,
 }
 
+/// The kinds whose trees carry an engine call hook, and which. `FLAG_WRAP`
+/// shares the procedure hook: one type, the flag on the object, as the
+/// reference has it.
+const CALL_HOOK_KINDS: &[(crate::obj::Flags, usize)] = &[
+    (crate::objects::FLAG_FN, 0),
+    (crate::objects::FLAG_WRAP, 0),
+    (crate::objects::FLAG_OP, 1),
+    (crate::objects::FLAG_PRIM, 2),
+    (crate::objects::FLAG_CONT, 3),
+];
+
 /// The kinds whose trees carry the engine's render handler — the set the
 /// reference's per-kind registration gives write/display hooks that the
 /// library's own boot pushes then shadow.
@@ -231,6 +242,13 @@ impl Engine {
             let idx = e.prims.len();
             e.prims.push(*def);
             e.objects.eval_hooks[i] = e.objects.prim(idx);
+        }
+        // And the call hooks: what APPLYING a value of each callable type
+        // means, registered the same way.
+        for (i, def) in crate::prims::core::CALL_HOOKS.iter().enumerate() {
+            let idx = e.prims.len();
+            e.prims.push(*def);
+            e.objects.call_hooks[i] = e.objects.prim(idx);
         }
 
         // The `%isa-values` objects, made BEFORE the first base, because every
@@ -346,6 +364,18 @@ impl Engine {
         if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_PAIR) {
             self.install_eval_hook(t, 1);
         }
+        for (flags, which) in CALL_HOOK_KINDS {
+            if let Some(&t) = self.objects.builtin_types.get(flags) {
+                self.install_call_hook(t, *which);
+            }
+        }
+    }
+
+    /// One of the engine's call hooks onto a tree's call stack.
+    fn install_call_hook(&mut self, tree: Obj, which: usize) {
+        let h = self.objects.call_hooks[which];
+        self.objects
+            .type_set_handler(tree, crate::vocabulary::Family::Call, h);
     }
 
     /// One of the engine's eval hooks onto a tree's eval stack.
@@ -398,6 +428,11 @@ impl Engine {
             }
             if *flags == crate::objects::FLAG_PAIR {
                 self.install_eval_hook(t, 1);
+            }
+            for (cf, which) in CALL_HOOK_KINDS {
+                if cf == flags {
+                    self.install_call_hook(t, *which);
+                }
             }
             self.file_type_in(base, t);
         }
