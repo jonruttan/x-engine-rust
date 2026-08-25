@@ -173,8 +173,6 @@ pub const FLAG_BUF: Flags = Flags::new(0x20000);
 /// pointers, not objects").
 pub const FLAG_BUFMARKS: Flags = Flags::new(0x20001);
 
-/// A TOKENIZER BASE: a base with no bindings, carrying registered reader types.
-
 /// An escape CONTINUATION, identified by a serial number.
 ///
 /// Escape-only: it unwinds outward and cannot be re-entered. x-lang's library
