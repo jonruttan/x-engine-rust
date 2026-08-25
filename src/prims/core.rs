@@ -14,11 +14,22 @@ use crate::prim::PrimDef;
 
 /// `(eval expr env)` — in the environment given, which is how an operative
 /// reaches into its caller's.
+///
+/// The two arities are DIFFERENT instructions, as `x_prim_eval` draws them.
+/// Without an env the expression is in tail position — it is PARKED for the
+/// caller's trampoline, so a loop written through `eval` runs in constant
+/// stack. With an env it cannot be: the given environment must be restored
+/// after, so the evaluation happens here, under this frame.
 fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let expr_form = e.nth(args, 0);
     let expr = e.eval(expr_form, env)?;
-    let env_form = e.nth(args, 1);
-    let target_obj = e.eval(env_form, env)?;
+    // Presence is asked of the SPINE, not the value: `(eval x ())` has an env
+    // argument that happens to be nil, and takes the with-env path.
+    let env_cell = e.objects.rest(args);
+    if env_cell.is_nil() {
+        return Ok(e.park_tail(expr, env));
+    }
+    let target_obj = e.eval(e.objects.first(env_cell), env)?;
     let target = if e.objects.is_env(target_obj) {
         e.objects.env_id(target_obj)
     } else {
