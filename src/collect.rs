@@ -272,8 +272,8 @@ impl crate::engine::Engine {
         // listed is engine-held state with no path from the base:
         //
         //   spair/satom markers   sentinels the reference keeps as C statics;
-        //                         nothing on the tree references them.
-        //   builtin_types         the IDENTITY cache: a tree made on demand and
+        //                         nothing on the type references them.
+        //   builtin_types         the IDENTITY cache: a type made on demand and
         //                         not yet filed would be swept and remade as a
         //                         DIFFERENT object, breaking `type of` identity.
         //   symbol tables         per-base interning, engine-held as the
@@ -290,8 +290,8 @@ impl crate::engine::Engine {
         r.extend(self.objects.builtin_types.values().copied());
         r.extend(self.objects.kind_handles.values().copied());
         r.extend(self.objects.int_states.iter().copied());
-        r.extend(self.objects.eval_hooks.iter().copied());
-        r.push(self.objects.callable_call_hook);
+        r.extend(self.objects.eval_handlers.iter().copied());
+        r.push(self.objects.callable_call_handler);
         r.extend(self.objects.unfiled_types.iter().copied());
         r.extend(self.objects.interned());
         for (name, obj) in &self.prim_bindings {
@@ -417,11 +417,11 @@ impl crate::engine::Engine {
         freed
     }
 
-    /// Invoke every callable on one of the base's hook lists, with NO
+    /// Invoke every callable on one of the base's handler lists, with NO
     /// arguments — one call per hook per collection, as `x_heap_run_hooks`
     /// does. A raising hook does not abort the collection. The engine is the
     /// consuming layer: registration without invocation would satisfy any
-    /// check that only asks whether a hook survives.
+    /// check that only asks whether a handler survives.
     fn run_gc_hooks(&mut self, slot: usize) {
         let list = crate::base::get(&self.objects, self.base, slot);
         if list.is_nil() {

@@ -168,8 +168,8 @@ fn render(a: &Objects, v: Obj, depth: usize) -> String {
         return format!("({})", parts.join(" "));
     }
     // Everything else: say WHAT it was, by READING its type rather than by
-    // enumerating kinds here. Every value carries a pointer to its type tree and
-    // every tree carries its name, so the engine already knows the answer — a
+    // enumerating kinds here. Every value carries a pointer to its type and
+    // every type carries its name, so the engine already knows the answer — a
     // list of cases in this file would be a second, staler copy of it, and a
     // kind added later would quietly print as the fallback.
     match a.type_name_of(v) {

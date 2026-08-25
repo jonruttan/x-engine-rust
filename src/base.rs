@@ -1,7 +1,7 @@
 //! The base: the execution context, reachable by reflection.
 //!
 //! `p_base` IS the execution context — that is x-lang's model, not a detail of
-//! the C engine. A base carries the interpreter's state as a PAIR TREE, and the
+//! the C engine. A base carries the interpreter's state as a PAIR TYPE, and the
 //! library reaches into it by walking the routes the engine commits to in
 //! `tools/contract/base-paths.x`.
 //!

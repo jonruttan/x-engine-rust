@@ -13,7 +13,7 @@
 //! the same way — see `collect.rs`, and the compliance suite for where they get
 //! falsified.
 //!
-//! REGISTRATION IS THE ENGINE'S JOB; INVOCATION IS THE LIBRARY'S. The three hook
+//! REGISTRATION IS THE ENGINE'S JOB; INVOCATION IS THE LIBRARY'S. The three handler
 //! and root operations look like collector internals and are not. x-lang's own
 //! note is explicit: a registered callable is "intended to be invoked once per
 //! garbage-collection mark phase BY THE CONSUMING LAYER". The engine only puts

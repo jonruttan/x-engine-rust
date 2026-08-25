@@ -23,10 +23,10 @@ use std::io::Write;
 /// than a count. Nothing in x-lang's library reads the return, which is exactly
 /// why it is easy to get wrong in either direction and why the conformance case
 /// asserts the side effect and the answer in one breath.
-/// The engine's own render handler, installed on every base's builtin trees.
+/// The engine's own render handler, installed on every base's builtin types.
 ///
 /// The reference's per-kind registration gives each base's int/str/symbol/list
-/// trees a C write hook the library's boot pushes then shadow; a child base
+/// types a C write handler the library's boot pushes then shadow; a child base
 /// never boots a library, so this is the handler its stacks carry. Renders
 /// with the same text the engine's diagnostics use.
 pub(crate) fn engine_render(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
@@ -38,7 +38,7 @@ pub(crate) fn engine_render(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a[0])
 }
 
-/// Not part of the instruction set: in the prim table so trees can hold a
+/// Not part of the instruction set: in the prim table so types can hold a
 /// callable, never bound and never filed in the catalog.
 #[rustfmt::skip]
 pub(crate) const ENGINE_RENDER: PrimDef =

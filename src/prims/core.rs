@@ -12,9 +12,9 @@ use crate::obj::{EnvId, Obj};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
 
-/// The SYMBOL type's eval hook — `x_type_symbol_eval`: a symbol evaluates to
+/// The SYMBOL type's eval handler — `x_type_symbol_eval`: a symbol evaluates to
 /// what the environment binds it to, and an unbound one raises. Registered on
-/// every base's SYMBOL tree; the machine itself does not know what a symbol
+/// every base's SYMBOL type; the machine itself does not know what a symbol
 /// means.
 pub(crate) fn sym_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
     match e.envs.lookup(&e.objects, env, form) {
@@ -23,7 +23,7 @@ pub(crate) fn sym_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
     }
 }
 
-/// The LIST type's eval hook — `x_type_list_eval`: evaluate the head, then
+/// The LIST type's eval handler — `x_type_list_eval`: evaluate the head, then
 /// apply through the machinery; a head that is not callable makes the form
 /// DATA, which is how quoted structures survive being evaluated. A parked
 /// tail flows back to the caller's trampoline, as the reference's tco_expr
@@ -90,11 +90,11 @@ pub(crate) const CALL_ENTRIES: &[PrimDef] = &[
 pub(crate) const CALLABLE_CALL: PrimDef =
     PrimDef::row(Some("%callable-call"), None, 0, callable_call);
 
-/// The hook table, minted at registration: symbol, then list. Operative-shaped
-/// — a hook receives the FORM raw and the environment, which is the engine
+/// The handler table, minted at registration: symbol, then list. Operative-shaped
+/// — a handler receives the FORM raw and the environment, which is the engine
 /// dispatch's own hand-off.
 #[rustfmt::skip]
-pub(crate) const EVAL_HOOKS: &[PrimDef] = &[
+pub(crate) const EVAL_HANDLERS: &[PrimDef] = &[
     PrimDef::row(Some("%sym-eval"), None, 0, sym_eval_u),
     PrimDef::row(Some("%list-eval"), None, 0, list_eval_u),
 ];

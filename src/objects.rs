@@ -101,11 +101,11 @@ pub const FLAG_SPAIR: Flags = Flags::new(0x0101);
 /// `lib/x/boot/reflect.x` says it plainly: "The static-ATOM sentinel tag marks
 /// type HANDLES (the name atoms `type of` returns) and other raw atoms. It is
 /// NOT what #t/#f carry (nil-typed, tag 0) and NOT what interned symbols carry
-/// (the SYMBOL type tree)."
+/// (the SYMBOL type)."
 ///
-/// So a handle carries the atom tag while a symbol points at the SYMBOL tree,
-/// and the library derives both tags by probing a real handle and a real tree.
-/// With `type of` answering the TREE instead, this engine made the two tags
+/// So a handle carries the atom tag while a symbol points at the SYMBOL type,
+/// and the library derives both tags by probing a real handle and a real type.
+/// With `type of` answering the TYPE instead, this engine made the two tags
 /// identical — and its own base then read as a type handle.
 pub const FLAG_HANDLE: Flags = Flags::new(0x0102);
 pub const FLAG_SYM: Flags = Flags::new(0x0200);
@@ -232,11 +232,11 @@ pub struct Objects {
     /// answer the SAME object. Simple values carry no type word, so the
     /// stability x-lang requires comes from here rather than from the header.
     pub(crate) builtin_types: HashMap<Flags, Obj>,
-    /// The tag every registered type TREE carries in its own type word.
+    /// The tag every registered type TYPE carries in its own type word.
     ///
     /// x-lang derives this rather than being told it — `%reflect-spair-tw` is
-    /// the type word of the first type-alist entry's tree — and then uses it to
-    /// check that a word really points at a tree before walking one.
+    /// the type word of the first type-alist entry's type — and then uses it to
+    /// check that a word really points at a type before walking one.
     pub(crate) spair_marker: Obj,
     /// The tag every type HANDLE carries, distinct from [`Objects::spair_marker`].
     ///
@@ -268,17 +268,17 @@ pub struct Objects {
     /// can, so the chain goes through the store, as the reference's states
     /// chain through their state slots.
     pub(crate) int_states: [Obj; 5],
-    /// ONE handle object per builtin kind, shared by every base's trees — the
+    /// ONE handle object per builtin kind, shared by every base's types — the
     /// reference keeps each builtin type's name as a C static atom, so a
     /// child's INTEGER entry is `eq?` to `(type of 0)`'s answer and
     /// apps/logo's alist prune can compare identities. `make-type` names stay
     /// fresh per call, as the reference's strndup'd atoms are.
     pub(crate) kind_handles: HashMap<Flags, Obj>,
-    /// The engine's eval-hook objects: symbol, list. See prims::core.
-    pub(crate) eval_hooks: [Obj; 2],
-    /// The shared callable-call hook object, installed on every callable
-    /// kind's tree. See prims::core.
-    pub(crate) callable_call_hook: Obj,
+    /// The engine's eval-handler objects: symbol, list. See prims::core.
+    pub(crate) eval_handlers: [Obj; 2],
+    /// The shared callable-call handler object, installed on every callable
+    /// kind's type. See prims::core.
+    pub(crate) callable_call_handler: Obj,
     /// The instruction-table indexes of the four callable ENTRIES —
     /// procedure, operative, wrap, continuation — as the words a
     /// constructor stamps into slot 0. Written once at registration.
@@ -324,7 +324,7 @@ pub fn reported_kind(flags: Flags) -> Flags {
 /// The name a kind reports, or `BUILTIN` for one nobody has named.
 ///
 /// These are the REFERENCE's names, and they are reachable from x-lang rather
-/// than decorative: once a value carries a pointer to its type tree,
+/// than decorative: once a value carries a pointer to its type,
 /// `%reflect-type-name` dereferences it and answers what it finds. Naming every
 /// builtin type the same thing made every type-name comparison in the library
 /// agree, which is worse than answering nothing at all — a name of "BUILTIN"
@@ -356,8 +356,8 @@ impl Objects {
             freed_kind: HashMap::new(),
             int_states: [crate::obj::NIL; 5],
             kind_handles: HashMap::new(),
-            eval_hooks: [crate::obj::NIL; 2],
-            callable_call_hook: crate::obj::NIL,
+            eval_handlers: [crate::obj::NIL; 2],
+            callable_call_handler: crate::obj::NIL,
             entry_words: [crate::obj::Word(0); 4],
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's

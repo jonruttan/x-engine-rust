@@ -14,7 +14,7 @@ use crate::objects::{Objects, FLAG_FOREIGN, FLAG_ITER, FLAG_PRIM};
 /// The families a type object carries, grouped as the reference engine groups
 /// them.
 ///
-/// A type is a TREE, not a flat spine, and mirroring the reference's shape is
+/// A type is a TYPE, not a flat spine, and mirroring the reference's shape is
 /// deliberate. Decision L1 leaves the STEPS to the engine — only the NAMES are
 /// the contract — so a flat layout would have been permitted. It would also have
 /// been a fresh set of decisions about a structure whose real ones are already
@@ -77,7 +77,7 @@ impl Objects {
         spine
     }
 
-    /// A type object, as a TREE.
+    /// A type object, as a TYPE.
     ///
     /// Not a two-word record: x-lang walks a type BY NAME, and there are
     /// forty-odd committed names rooted at the type object itself. Every cell
@@ -117,8 +117,8 @@ impl Objects {
         {
             spine = self.spair(slot, spine);
         }
-        // A type TREE carries the tree tag in its own word, which is how the
-        // library tells a real tree from any other word it might find: it probes
+        // A type TYPE carries the type tag in its own word, which is how the
+        // library tells a real type from any other word it might find: it probes
         // the tag off the first type-alist entry and checks against it before
         // walking.
         let marker = self.spair_marker;
@@ -197,7 +197,7 @@ impl Objects {
         }
     }
 
-    /// Install a handler as a fresh tree's stack head — the engine-side twin of
+    /// Install a handler as a fresh type's stack head — the engine-side twin of
     /// what `install_handlers` does for a `(key . handler)` row.
     pub(crate) fn type_set_handler(&mut self, ty: Obj, key: Family, handler: Obj) {
         let Some((group, family)) = Self::handler_slot(key) else {
@@ -223,7 +223,7 @@ impl Objects {
     /// `type-X` routes address. The reader asks for `analyse` and `read` by the
     /// same door the library uses for `write` and `display` — there is no second
     /// mechanism, and there was one until the handler alist started being
-    /// distributed into the tree where it belongs.
+    /// distributed into the type where it belongs.
     pub fn type_handler(&self, o: Obj, family: Family) -> Obj {
         let Some((group, index)) = Self::handler_slot(family) else {
             return NIL;
@@ -246,27 +246,27 @@ impl Objects {
     }
 
     /// An instance of a custom type: `n` data words, and a header type word
-    /// pointing at the type TREE.
+    /// pointing at the type TYPE.
     ///
     /// `t` may arrive as a HANDLE — which is what x-lang passes, since that is
     /// what `type of` and `make-type` answer — so it is resolved here. The word
-    /// must hold the TREE: the library dereferences it and checks the tree tag
+    /// must hold the TYPE: the library dereferences it and checks the type tag
     /// before walking, and a handle there would fail that check.
     pub fn instance(&mut self, t: Obj, n: usize) -> Obj {
-        let tree = self.tree_for(t);
+        let ty = self.type_for(t);
         let o = self.alloc(Flags::new(0), n.max(1));
-        self.set_type_word(o, tree);
+        self.set_type_word(o, ty);
         o
     }
 
-    /// Resolve a handle to its tree; a tree passes through unchanged.
-    pub fn tree_for(&mut self, t: Obj) -> Obj {
+    /// Resolve a handle to its type; a type passes through unchanged.
+    pub fn type_for(&mut self, t: Obj) -> Obj {
         if !self.is_handle(t) {
             return t;
         }
-        for &tree in self.builtin_types.values() {
-            if self.first(self.first(tree)) == t {
-                return tree;
+        for &ty in self.builtin_types.values() {
+            if self.first(self.first(ty)) == t {
+                return ty;
             }
         }
         // A library-made type: the engine keeps no reverse index, and the base's
@@ -296,21 +296,21 @@ impl Objects {
     /// object — `(same? (type of 1) (type of 2))` must hold.
     /// The TYPE HANDLE of a value — what `type of` answers.
     ///
-    /// A handle, not the tree. x-lang's `Type of` is documented as returning
+    /// A handle, not the type. x-lang's `Type of` is documented as returning
     /// "the type's handle atom", the type-alist is keyed by it, and
     /// `%reflect-satom-tw` is probed off `(type of 0)` to learn what tag a
-    /// HANDLE carries. Answering the tree instead made that probe find the
-    /// TREE's tag, so handle-tag and tree-tag became the same value and this
+    /// HANDLE carries. Answering the type instead made that probe find the
+    /// TYPE's tag, so handle-tag and type-tag became the same value and this
     /// engine's own base read as a type handle.
     pub fn type_of(&mut self, o: Obj) -> Obj {
-        let tree = self.type_tree_of(o);
-        if tree.is_nil() {
+        let ty = self.obj_type(o);
+        if ty.is_nil() {
             return NIL;
         }
-        self.type_handle_of_tree(tree)
+        self.handle_of_type(ty)
     }
 
-    /// A value's type NAME, read from the tree it carries — or `None` when it
+    /// A value's type NAME, read from the type it carries — or `None` when it
     /// carries none.
     ///
     /// Non-mutating on purpose: it reads what is there and never creates a type
@@ -319,28 +319,28 @@ impl Objects {
         if o.is_nil() {
             return None;
         }
-        let tree = self.type_of_word(o);
-        if tree.is_nil() || tree == self.spair_marker || tree == self.satom_marker {
+        let ty = self.type_of_word(o);
+        if ty.is_nil() || ty == self.spair_marker || ty == self.satom_marker {
             return None;
         }
-        let handle = self.type_handle_of_tree(tree);
+        let handle = self.handle_of_type(ty);
         if handle.is_nil() {
             return None;
         }
         Some(self.str_val(handle))
     }
 
-    /// The handle stored in a tree's name slot.
-    pub fn type_handle_of_tree(&self, tree: Obj) -> Obj {
-        if tree.is_nil() {
+    /// The handle stored in a type's name slot.
+    pub fn handle_of_type(&self, ty: Obj) -> Obj {
+        if ty.is_nil() {
             return NIL;
         }
-        self.first(self.first(tree))
+        self.first(self.first(ty))
     }
 
-    /// The type TREE of a value: what the engine dispatches on, and what a
+    /// The type TYPE of a value: what the engine dispatches on, and what a
     /// value's type word points at.
-    pub fn type_tree_of(&mut self, o: Obj) -> Obj {
+    pub fn obj_type(&mut self, o: Obj) -> Obj {
         if o.is_nil() {
             return NIL;
         }
@@ -353,7 +353,7 @@ impl Objects {
             return t;
         }
         // The REFERENCE's name for this kind. It is read: with the type word
-        // stamped, `%reflect-type-name` dereferences the tree and answers what
+        // stamped, `%reflect-type-name` dereferences the type and answers what
         // it finds there.
         let name = self.kind_handle(flags, crate::objects::kind_name(flags));
         let t = self.type_new(name, NIL);

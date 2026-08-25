@@ -17,7 +17,7 @@ impl Objects {
     /// A STRUCTURAL pair: an interpreter spine. See [`FLAG_SPAIR`].
     ///
     /// Used for everything the ENGINE builds and the library walks reflectively
-    /// rather than as data — the base, environment frames, type trees. It is not
+    /// rather than as data — the base, environment frames, types. It is not
     /// an optimisation and not a private convenience: the library reads the tag
     /// and behaves differently, so building a spine out of list pairs tells it
     /// the interpreter's own structure is a list.

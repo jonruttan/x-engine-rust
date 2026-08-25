@@ -68,14 +68,14 @@ fn pair(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// `(type make name parent)` — a new type, FILED where the library can find it.
 ///
 /// Registration is not optional and not a courtesy. `lib/x/type/struct.x`'s
-/// `type by-atom` is the only way the library reaches a type's tree, and it
+/// `type by-atom` is the only way the library reaches a type's type, and it
 /// walks the base's type-alist; a type that never lands there answers nil, and
 /// callers write into what they get back rather than checking. That is how
 /// `lib/x/type/promise.x` came to push a call handler through nil.
 fn type_make(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     // The NAME arrives as a string; the handle is made from it here, and the
     // handle is what comes back. x-lang keeps the type-alist keyed by it and
-    // passes it to `make-instance`, so answering the tree would hand the library
+    // passes it to `make-instance`, so answering the type would hand the library
     // something its own accessors do not expect.
     let text = e.objects.str_val(a[0]);
     let name = e.objects.handle(&text);
@@ -110,8 +110,8 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// `(type make-instance handle data)` — an instance of a registered type.
 ///
-/// The handle is resolved to its TREE through the base, because the type word
-/// must hold the tree: the library dereferences it and checks the tree tag
+/// The handle is resolved to its TYPE through the base, because the type word
+/// must hold the type: the library dereferences it and checks the type tag
 /// before walking.
 /// TWO slots, not one, and the second one matters.
 ///
@@ -124,13 +124,13 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// allocation's header. That was invisible while type words were nil: the
 /// garbage read as nil, so `%class-hot` saw an empty cache and rebuilt it
 /// correctly every time. Stamping the type word made the same read return a type
-/// TREE, which `%class-hot` then returned AS the cached table, and every class
+/// TYPE, which `%class-hot` then returned AS the cached table, and every class
 /// answered "no such static member".
 ///
 /// The stamping did not cause that. It exposed it.
 fn make_instance(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
-    let tree = e.resolve_tree_in(base, a[0]);
-    let o = e.objects.instance(tree, 2);
+    let ty = e.resolve_type_in(base, a[0]);
+    let o = e.objects.instance(ty, 2);
     e.objects.set_data(o, 0, a[1].word());
     Ok(o)
 }
@@ -138,9 +138,9 @@ fn make_instance(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
 /// The type word is written from the operand, whatever it is. Whether that
 /// operand is a REGISTERED type is x-lang's question to ask.
 fn obj_make(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
-    let tree = e.resolve_tree(a[0]);
+    let ty = e.resolve_type(a[0]);
     let n = e.objects.as_int(a[1]).max(0) as usize;
-    Ok(e.objects.instance(tree, n))
+    Ok(e.objects.instance(ty, n))
 }
 
 /// `(obj make-callable p)` — a raw address dressed as callable.
