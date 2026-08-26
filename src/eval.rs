@@ -125,7 +125,7 @@ impl Engine {
     /// overflow — the one failure that reports nothing at all.
     ///
     /// The mechanism is the reference engine's. A form in tail position is not
-    /// evaluated by recursing; it is PARKED in `self.tail` and this loop picks
+    /// evaluated by recursing; it is PARKED in the base's tco rows and this loop picks
     /// it up. x-engine-c parks it in the base's `tco-expr` and `tco-env` slots
     /// for exactly the same reason.
     /// Evaluate, tracking whether anything is PENDING.
@@ -160,13 +160,71 @@ impl Engine {
     /// Hide the active saves for the duration of a LOAD, answering what was
     /// hidden. Each form read from a file IS a top-level form, and its `def`s
     /// bind globally however deep the load was triggered — the reference does
-    /// the same to its save stack.
-    pub fn hide_pending(&mut self) -> u32 {
-        std::mem::replace(&mut self.saves, 0)
+    /// the same to its save stack. The caller roots what it is handed: the
+    /// hidden list is reachable from nothing else while the load runs.
+    pub fn hide_pending(&mut self) -> Obj {
+        let node = self.objects.state_nodes[crate::base::SN_SAVE];
+        let held = self.objects.first(node);
+        self.objects.set_data(node, 0, NIL.word());
+        held
     }
 
-    pub fn restore_pending(&mut self, outer: u32) {
-        self.saves = outer;
+    pub fn restore_pending(&mut self, outer: Obj) {
+        let node = self.objects.state_nodes[crate::base::SN_SAVE];
+        self.objects.set_data(node, 0, outer.word());
+    }
+
+    /// One save onto the base's save-stack row: the environment whose body (or
+    /// with-env evaluation) is active. Released by [`Engine::save_pop`].
+    pub(crate) fn save_push(&mut self, env: EnvId) {
+        let node = self.objects.state_nodes[crate::base::SN_SAVE];
+        let head = self.objects.first(node);
+        let cell = self.objects.spair(env.obj(), head);
+        self.objects.set_data(node, 0, cell.word());
+    }
+
+    pub(crate) fn save_pop(&mut self) {
+        let node = self.objects.state_nodes[crate::base::SN_SAVE];
+        let head = self.objects.first(node);
+        let tail = self.objects.rest(head);
+        self.objects.set_data(node, 0, tail.word());
+    }
+
+    /// The parked tail, read and cleared — the tco-expr/tco-env rows are the
+    /// only place it lives.
+    pub(crate) fn tail_take(&mut self) -> Option<(Obj, EnvId)> {
+        let node = self.objects.state_nodes[crate::base::SN_TCO_EXPR];
+        let form = self.objects.first(node);
+        if form.is_nil() {
+            return None;
+        }
+        let env_node = self.objects.state_nodes[crate::base::SN_TCO_ENV];
+        let env = self.objects.first(env_node);
+        self.objects.set_data(node, 0, NIL.word());
+        self.objects.set_data(env_node, 0, NIL.word());
+        Some((form, crate::obj::EnvId::from_obj(env)))
+    }
+
+    /// A guard is active while the base's error-handler row is non-nil.
+    pub(crate) fn handler_active(&self) -> bool {
+        !self
+            .objects
+            .first(self.objects.state_nodes[crate::base::SN_HANDLER])
+            .is_nil()
+    }
+
+    pub(crate) fn handler_push(&mut self, env: EnvId) {
+        let node = self.objects.state_nodes[crate::base::SN_HANDLER];
+        let head = self.objects.first(node);
+        let cell = self.objects.spair(env.obj(), head);
+        self.objects.set_data(node, 0, cell.word());
+    }
+
+    pub(crate) fn handler_pop(&mut self) {
+        let node = self.objects.state_nodes[crate::base::SN_HANDLER];
+        let head = self.objects.first(node);
+        let tail = self.objects.rest(head);
+        self.objects.set_data(node, 0, tail.word());
     }
 
     /// True when the save stack is empty, which is the reference's `def`
@@ -177,7 +235,9 @@ impl Engine {
     /// global (core/sandbox relies on it: one form's `(do … (def %buf-tok …))`
     /// serves the next form's tests).
     pub fn nothing_pending(&self) -> bool {
-        self.saves == 0
+        self.objects
+            .first(self.objects.state_nodes[crate::base::SN_SAVE])
+            .is_nil()
     }
 
     fn eval_pending(&mut self, form: Obj, env: EnvId) -> EvalResult {
@@ -210,7 +270,7 @@ impl Engine {
             // flag is cleared first so a handler that returns does not re-trip,
             // and an uncatchable raise would end the run rather than interrupt
             // the computation.
-            if self.guard_depth > 0 {
+            if self.handler_active() {
                 let flag = self.sigint_flag;
                 if self.objects.as_int(flag) != 0 {
                     self.objects.set_data(flag, 0, crate::obj::Word(0));
@@ -283,7 +343,7 @@ impl Engine {
             };
             // Something in tail position asked to be evaluated HERE rather than
             // under another frame. Loop instead of recursing.
-            match self.tail.take() {
+            match self.tail_take() {
                 Some((f, e)) => {
                     form = f;
                     env = e;
@@ -309,7 +369,10 @@ impl Engine {
     /// winning arm of a `match`, a `guard`'s handler. Anything that evaluates
     /// its tail directly would reintroduce the frame this removes.
     pub fn park_tail(&mut self, form: Obj, env: EnvId) -> Obj {
-        self.tail = Some((form, env));
+        let node = self.objects.state_nodes[crate::base::SN_TCO_EXPR];
+        self.objects.set_data(node, 0, form.word());
+        let env_node = self.objects.state_nodes[crate::base::SN_TCO_ENV];
+        self.objects.set_data(env_node, 0, env.obj().word());
         NIL
     }
 
@@ -318,9 +381,9 @@ impl Engine {
     /// Callers that are NOT a tail position — `apply`, the iterator driver, the
     /// binary's top level — need a value, not a parked form. Forgetting this is
     /// how a parked tail leaks into an unrelated evaluation.
-    fn settle(&mut self, r: EvalResult, env: EnvId) -> EvalResult {
+    pub(crate) fn settle(&mut self, r: EvalResult, env: EnvId) -> EvalResult {
         let v = r?;
-        match self.tail.take() {
+        match self.tail_take() {
             Some((f, e)) => self.eval(f, e),
             None => {
                 let _ = env;
@@ -541,7 +604,7 @@ impl Engine {
     /// Settle a parked tail for a caller that needs a VALUE.
     fn settle_tail(&mut self, r: EvalResult) -> EvalResult {
         let v = r?;
-        match self.tail.take() {
+        match self.tail_take() {
             Some((f, e)) => self.eval(f, e),
             None => Ok(v),
         }
@@ -580,9 +643,9 @@ impl Engine {
         // released before the parked tail runs, which is why a tail `def`
         // binds globally. Operatives do not save; the reference's own answer
         // to a def reaching through an op's tail-eval says so.
-        self.saves += 1;
+        self.save_push(frame);
         let out = self.eval_body_tail(body, frame);
-        self.saves -= 1;
+        self.save_pop();
         self.env_root_truncate(env_mark);
         out
     }

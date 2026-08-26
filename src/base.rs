@@ -69,6 +69,15 @@ pub const ROUTES: &[&str] = &[
     // un-poison it, and resets the buffer when a form is abandoned.
     "filein",
     "buffer",
+    // --- the evaluator's own state, as the reference keeps it ---
+    // The save stack decides what a `def` is; the tco pair is the deferred
+    // tail; sigint is the interrupt flag object %sigint-flag also names; the
+    // error-handler cell holds the active guard chain.
+    crate::vocabulary::ROUTE_SAVE_STACK,
+    crate::vocabulary::ROUTE_TCO_EXPR,
+    crate::vocabulary::ROUTE_TCO_ENV,
+    crate::vocabulary::ROUTE_SIGINT,
+    crate::vocabulary::ROUTE_ERROR_HANDLER,
 ];
 
 /// Slots the heap instructions reach for by name.
@@ -84,6 +93,11 @@ pub const PROFILE: usize = 15;
 pub const FALSE: usize = 16;
 pub const FILEIN: usize = 17;
 pub const BUFFER: usize = 18;
+pub const SAVE_STACK: usize = 19;
+pub const TCO_EXPR: usize = 20;
+pub const TCO_ENV: usize = 21;
+pub const SIGINT: usize = 22;
+pub const ERROR_HANDLER: usize = 23;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -192,6 +206,22 @@ pub fn catalog_of(o: &Objects, base: Obj) -> Obj {
     slot(o, base, PRIMS_SLOT)
 }
 
+/// Indices into `Objects::state_nodes`.
+pub const SN_SAVE: usize = 0;
+pub const SN_TCO_EXPR: usize = 1;
+pub const SN_TCO_ENV: usize = 2;
+pub const SN_HANDLER: usize = 3;
+
+/// Resolve the evaluator-state nodes for a base, for `Objects::state_nodes`.
+pub fn state_nodes(o: &Objects, base: Obj) -> [Obj; 4] {
+    [
+        cell(o, base, SAVE_STACK),
+        cell(o, base, TCO_EXPR),
+        cell(o, base, TCO_ENV),
+        cell(o, base, ERROR_HANDLER),
+    ]
+}
+
 /// Read one of the named slots.
 pub fn get(o: &Objects, base: Obj, n: usize) -> Obj {
     slot(o, base, n)
@@ -284,7 +314,7 @@ mod tests {
         // it walks INTO a value (env-alist goes through the env object) and
         // owns no spine cell, so it is judged by its own resolution test
         // rather than by this list.
-        let declared: Vec<String> = paths
+        let rows: Vec<(String, usize, bool)> = paths
             .lines()
             .filter_map(|l| {
                 let body = l.trim().strip_prefix('(')?;
@@ -292,14 +322,27 @@ mod tests {
                 let mut w = body.trim().trim_end_matches(')').split_whitespace();
                 let name = w.next()?;
                 let root = w.next()?;
-                (root == "base" && w.all(|s| s == "r")).then(|| name.to_string())
+                if root != "base" {
+                    return None;
+                }
+                let steps: Vec<&str> = w.collect();
+                let rs = steps.iter().take_while(|s| **s == "r").count();
+                let clean = steps[rs..].iter().all(|s| *s == "f");
+                Some((name.to_string(), rs, clean))
             })
             .collect();
-        let ours: Vec<String> = ROUTES.iter().map(|r| r.to_string()).collect();
-        assert_eq!(
-            ours, declared,
-            "ROUTES and base-paths.x disagree; they are one list in two files"
-        );
+        // Every spine slot's row leads with exactly its index in `r` steps; a
+        // trailing `f` run means the row lands on the value instead of the
+        // node, and rows through the env object (env-alist) are judged by
+        // their own resolution tests.
+        for (i, route) in ROUTES.iter().enumerate() {
+            let row = rows
+                .iter()
+                .find(|(n, _, _)| n == route)
+                .unwrap_or_else(|| panic!("no base-paths.x row for route {route}"));
+            assert!(row.2, "route {route}: steps are not r-run then f-run");
+            assert_eq!(row.1, i, "route {route}: r-count disagrees with its slot");
+        }
     }
 
     /// The derived env-alist route lands on the frame chain: seven rests to the

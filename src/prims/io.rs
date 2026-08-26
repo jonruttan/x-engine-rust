@@ -123,8 +123,12 @@ fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     // and vanish with it — and since x-lang's own loader wraps `include` in a
     // `fn`, that is every file the library loads.
     let outer = e.hide_pending();
+    // The hidden list is reachable from nothing while the load runs.
+    let mark = e.root_mark();
+    e.root_push(outer);
     let r = e.eval_source(&src, top);
     e.restore_pending(outer);
+    e.root_truncate(mark);
     r
 }
 

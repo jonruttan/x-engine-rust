@@ -59,14 +59,29 @@
   (files   base r r r r r r r r r r r r r r)
   (profile base r r r r r r r r r r r r r r r)
   ; The false SINGLETON, whose REST x-lang uses as scratch (module.x hangs the
-  ; include list there), so this answers the object itself rather than a cell.
-  (false   base r r r r r r r r r r r r r r r r)
+  ; include list there), so this answers the OBJECT ITSELF -- the final step
+  ; matters: without it the walk ends on the spine node, and module.x's
+  ; set-rest! CUTS THE SPINE, orphaning every row behind it.
+  (false   base r r r r r r r r r r r r r r r r f)
   ; The REPL's pair: the fd being read, and the buffer being read from.
   (filein  base r r r r r r r r r r r r r r r r r)
   (buffer  base r r r r r r r r r r r r r r r r r r)
 
+  ; --- the evaluator's own state ---
+  ; Value-kind rows: the steps land ON the value, as the reference's do for
+  ; these names.  save-stack is nil at the top level and non-nil over a closure
+  ; body's non-tail forms; the tco pair holds the deferred tail expression and
+  ; its environment; sigint is the CELL holding the object %sigint-flag names
+; (first reaches the flag, as on the reference); error-handler is
+  ; the active guard chain.
+  (save-stack    base r r r r r r r r r r r r r r r r r r r f)
+  (tco-expr      base r r r r r r r r r r r r r r r r r r r r f)
+  (tco-env       base r r r r r r r r r r r r r r r r r r r r r f)
+  (sigint        base r r r r r r r r r r r r r r r r r r r r r r)
+  (error-handler base r r r r r r r r r r r r r r r r r r r r r r r f)
+
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
-  ; A type is a TREE, and these steps are the REFERENCE ENGINE'S, chosen
+  ; These steps are the REFERENCE ENGINE'S, chosen
   ; deliberately rather than invented.  Decision L1 leaves the steps to the
   ; engine -- only the names are the contract -- so a flat spine would have been
   ; permitted.  It would also have been a fresh set of decisions about a

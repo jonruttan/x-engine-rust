@@ -172,6 +172,12 @@ pub const FALSE: &str = "#f";
 pub const ARGS: &str = "args";
 pub const TOKEN_EOF: &str = "%token-eof";
 pub const SIGINT_FLAG: &str = "%sigint-flag";
+/// The evaluator-state routes on the base spine.
+pub const ROUTE_SAVE_STACK: &str = "save-stack";
+pub const ROUTE_TCO_EXPR: &str = "tco-expr";
+pub const ROUTE_TCO_ENV: &str = "tco-env";
+pub const ROUTE_SIGINT: &str = "sigint";
+pub const ROUTE_ERROR_HANDLER: &str = "error-handler";
 pub const X_MACHINE: &str = "x-machine";
 pub const X_VERSION: &str = "x-version";
 pub const X_RELEASE: &str = "x-release";

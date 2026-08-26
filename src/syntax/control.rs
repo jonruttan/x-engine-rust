@@ -35,9 +35,9 @@ fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let body = e.objects.rest(args);
     // A handler is now active, which is what lets a pending interrupt become a
     // STOP rather than tearing the run down.
-    e.guard_depth += 1;
+    e.handler_push(env);
     let outcome = e.eval_body(body, env);
-    e.guard_depth -= 1;
+    e.handler_pop();
     match outcome {
         Ok(v) => Ok(v),
         // An ESCAPING continuation is not a condition and must pass straight

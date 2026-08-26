@@ -158,11 +158,16 @@ because the stale reference is in a map no mark walks. Grep `HashMap<Obj`.
 Invariant 4's tail: the remaining Rust dispatch special cases shrink to
 walkers as their structures move. (The token base open recorded here
 earlier closed with the tokenizer arc — it is a base with a type-alist
-now.) One known stands: the `Engine` struct itself — the eval state it still holds as Rust fields
-(the tail latch, the save counter, guard depth, the reader) belongs on
-the base spine, reached by route, like everything else that moved. The
-full-suite gap to the reference (95 of 2549, the failure set stable
-across runs) is tracked in x-lang's suite, not here.
+now.) EVAL STATE ON THE BASE, COMPLETE for the tail, the saves, and
+the guard: `save-stack`, `tco-expr`, `tco-env`, `sigint`, and
+`error-handler` are base rows the evaluator reads and writes — the
+save stack is the `def` question, the tco pair is the parked tail, the
+handler row is the active guard chain, and the current base's row
+nodes are cached across the `in_base` bracket. One known stands: the
+reader still lives on the `Engine` struct. The full-suite gap to the
+reference (98 of 2549 — three pin checks past that batch's 60-second
+timeout, which the previous score already flaked against) is tracked
+in x-lang's suite, not here.
 
 ## What is NOT ported
 
