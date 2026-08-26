@@ -550,6 +550,17 @@ impl Engine {
     /// caller, where rooting at each of them would have covered the ones I
     /// thought of.
     pub(crate) fn eval_args(&mut self, args: Obj, env: EnvId) -> Result<Vec<Obj>, Cond> {
+        // An APPLICATIVE's argument list must be proper (#69): the walk
+        // guards the spine and a dotted tail raises, catchably, naming the
+        // fault. Ops never come through here — they receive spines raw.
+        let mut at = args;
+        while self.objects.is_cell(at) {
+            at = self.objects.rest(at);
+        }
+        if !at.is_nil() {
+            let v = self.objects.str_new(crate::vocabulary::MSG_IMPROPER_ARGS);
+            return Err(Cond::Raised(v));
+        }
         // Collected first so the iterator's borrow of the objects ends before
         // `eval` needs it mutably.
         let forms: Vec<Obj> = self.objects.list(args).collect();
@@ -663,13 +674,31 @@ impl Engine {
         let body = self.objects.op_body(callee);
         let defenv = self.objects.op_env(callee);
 
-        // Arguments arrive AS WRITTEN, so the spine is bound to the names
-        // directly; a name with no argument is nil.
-        let given: Vec<Obj> = self.objects.list(args).collect();
+        // Arguments arrive AS WRITTEN and the spine binds STRUCTURALLY: a
+        // rest parameter takes the remaining spine as it stands, so a dotted
+        // param spec binds an atom tail legitimately (#69).
         let frame = self.envs.push(&mut self.objects, defenv);
         let env_mark = self.env_root_mark();
         self.env_root_push(frame);
-        self.bind_params(frame, params, &given);
+        let mut p = params;
+        let mut a = args;
+        while self.objects.is_cell(p) {
+            let name = self.objects.first(p);
+            let v = if self.objects.is_cell(a) {
+                let v = self.objects.first(a);
+                a = self.objects.rest(a);
+                v
+            } else {
+                let v = a;
+                a = NIL;
+                v
+            };
+            self.envs.bind(&mut self.objects, frame, name, v);
+            p = self.objects.rest(p);
+        }
+        if !p.is_nil() {
+            self.envs.bind(&mut self.objects, frame, p, a);
+        }
         if !envname.is_nil() {
             let e = self.objects.env_obj(env);
             self.envs.bind(&mut self.objects, frame, envname, e);

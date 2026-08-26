@@ -81,7 +81,78 @@ impl Engine {
             self.objects.buf_bump(b);
             return Ok(Some(self.read_list_form(b)?));
         }
-        Ok(self.objects.buf_read_one_builtin(b))
+        if let Some(v) = self.objects.buf_read_one_builtin_except_atom(b) {
+            return Ok(Some(v));
+        }
+        Ok(Some(self.read_atom_delimited(b)?))
+    }
+
+    /// An atom scan that honours registered DELIMIT handlers: after each
+    /// accepted byte the handlers are offered the position, and a claim ends
+    /// the token there — which is what makes `'a'b` two tokens. The handler
+    /// is given a bounded view whose last char is the candidate.
+    fn read_atom_delimited(&mut self, b: Obj) -> Result<Obj, Cond> {
+        let base = self.base;
+        let alist = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
+        let mut delims: Vec<Obj> = Vec::new();
+        let types: Vec<Obj> = self
+            .objects
+            .list(alist)
+            .map(|entry| self.objects.rest(entry))
+            .collect();
+        for t in types {
+            let slot = handler(self, t, Family::Delimit);
+            for h in handler_list(self, slot) {
+                if !h.is_nil() {
+                    delims.push(h);
+                }
+            }
+        }
+        if delims.is_empty() {
+            return Ok(self.objects.buf_read_atom(b));
+        }
+        let text = self.objects.buf_text(b);
+        let start = self.objects.buf_cursor(b);
+        let env = self.root_env();
+        let mark = self.root_mark();
+        for &h in &delims {
+            self.root_push(h);
+        }
+        while let Some(c) = self.objects.buf_peek(b) {
+            if c.is_ascii_whitespace() || c == b'(' || c == b')' || c == b';' {
+                break;
+            }
+            let at = self.objects.buf_cursor(b);
+            if at > start {
+                // Offer the position: a view with the candidate as last char.
+                let view = self.objects.buf(text, at + 1);
+                self.objects.set_buf_retain(view, at);
+                let vmark = self.root_mark();
+                self.root_push(view);
+                let mut claimed = false;
+                for &h in &delims {
+                    let got = match self.call_with_values(h, &[view], env) {
+                        Ok(v) => v,
+                        Err(c) => {
+                            self.root_truncate(mark);
+                            return Err(c);
+                        }
+                    };
+                    if !got.is_nil() {
+                        claimed = true;
+                        break;
+                    }
+                }
+                self.root_truncate(vmark);
+                if claimed {
+                    break;
+                }
+            }
+            self.objects.buf_bump(b);
+        }
+        self.root_truncate(mark);
+        let end = self.objects.buf_cursor(b);
+        Ok(self.objects.buf_atom_from(b, start, end))
     }
 
     /// A list, whose ELEMENTS are read as forms.
@@ -105,14 +176,23 @@ impl Engine {
         loop {
             self.objects.buf_skip_blanks(b);
             match self.objects.buf_peek(b) {
-                None => break,
+                // End of input INSIDE a list is truncation, and it raises —
+                // the reference's list reader errors on the EOF sentinel
+                // rather than answering a partial list.
+                None => {
+                    self.root_truncate(mark);
+                    let v = self.objects.str_new("Unterminated input");
+                    return Err(Cond::Raised(v));
+                }
                 Some(b')') => {
                     self.objects.buf_bump(b);
                     break;
                 }
                 // A lone `.` marks the tail. It is only special standing alone:
-                // `.5` and `foo.bar` are ordinary atoms.
-                Some(b'.') if self.objects.buf_at_dot_separator(b) && !items.is_empty() => {
+                // `.5` and `foo.bar` are ordinary atoms. With no elements
+                // before it, the list IS its tail: `( . x)` reads as the bare
+                // form x.
+                Some(b'.') if self.objects.buf_at_dot_separator(b) => {
                     self.objects.buf_bump(b);
                     if let Some(t) = self.read_form_in(b)? {
                         tail = t;

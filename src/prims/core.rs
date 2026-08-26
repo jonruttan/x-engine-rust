@@ -90,6 +90,69 @@ pub(crate) const CALL_ENTRIES: &[PrimDef] = &[
 pub(crate) const CALLABLE_CALL: PrimDef =
     PrimDef::row(Some("%callable-call"), None, 0, callable_call);
 
+/// The LIST type's call handler — the reference's `x_type_list_call`:
+/// `(lst i)` indexes, a negative index counting from the end; `(lst start
+/// len)` slices. Arguments evaluate; out of range answers nil.
+fn list_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    if args.is_nil() {
+        return Ok(crate::obj::NIL);
+    }
+    let two = !e.objects.rest(args).is_nil();
+    let vals = e.eargs(args, env, if two { 2 } else { 1 })?;
+    let mut at = callee;
+    if two {
+        let start = e.objects.as_int(vals[0]);
+        let len = e.objects.as_int(vals[1]);
+        for _ in 0..start.max(0) {
+            if at.is_nil() {
+                break;
+            }
+            at = e.objects.rest(at);
+        }
+        let mut items = Vec::new();
+        for _ in 0..len.max(0) {
+            if at.is_nil() {
+                break;
+            }
+            items.push(e.objects.first(at));
+            at = e.objects.rest(at);
+        }
+        let mut out = crate::obj::NIL;
+        for &o in items.iter().rev() {
+            out = e.objects.pair(o, out);
+        }
+        return Ok(out);
+    }
+    let mut n = e.objects.as_int(vals[0]);
+    if n < 0 {
+        let mut len = 0i64;
+        let mut w = callee;
+        while !w.is_nil() {
+            len += 1;
+            w = e.objects.rest(w);
+        }
+        n += len;
+    }
+    if n < 0 {
+        return Ok(crate::obj::NIL);
+    }
+    for _ in 0..n {
+        if at.is_nil() {
+            break;
+        }
+        at = e.objects.rest(at);
+    }
+    Ok(if at.is_nil() {
+        crate::obj::NIL
+    } else {
+        e.objects.first(at)
+    })
+}
+
+#[rustfmt::skip]
+pub(crate) const LIST_CALL: PrimDef =
+    PrimDef::row(Some("%list-call"), None, 0, list_call);
+
 /// The handler table, minted at registration: symbol, then list. Operative-shaped
 /// — a handler receives the FORM raw and the environment, which is the engine
 /// dispatch's own hand-off.
@@ -144,9 +207,16 @@ fn eval_here(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 fn apply(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let f_form = e.nth(args, 0);
     let f = e.eval(f_form, env)?;
-    let l_form = e.nth(args, 1);
-    let list = e.eval(l_form, env)?;
-    let vals: Vec<Obj> = e.objects.list(list).collect();
+    // Prefix arguments prepend to the LAST argument, the tail list:
+    // (apply f a b (list c d)) calls f with (a b c d), as the reference
+    // splices them.
+    let rest = e.objects.rest(args);
+    let evaled = e.eval_args(rest, env)?;
+    let mut vals: Vec<Obj> = Vec::new();
+    if let Some((last, prefix)) = evaled.split_last() {
+        vals.extend_from_slice(prefix);
+        vals.extend(e.objects.list(*last));
+    }
     // TAIL, not settled: `let` expands through here.
     e.call_with_values_tail(f, &vals, env)
 }

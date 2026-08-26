@@ -290,6 +290,7 @@ impl crate::engine::Engine {
         r.extend(self.objects.int_states.iter().copied());
         r.extend(self.objects.eval_handlers.iter().copied());
         r.push(self.objects.callable_call_handler);
+        r.push(self.objects.list_call_handler);
 
         r.extend(self.objects.interned());
         for (name, obj) in &self.prim_bindings {

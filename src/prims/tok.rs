@@ -404,9 +404,21 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
                 e.root_push(scratch);
                 let form = e.in_base(target, |e| e.read_form_in(scratch))?;
                 let Some(form) = form else { break };
+                let pos = e.objects.buf_cursor(scratch);
+                // An atom running to the very end of the input has no
+                // delimiter to finish it: it is TRUNCATED, and read-str's
+                // contract drops it silently, as the reference's analyse
+                // protocol does when end of input arrives mid-token.
+                if pos >= len {
+                    let last = e.objects.buf_text(scratch);
+                    let tail = e.objects.heap.byte(e.objects.str_bytes(last).plus(pos - 1));
+                    let delimited = tail.is_ascii_whitespace() || tail == b')' || tail == b';';
+                    if !delimited {
+                        break;
+                    }
+                }
                 e.root_push(form);
                 tokens.push(form);
-                let pos = e.objects.buf_cursor(scratch);
                 e.objects.set_buf_retain(buf, pos);
                 e.objects.set_buf_cursor(buf, pos);
                 continue;
