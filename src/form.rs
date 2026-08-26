@@ -65,6 +65,11 @@ impl Engine {
     }
 
     pub(crate) fn read_form_in(&mut self, b: Obj) -> Result<Option<Obj>, Cond> {
+        // An interactive source prefetches to a line boundary, so the
+        // analyser contest's bounded view holds every byte a token on this
+        // line can claim — a per-byte refill alone left a contest seeing
+        // one digit of an integer.
+        self.objects.buf_prefetch_line(b);
         self.objects.buf_skip_blanks(b);
         if self.objects.buf_peek(b).is_none() {
             return Ok(None);
@@ -167,6 +172,9 @@ impl Engine {
         let at = self.objects.buf_cursor(b);
 
         // ONE CONTEST, then read with the winner. See `prims::tok::analyse`.
+        // The contest runs on a BOUNDED view over the same text: the caller
+        // prefetched the source to a line boundary, so the view holds every
+        // byte a token on this line can claim.
         let env = self.root_env();
         let cbuf = self.objects.buf(text, at);
         self.root_push(cbuf);

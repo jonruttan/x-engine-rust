@@ -15,6 +15,52 @@ use crate::obj::{EnvId, Obj, NIL};
 impl Engine {
     /// Hand the engine the program text. It keeps the reader so that `io read`
     /// and `io read-char` consume from the same stream.
+    /// Read the program from the process's stdin, incrementally: a
+    /// fixed region refills one byte at a time through the buffer row, as
+    /// the reference's read-eval loop pulls through `x_type_buffer_read`.
+    pub fn set_input_stdin(&mut self) {
+        self.set_input_stream(Box::new(std::io::stdin()));
+    }
+
+    /// The same wiring over any byte stream — the test's injection door.
+    pub fn set_input_stream(&mut self, input: Box<dyn std::io::Read>) {
+        const CAP: usize = 1 << 18;
+        let region = self.objects.str_make(CAP);
+        let b = self.objects.buf_writable(region, 0, 0);
+        let base = self.base;
+        let bcell = self.objects.spair(b, NIL);
+        crate::base::set(&mut self.objects, base, crate::base::BUFFER, bcell);
+        let fd = self.objects.int(0);
+        let fcell = self.objects.spair(fd, NIL);
+        crate::base::set(&mut self.objects, base, crate::base::FILEIN, fcell);
+        self.objects.input = Some(input);
+        self.objects.input_cap = CAP as u64;
+    }
+
+    /// Compact the interactive source between top-level forms: the unread
+    /// remainder moves to the region's front, which is what bounds a
+    /// long-running session to the region's size.
+    pub fn compact_input(&mut self) {
+        let b = self.current_buffer();
+        if b.is_nil() || self.objects.buf_ro(b) {
+            return;
+        }
+        let c = self.objects.buf_cursor(b);
+        if c == 0 {
+            return;
+        }
+        let w = self.objects.buf_write(b);
+        let text = self.objects.buf_text(b);
+        let at = self.objects.str_bytes(text);
+        for i in c..w {
+            let v = self.objects.heap.byte(at.plus(i));
+            self.objects.heap.set_byte(at.plus(i - c), v);
+        }
+        self.objects.set_buf_retain(b, 0);
+        self.objects.set_buf_cursor(b, 0);
+        self.objects.set_buf_write(b, w - c);
+    }
+
     pub fn set_input(&mut self, src: &str) {
         let text = self.objects.str_new(src);
         let b = self.objects.buf(text, 0);
@@ -231,6 +277,27 @@ mod tests {
         e.set_input("1 xyz");
         let _ = e.next_form().expect("the first form");
         assert_eq!(e.read_byte(), Some(b' '), "the rest is still there");
+    }
+
+    /// The interactive path: bytes arrive through the input stream one at a
+    /// time, forms read as they complete, and end of input LATCHES — the
+    /// filein head flips to the fd's bitwise complement, so later reads
+    /// fail without another pull.
+    #[test]
+    fn a_streamed_input_refills_per_byte_and_latches_eof() {
+        let mut e = Engine::new();
+        e.set_input_stream(Box::new(std::io::Cursor::new(b"(+ 1 2) 7".to_vec())));
+        let a = e.next_form().expect("first form");
+        let v = e.eval_top(a).expect("evaluates");
+        assert_eq!(e.objects.as_int(v), 3);
+        e.compact_input();
+        let b = e.next_form().expect("second form");
+        assert_eq!(e.objects.as_int(b), 7);
+        assert!(e.next_form().is_none(), "the stream ends");
+        let row = crate::base::get(&e.objects, e.base, crate::base::FILEIN);
+        let fd = e.objects.first(row);
+        assert!(e.objects.as_int(fd) < 0, "EOF latched the filein head");
+        assert_eq!(e.objects.as_int(fd), !0i64, "as the fd's complement");
     }
 
     #[test]
