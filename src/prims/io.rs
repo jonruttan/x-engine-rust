@@ -108,10 +108,27 @@ fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     // and a caller computing one from a local is entitled to.
     let p = e.eval(form, env)?;
     let path = e.objects.str_val(p);
-    let src = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
+    // The file stays OPEN while its fd rides the filein row, as the
+    // reference's include keeps its fd until the pop.
+    let mut file = match std::fs::File::open(&path) {
+        Ok(f) => f,
         Err(_) => return Err(Cond::CannotInclude(path)),
     };
+    let mut src = String::new();
+    {
+        use std::io::Read;
+        if file.read_to_string(&mut src).is_err() {
+            return Err(Cond::CannotInclude(path));
+        }
+    }
+    #[cfg(unix)]
+    let fd = {
+        use std::os::unix::io::AsRawFd;
+        file.as_raw_fd() as i64
+    };
+    #[cfg(not(unix))]
+    let fd = -1;
+    e.files.push(file);
     let top = e.root_env();
     // HIDE what is pending, so every form in the file sees tail position exactly
     // as it would at the true top level. The reference does the same thing to
@@ -126,9 +143,10 @@ fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     // The hidden list is reachable from nothing while the load runs.
     let mark = e.root_mark();
     e.root_push(outer);
-    let r = e.eval_source(&src, top);
+    let r = e.eval_source_fd(&src, top, fd);
     e.restore_pending(outer);
     e.root_truncate(mark);
+    e.files.pop();
     r
 }
 

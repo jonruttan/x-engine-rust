@@ -11,13 +11,51 @@
 use crate::engine::Engine;
 use crate::eval::EvalResult;
 use crate::obj::{EnvId, Obj, NIL};
-use crate::read::Reader;
 
 impl Engine {
     /// Hand the engine the program text. It keeps the reader so that `io read`
     /// and `io read-char` consume from the same stream.
     pub fn set_input(&mut self, src: &str) {
-        self.reader = Reader::new(src);
+        let text = self.objects.str_new(src);
+        let b = self.objects.buf(text, 0);
+        let base = self.base;
+        let bcell = self.objects.spair(b, NIL);
+        crate::base::set(&mut self.objects, base, crate::base::BUFFER, bcell);
+        let fd = self.objects.int(0);
+        let fcell = self.objects.spair(fd, NIL);
+        crate::base::set(&mut self.objects, base, crate::base::FILEIN, fcell);
+    }
+
+    /// Push a source onto the base's input rows — the reference's include
+    /// pushing (fd, line counter, read buffer) onto the base stacks.
+    pub(crate) fn input_push(&mut self, src: &str, fd: i64) {
+        let text = self.objects.str_new(src);
+        let b = self.objects.buf(text, 0);
+        let base = self.base;
+        let bhead = crate::base::get(&self.objects, base, crate::base::BUFFER);
+        let bcell = self.objects.spair(b, bhead);
+        crate::base::set(&mut self.objects, base, crate::base::BUFFER, bcell);
+        let fdo = self.objects.int(fd);
+        let fhead = crate::base::get(&self.objects, base, crate::base::FILEIN);
+        let fcell = self.objects.spair(fdo, fhead);
+        crate::base::set(&mut self.objects, base, crate::base::FILEIN, fcell);
+        let line = crate::base::fresh_line_cell(&mut self.objects, 1);
+        let lhead = crate::base::get(&self.objects, base, crate::base::LINE);
+        crate::base::set(&mut self.objects, base, crate::base::LINE, line);
+        self.line_stack.push(lhead);
+    }
+
+    pub(crate) fn input_pop(&mut self) {
+        let base = self.base;
+        let bhead = crate::base::get(&self.objects, base, crate::base::BUFFER);
+        let brest = self.objects.rest(bhead);
+        crate::base::set(&mut self.objects, base, crate::base::BUFFER, brest);
+        let fhead = crate::base::get(&self.objects, base, crate::base::FILEIN);
+        let frest = self.objects.rest(fhead);
+        crate::base::set(&mut self.objects, base, crate::base::FILEIN, frest);
+        if let Some(line) = self.line_stack.pop() {
+            crate::base::set(&mut self.objects, base, crate::base::LINE, line);
+        }
     }
 
     /// Read the next top-level form, or `None` at end of input.
@@ -89,11 +127,17 @@ impl Engine {
     /// through x-core.x, and everything after it — in the same file — is written
     /// expecting `'x` to work.
     pub fn eval_source(&mut self, src: &str, env: EnvId) -> EvalResult {
+        self.eval_source_fd(src, env, 0)
+    }
+
+    /// As `eval_source`, recording `fd` on the filein row for the duration —
+    /// what `include` pushes for the file it opened.
+    pub fn eval_source_fd(&mut self, src: &str, env: EnvId, fd: i64) -> EvalResult {
         // PUSHED as the current source, so `io read` inside a reader handler
         // reads from THIS text rather than from the process's input. The vector
         // reader in lib/x/type/vector.x does exactly that, and reaching past the
         // file ate a form off stdin — which is how the REPL launcher disappeared.
-        self.loading.push(Reader::new(src));
+        self.input_push(src, fd);
         // Top level owns the root stack; the previous source's rooted result
         // is done with when another source arrives. Nested entry — include
         // evaluates a file mid-eval — must not touch it: the outer
@@ -127,7 +171,7 @@ impl Engine {
                 Err(c) => break Err(c),
             }
         };
-        self.loading.pop();
+        self.input_pop();
         out
     }
 }
@@ -186,7 +230,7 @@ mod tests {
         let mut e = Engine::new();
         e.set_input("1 xyz");
         let _ = e.next_form().expect("the first form");
-        assert_eq!(e.reader.next_byte(), Some(b' '), "the rest is still there");
+        assert_eq!(e.read_byte(), Some(b' '), "the rest is still there");
     }
 
     #[test]

@@ -400,13 +400,13 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
             if falls_back {
                 // No registered type claims here: the engine's own reader takes
                 // one form, or the input is done.
-                let src = e.objects.bytes_of(text);
-                let mut r = crate::read::Reader::from_bytes(src, at as usize, text);
-                let form = e.in_base(target, |e| e.read_form_from(&mut r))?;
+                let scratch = e.objects.buf(text, at);
+                e.root_push(scratch);
+                let form = e.in_base(target, |e| e.read_form_in(scratch))?;
                 let Some(form) = form else { break };
                 e.root_push(form);
                 tokens.push(form);
-                let pos = r.pos() as u64;
+                let pos = e.objects.buf_cursor(scratch);
                 e.objects.set_buf_retain(buf, pos);
                 e.objects.set_buf_cursor(buf, pos);
                 continue;

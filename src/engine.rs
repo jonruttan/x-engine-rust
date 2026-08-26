@@ -12,7 +12,6 @@ use crate::env::Envs;
 use crate::obj::{EnvId, Obj, NIL};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
-use crate::read::Reader;
 use crate::symbols::Symbols;
 use std::collections::HashMap;
 
@@ -39,7 +38,7 @@ pub struct Engine {
     /// The input stream. The engine owns it because the PROGRAM arrives on it:
     /// what `io read-char` should answer is whatever is left after the form being
     /// evaluated, which a reader living in main could not be asked.
-    pub reader: Reader,
+
     /// Sources being LOADED, innermost last.
     ///
     /// `io read` and `io read-char` must answer from the source currently being
@@ -51,7 +50,11 @@ pub struct Engine {
     /// Without this the vector handler reached past the file and ate a form off
     /// stdin — so the first form after `(include "lib/x-core.x")` silently
     /// vanished, and the REPL launcher was the form that vanished.
-    pub(crate) loading: Vec<Reader>,
+    /// Files `include` holds open while their fd rides the filein row, as
+    /// the reference keeps its fd until the pop.
+    pub(crate) files: Vec<std::fs::File>,
+    /// Displaced line cells, one per pushed input source.
+    pub(crate) line_stack: Vec<Obj>,
     /// Values the EVALUATOR is holding that nothing else points at.
     ///
     /// A form being evaluated came from the reader and lives in a Rust local; a
@@ -139,8 +142,9 @@ impl Engine {
             base: NIL,
             catalog: NIL,
             prim_bindings: Vec::new(),
-            reader: Reader::new(""),
-            loading: Vec::new(),
+
+            files: Vec::new(),
+            line_stack: Vec::new(),
             roots: Vec::new(),
             env_roots: Vec::new(),
             in_gc: false,

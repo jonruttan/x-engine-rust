@@ -163,8 +163,13 @@ the guard: `save-stack`, `tco-expr`, `tco-env`, `sigint`, and
 `error-handler` are base rows the evaluator reads and writes — the
 save stack is the `def` question, the tco pair is the parked tail, the
 handler row is the active guard chain, and the current base's row
-nodes are cached across the `in_base` bracket. One known stands: the
-reader still lives on the `Engine` struct. The full-suite gap to the
+nodes are cached across the `in_base` bracket. THE READER TOO: it has
+no state of its own — reading walks the buffer at the head of the
+base's `buffer` row, `include` pushes and pops the `filein`, `buffer`,
+and `line` rows as the reference's include does, and a reader macro's
+nested read continues on the same stream because there is only one.
+The Engine struct now holds Rust-side resources (open files, roots,
+the instruction table), not evaluator state. The full-suite gap to the
 reference (98 of 2549 — three pin checks past that batch's 60-second
 timeout, which the previous score already flaked against) is tracked
 in x-lang's suite, not here.

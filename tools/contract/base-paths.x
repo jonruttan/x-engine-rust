@@ -55,7 +55,7 @@
   ; Not engine state: cells x-lang reads and writes. They used to be reached by
   ; literal first/rest chains in lib/, which assumed x-engine-c's layout; the
   ; library now resolves them by name, which is what decision L1 requires.
-  (line    base r r r r r r r r r r r r r)
+  (line    base r r r r r r r r r r r r r f)
   (files   base r r r r r r r r r r r r r r)
   (profile base r r r r r r r r r r r r r r r)
   ; The false SINGLETON, whose REST x-lang uses as scratch (module.x hangs the
@@ -64,8 +64,10 @@
   ; set-rest! CUTS THE SPINE, orphaning every row behind it.
   (false   base r r r r r r r r r r r r r r r r f)
   ; The REPL's pair: the fd being read, and the buffer being read from.
-  (filein  base r r r r r r r r r r r r r r r r r)
-  (buffer  base r r r r r r r r r r r r r r r r r r)
+  ; Value-kind, as the reference's are: the walk lands ON the input stack,
+  ; whose first is the current fd / read buffer.
+  (filein  base r r r r r r r r r r r r r r r r r f)
+  (buffer  base r r r r r r r r r r r r r r r r r r f)
 
   ; --- the evaluator's own state ---
   ; Value-kind rows: the steps land ON the value, as the reference's do for

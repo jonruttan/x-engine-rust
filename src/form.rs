@@ -38,51 +38,45 @@ impl Engine {
     /// handlers call `(io read)` to read the rest of a literal they have begun,
     /// and while an `include` is running the thing being read is the FILE.
     pub fn read_form(&mut self) -> Result<Option<Obj>, Cond> {
-        self.with_source(|e, r| e.read_form_from(r))
+        let b = self.current_buffer();
+        if b.is_nil() {
+            return Ok(None);
+        }
+        self.read_form_in(b)
     }
 
     /// One byte from the current source.
     pub fn read_byte(&mut self) -> Option<u8> {
-        self.with_source(|_, r| r.next_byte())
-    }
-
-    /// Run `f` against the source currently being read, and put it back.
-    ///
-    /// Taken out and returned rather than borrowed, because reading may EVALUATE
-    /// — a reader macro runs x-lang code, which can read further — and the
-    /// engine cannot be borrowed twice.
-    fn with_source<T>(&mut self, f: impl FnOnce(&mut Self, &mut crate::read::Reader) -> T) -> T {
-        match self.loading.pop() {
-            Some(mut r) => {
-                let out = f(self, &mut r);
-                self.loading.push(r);
-                out
-            }
-            None => {
-                let mut r = std::mem::replace(&mut self.reader, crate::read::Reader::new(""));
-                let out = f(self, &mut r);
-                self.reader = r;
-                out
-            }
+        let b = self.current_buffer();
+        if b.is_nil() {
+            return None;
         }
+        self.objects.buf_next_byte(b)
     }
 
-    pub(crate) fn read_form_from(
-        &mut self,
-        r: &mut crate::read::Reader,
-    ) -> Result<Option<Obj>, Cond> {
-        r.skip_blanks();
-        if r.peek().is_none() {
+    /// The buffer being read: the head of the base's buffer row — the
+    /// reference's `x_base_field_buffer(p_base)`.
+    pub(crate) fn current_buffer(&self) -> Obj {
+        let row = crate::base::get(&self.objects, self.base, crate::base::BUFFER);
+        if row.is_nil() {
+            return crate::obj::NIL;
+        }
+        self.objects.first(row)
+    }
+
+    pub(crate) fn read_form_in(&mut self, b: Obj) -> Result<Option<Obj>, Cond> {
+        self.objects.buf_skip_blanks(b);
+        if self.objects.buf_peek(b).is_none() {
             return Ok(None);
         }
-        if let Some(v) = self.try_macro(r)? {
+        if let Some(v) = self.try_macro(b)? {
             return Ok(Some(v));
         }
-        if r.peek() == Some(b'(') {
-            r.bump();
-            return Ok(Some(self.read_list_form(r)?));
+        if self.objects.buf_peek(b) == Some(b'(') {
+            self.objects.buf_bump(b);
+            return Ok(Some(self.read_list_form(b)?));
         }
-        Ok(r.read_one_builtin(&mut self.objects))
+        Ok(self.objects.buf_read_one_builtin(b))
     }
 
     /// A list, whose ELEMENTS are read as forms.
@@ -92,7 +86,7 @@ impl Engine {
     /// ordinary case. Reading elements with the bare lexer left macros working
     /// only at top level, which looks like working until the first quoted symbol
     /// inside a form.
-    fn read_list_form(&mut self, r: &mut crate::read::Reader) -> Result<Obj, Cond> {
+    fn read_list_form(&mut self, b: Obj) -> Result<Obj, Cond> {
         // ROOTED AS THEY ARE READ. Elements accumulate in a Rust vector, and
         // reading a later one can run a READER MACRO — which is x-lang code,
         // which evaluates, which can collect. Everything read so far is then
@@ -104,28 +98,28 @@ impl Engine {
         let mut items: Vec<Obj> = Vec::new();
         let mut tail = NIL;
         loop {
-            r.skip_blanks();
-            match r.peek() {
+            self.objects.buf_skip_blanks(b);
+            match self.objects.buf_peek(b) {
                 None => break,
                 Some(b')') => {
-                    r.bump();
+                    self.objects.buf_bump(b);
                     break;
                 }
                 // A lone `.` marks the tail. It is only special standing alone:
                 // `.5` and `foo.bar` are ordinary atoms.
-                Some(b'.') if r.at_dot_separator() && !items.is_empty() => {
-                    r.bump();
-                    if let Some(t) = self.read_form_from(r)? {
+                Some(b'.') if self.objects.buf_at_dot_separator(b) && !items.is_empty() => {
+                    self.objects.buf_bump(b);
+                    if let Some(t) = self.read_form_in(b)? {
                         tail = t;
                         self.root_push(tail);
                     }
-                    r.skip_blanks();
-                    if r.peek() == Some(b')') {
-                        r.bump();
+                    self.objects.buf_skip_blanks(b);
+                    if self.objects.buf_peek(b) == Some(b')') {
+                        self.objects.buf_bump(b);
                     }
                     break;
                 }
-                _ => match self.read_form_from(r)? {
+                _ => match self.read_form_in(b)? {
                     Some(o) => {
                         self.root_push(o);
                         items.push(o);
@@ -149,7 +143,7 @@ impl Engine {
     /// score wins, and its readers run against a buffer covering exactly the
     /// span it claimed. A type with no analyse handler — which is most of them —
     /// costs one nil check.
-    fn try_macro(&mut self, r: &mut crate::read::Reader) -> Result<Option<Obj>, Cond> {
+    fn try_macro(&mut self, b: Obj) -> Result<Option<Obj>, Cond> {
         let base = self.base;
         let alist = crate::base::get(&self.objects, base, crate::base::TYPE_ALIST);
         if alist.is_nil() {
@@ -164,13 +158,13 @@ impl Engine {
         // ROOTED for the same reason the scorer's locals are: the analysers and
         // readers below are x-lang code and may collect, and the source object
         // and the buffers handed to them live only in Rust locals.
-        let text = r.text_obj(&mut self.objects);
+        let text = self.objects.buf_text(b);
         let mark = self.root_mark();
         self.root_push(text);
         for t in &types {
             self.root_push(*t);
         }
-        let at = r.pos() as u64;
+        let at = self.objects.buf_cursor(b);
 
         // ONE CONTEST, then read with the winner. See `prims::tok::analyse`.
         let env = self.root_env();
@@ -194,24 +188,26 @@ impl Engine {
                 self.root_truncate(mark);
                 return Ok(None);
             }
-            // The reader runs with the buffer positioned on the claimed span:
-            // retain at the start, cursor at the end, so `buf last-char` is the
-            // final character the analyser accepted.
+            // The reader runs on the CURRENT buffer, positioned on the
+            // claimed span: retain at the start, cursor at the end, so
+            // `buf last-char` is the final character the analyser accepted —
+            // and a handler that reads FURTHER (`io read`, `tok read`)
+            // continues from the claim's end on the same stream, as the
+            // reference's shared base buffer does. A fresh buffer here left
+            // the current one sitting on the claim, and a handler's nested
+            // read met the same span again, claimed it again, and never
+            // returned.
             let reader = handler(self, ty, Family::Read);
             let env = self.root_env();
             for rd in handler_list(self, reader) {
                 if rd.is_nil() {
                     continue;
                 }
-                let buf = self.objects.buf(text, at);
-                self.objects.set_buf_cursor(buf, at + n);
+                self.objects.set_buf_retain(b, at);
+                self.objects.set_buf_cursor(b, at + n);
                 let bmark = self.root_mark();
-                self.root_push(buf);
                 self.root_push(rd);
-                // The handler may read FURTHER through `tok read` — `'x` reads
-                // the quote then the form after it — so the reader's position
-                // comes from the buffer afterwards, not from the claim.
-                let got = match self.call_with_values(rd, &[buf], env) {
+                let got = match self.call_with_values(rd, &[b], env) {
                     Ok(v) => v,
                     Err(c) => {
                         self.root_truncate(mark);
@@ -220,12 +216,14 @@ impl Engine {
                 };
                 self.root_truncate(bmark);
                 if !got.is_nil() {
-                    r.set_pos(self.objects.buf_cursor(buf) as usize);
                     self.root_truncate(mark);
                     return Ok(Some(got));
                 }
+                // A declining handler backs off the claim for the next one.
+                self.objects.set_buf_cursor(b, at);
             }
         }
+        self.objects.set_buf_cursor(b, at);
         self.root_truncate(mark);
         Ok(None)
     }
@@ -235,12 +233,7 @@ impl Engine {
     /// This is `tok read`, and it is what a reader macro calls to read the form
     /// it prefixes: `%lit-read` answers `(lit X)` by reading X through here.
     pub fn read_form_at(&mut self, buf: Obj) -> Result<Obj, Cond> {
-        let text = self.objects.buf_text(buf);
-        let at = self.objects.buf_cursor(buf) as usize;
-        let bytes = self.objects.bytes_of(text);
-        let mut r = crate::read::Reader::from_bytes(bytes, at, text);
-        let form = self.read_form_from(&mut r)?;
-        self.objects.set_buf_cursor(buf, r.pos() as u64);
+        let form = self.read_form_in(buf)?;
         Ok(form.unwrap_or(NIL))
     }
 }
