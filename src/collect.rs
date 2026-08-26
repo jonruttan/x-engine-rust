@@ -300,11 +300,8 @@ impl crate::engine::Engine {
             r.extend(syms.all());
         }
 
-        // The reader's text objects — a buffer views their bytes.
-        r.push(self.reader.text_obj_if_made());
-        for rd in &self.loading {
-            r.push(rd.text_obj_if_made());
-        }
+        // Displaced line cells wait off-spine while a pushed source runs.
+        r.extend(self.line_stack.iter().copied());
 
         // The evaluator's live values.
         r.extend(self.base_stack.iter().copied());

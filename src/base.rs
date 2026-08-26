@@ -206,6 +206,12 @@ pub fn catalog_of(o: &Objects, base: Obj) -> Obj {
     slot(o, base, PRIMS_SLOT)
 }
 
+/// A fresh line counter for a pushed input source, shaped as the library
+/// reads it (`%cell-int` on the row's value).
+pub fn fresh_line_cell(o: &mut Objects, n: i64) -> Obj {
+    raw_cell(o, n)
+}
+
 /// Indices into `Objects::state_nodes`.
 pub const SN_SAVE: usize = 0;
 pub const SN_TCO_EXPR: usize = 1;

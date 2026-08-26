@@ -9,128 +9,60 @@
 //! What this gives is the observation channel: enough to read `(error "ok")` so
 //! the engine can be watched at all. Every conformance case depends on that and
 //! nothing else can be checked until it works.
+//!
+//! The reader has NO state of its own: it walks a BUFFER — `(val . (read .
+//! write))` over a text string — and the buffer it walks is the head of the
+//! base's `buffer` row, as the reference reads through
+//! `x_base_field_buffer(p_base)`. Reading advances the buffer's read mark, so
+//! `io read-char` and a reader macro see exactly what is left after the current
+//! form.
 
 use crate::obj::{Obj, NIL};
 use crate::objects::Objects;
 
-/// The reader OWNS its bytes rather than borrowing them, so that the engine can
-/// hold one and the `io` instructions can read from the same stream the program
-/// arrived on. That is not a convenience: the program comes in on stdin, so
-/// whatever `io read-char` should return is by definition what is left in this
-/// buffer after the current form. A reader borrowing a slice main had slurped
-/// could not be reached from inside a primitive.
-pub struct Reader {
-    src: Vec<u8>,
-    pos: usize,
-    /// The source as a string OBJECT, made once and kept.
-    ///
-    /// Reader macros run against a BUFFER, and a buffer views a string object's
-    /// bytes — so driving x-lang's registered analysers needs the source to
-    /// exist as a value, not just as a Vec. Made lazily because a reader that
-    /// never meets a macro never needs one.
-    text: Obj,
-}
+impl Objects {
+    /// The byte at the buffer's read mark, unconsumed.
+    pub(crate) fn buf_peek(&self, b: Obj) -> Option<u8> {
+        self.buf_byte_ahead(b, 0)
+    }
 
-impl Reader {
-    pub fn new(src: &str) -> Self {
-        Reader {
-            src: src.as_bytes().to_vec(),
-            pos: 0,
-            text: NIL,
+    /// The byte `n` ahead of the read mark, for the one-byte lookahead `#\`
+    /// needs.
+    pub(crate) fn buf_byte_ahead(&self, b: Obj, n: u64) -> Option<u8> {
+        let i = self.buf_cursor(b) + n;
+        if i >= self.buf_write(b) {
+            return None;
         }
-    }
-
-    /// A reader over bytes already held, starting at `at`.
-    ///
-    /// Used when a reader macro reads FURTHER from a buffer: the text object
-    /// already exists, so it is handed over rather than remade.
-    pub(crate) fn from_bytes(src: Vec<u8>, at: usize, text: Obj) -> Self {
-        Reader { src, pos: at, text }
-    }
-
-    /// One form of BUILT-IN syntax, EXCEPT a list.
-    ///
-    /// Lists are the form reader's, not this one's, because every element is a
-    /// position where a macro may begin — `(def q 'str)` is the ordinary case —
-    /// and a list read here would read its elements with no macro in the loop.
-    ///
-    /// It does NOT skip blanks: the caller has already done that, and may have
-    /// offered the position to a macro first.
-    pub(crate) fn read_one_builtin(&mut self, a: &mut Objects) -> Option<Obj> {
-        let c = self.peek()?;
-        match c {
-            b'(' => None,
-            b')' => {
-                self.pos += 1;
-                Some(NIL)
-            }
-            b'"' => {
-                self.pos += 1;
-                Some(self.read_string(a))
-            }
-            b'#' if self.at(1) == Some(b'\\') => {
-                self.pos += 2;
-                Some(self.read_char(a))
-            }
-            _ => Some(self.read_atom(a)),
-        }
-    }
-
-    /// Is the byte at the cursor a lone `.` acting as a tail separator?
-    pub(crate) fn at_dot_separator(&self) -> bool {
-        self.peek() == Some(b'.') && self.dot_is_a_separator()
-    }
-
-    pub(crate) fn bump(&mut self) {
-        self.pos += 1;
-    }
-
-    /// The source as a string object, for a buffer to view.
-    pub(crate) fn text_obj(&mut self, a: &mut Objects) -> Obj {
-        if self.text.is_nil() {
-            let s = String::from_utf8_lossy(&self.src).into_owned();
-            self.text = a.str_new(&s);
-        }
-        self.text
-    }
-
-    /// The source object if one was ever made, else nil. For rooting.
-    pub(crate) fn text_obj_if_made(&self) -> Obj {
-        self.text
-    }
-
-    pub fn pos(&self) -> usize {
-        self.pos
-    }
-
-    pub(crate) fn set_pos(&mut self, at: usize) {
-        self.pos = at;
+        let text = self.buf_text(b);
+        Some(self.heap.byte(self.str_bytes(text).plus(i)))
     }
 
     /// One byte, consumed. `None` at end of input — which is how `io read-char`
     /// tells exhaustion from a NUL byte it legitimately read.
-    pub fn next_byte(&mut self) -> Option<u8> {
-        let c = self.src.get(self.pos).copied()?;
-        self.pos += 1;
+    pub fn buf_next_byte(&mut self, b: Obj) -> Option<u8> {
+        let c = self.buf_peek(b)?;
+        self.buf_bump(b);
         Some(c)
     }
 
-    pub(crate) fn peek(&self) -> Option<u8> {
-        self.src.get(self.pos).copied()
+    pub(crate) fn buf_bump(&mut self, b: Obj) {
+        let i = self.buf_cursor(b);
+        self.set_buf_cursor(b, i + 1);
     }
 
-    /// The byte `n` ahead, for the one-byte lookahead `#\` needs.
-    pub(crate) fn at(&self, n: usize) -> Option<u8> {
-        self.src.get(self.pos + n).copied()
+    /// The bytes between two marks, copied out for a name or literal.
+    fn buf_slice(&self, b: Obj, start: u64, end: u64) -> Vec<u8> {
+        let text = self.buf_text(b);
+        let at = self.str_bytes(text);
+        (start..end).map(|i| self.heap.byte(at.plus(i))).collect()
     }
 
-    pub(crate) fn skip_blanks(&mut self) {
+    pub(crate) fn buf_skip_blanks(&mut self, b: Obj) {
         loop {
-            match self.peek() {
-                Some(c) if c.is_ascii_whitespace() => self.pos += 1,
+            match self.buf_peek(b) {
+                Some(c) if c.is_ascii_whitespace() => self.buf_bump(b),
                 Some(b';') => {
-                    while let Some(c) = self.peek() {
-                        self.pos += 1;
+                    while let Some(c) = self.buf_next_byte(b) {
                         if c == b'\n' {
                             break;
                         }
@@ -141,30 +73,65 @@ impl Reader {
         }
     }
 
+    /// One form of BUILT-IN syntax, EXCEPT a list.
+    ///
+    /// Lists are the form reader's, not this one's, because every element is a
+    /// position where a macro may begin — `(def q 'str)` is the ordinary case —
+    /// and a list read here would read its elements with no macro in the loop.
+    ///
+    /// It does NOT skip blanks: the caller has already done that, and may have
+    /// offered the position to a macro first.
+    pub(crate) fn buf_read_one_builtin(&mut self, b: Obj) -> Option<Obj> {
+        let c = self.buf_peek(b)?;
+        match c {
+            b'(' => None,
+            b')' => {
+                self.buf_bump(b);
+                Some(NIL)
+            }
+            b'"' => {
+                self.buf_bump(b);
+                Some(self.buf_read_string(b))
+            }
+            b'#' if self.buf_byte_ahead(b, 1) == Some(b'\\') => {
+                self.buf_bump(b);
+                self.buf_bump(b);
+                Some(self.buf_read_char(b))
+            }
+            _ => Some(self.buf_read_atom(b)),
+        }
+    }
+
+    /// Is the byte at the read mark a lone `.` acting as a tail separator?
+    pub(crate) fn buf_at_dot_separator(&self, b: Obj) -> bool {
+        self.buf_peek(b) == Some(b'.') && self.buf_dot_is_a_separator(b)
+    }
+
     /// Read one form. `None` at end of input.
-    pub fn read(&mut self, a: &mut Objects) -> Option<Obj> {
-        self.skip_blanks();
-        let c = self.peek()?;
+    pub fn buf_read_form(&mut self, b: Obj) -> Option<Obj> {
+        self.buf_skip_blanks(b);
+        let c = self.buf_peek(b)?;
         match c {
             b'(' => {
-                self.pos += 1;
-                Some(self.read_list(a))
+                self.buf_bump(b);
+                Some(self.buf_read_list(b))
             }
             b')' => {
                 // A stray close paren: consume it so the loop makes progress
                 // rather than spinning, and answer nil.
-                self.pos += 1;
+                self.buf_bump(b);
                 Some(NIL)
             }
             b'"' => {
-                self.pos += 1;
-                Some(self.read_string(a))
+                self.buf_bump(b);
+                Some(self.buf_read_string(b))
             }
-            b'#' if self.at(1) == Some(b'\\') => {
-                self.pos += 2;
-                Some(self.read_char(a))
+            b'#' if self.buf_byte_ahead(b, 1) == Some(b'\\') => {
+                self.buf_bump(b);
+                self.buf_bump(b);
+                Some(self.buf_read_char(b))
             }
-            _ => Some(self.read_atom(a)),
+            _ => Some(self.buf_read_atom(b)),
         }
     }
 
@@ -177,35 +144,35 @@ impl Reader {
     /// `(fn (_ . args) ...)`, so the whole protocol fails on a reader that
     /// treats the dot as an atom, and it fails by producing nil rather than by
     /// complaining.
-    pub(crate) fn read_list(&mut self, a: &mut Objects) -> Obj {
+    pub(crate) fn buf_read_list(&mut self, b: Obj) -> Obj {
         // Collect then build right-to-left: a list is a spine of pairs ending in
         // its tail, and building it backwards avoids walking to the end per
         // element.
         let mut items: Vec<Obj> = Vec::new();
         let mut tail = NIL;
         loop {
-            self.skip_blanks();
-            match self.peek() {
+            self.buf_skip_blanks(b);
+            match self.buf_peek(b) {
                 None => break,
                 Some(b')') => {
-                    self.pos += 1;
+                    self.buf_bump(b);
                     break;
                 }
                 // A lone `.` between forms marks the tail. `.` is only special
                 // when it stands alone: `.5` and `foo.bar` are ordinary atoms.
-                Some(b'.') if self.dot_is_a_separator() && !items.is_empty() => {
-                    self.pos += 1;
-                    self.skip_blanks();
-                    if let Some(t) = self.read(a) {
+                Some(b'.') if self.buf_dot_is_a_separator(b) && !items.is_empty() => {
+                    self.buf_bump(b);
+                    self.buf_skip_blanks(b);
+                    if let Some(t) = self.buf_read_form(b) {
                         tail = t;
                     }
-                    self.skip_blanks();
-                    if self.peek() == Some(b')') {
-                        self.pos += 1;
+                    self.buf_skip_blanks(b);
+                    if self.buf_peek(b) == Some(b')') {
+                        self.buf_bump(b);
                     }
                     break;
                 }
-                _ => match self.read(a) {
+                _ => match self.buf_read_form(b) {
                     Some(o) => items.push(o),
                     None => break,
                 },
@@ -213,16 +180,16 @@ impl Reader {
         }
         let mut out = tail;
         for &o in items.iter().rev() {
-            out = a.pair(o, out);
+            out = self.pair(o, out);
         }
         out
     }
 
-    /// Is the `.` at the cursor a tail marker rather than part of an atom?
-    fn dot_is_a_separator(&self) -> bool {
-        match self.src.get(self.pos + 1) {
+    /// Is the `.` at the read mark a tail marker rather than part of an atom?
+    fn buf_dot_is_a_separator(&self, b: Obj) -> bool {
+        match self.buf_byte_ahead(b, 1) {
             None => true,
-            Some(c) => c.is_ascii_whitespace() || *c == b'(' || *c == b')',
+            Some(c) => c.is_ascii_whitespace() || c == b'(' || c == b')',
         }
     }
 
@@ -231,15 +198,15 @@ impl Reader {
     /// byte above 0x7F. Escapes are the reference's set (`\" \\ n t r 0`,
     /// `\xNN` with exactly two hex digits); an UNKNOWN escape keeps the
     /// backslash AND the character.
-    pub(crate) fn read_string(&mut self, a: &mut Objects) -> Obj {
+    pub(crate) fn buf_read_string(&mut self, b: Obj) -> Obj {
         let mut bytes: Vec<u8> = Vec::new();
-        while let Some(c) = self.peek() {
-            self.pos += 1;
+        while let Some(c) = self.buf_next_byte(b) {
             match c {
                 b'"' => break,
                 b'\\' => {
-                    let Some(e) = self.peek() else { break };
-                    self.pos += 1;
+                    let Some(e) = self.buf_next_byte(b) else {
+                        break;
+                    };
                     match e {
                         b'"' => bytes.push(b'"'),
                         b'\\' => bytes.push(b'\\'),
@@ -248,12 +215,13 @@ impl Reader {
                         b'r' => bytes.push(b'\r'),
                         b'0' => bytes.push(0),
                         b'x' => {
-                            let h = self.src.get(self.pos).and_then(|b| hex_digit(*b));
-                            let l = self.src.get(self.pos + 1).and_then(|b| hex_digit(*b));
+                            let h = self.buf_peek(b).and_then(hex_digit);
+                            let l = self.buf_byte_ahead(b, 1).and_then(hex_digit);
                             match (h, l) {
                                 (Some(h), Some(l)) => {
                                     bytes.push(h * 16 + l);
-                                    self.pos += 2;
+                                    self.buf_bump(b);
+                                    self.buf_bump(b);
                                 }
                                 _ => {
                                     bytes.push(b'\\');
@@ -270,11 +238,9 @@ impl Reader {
                 other => bytes.push(other),
             }
         }
-        a.str_from_bytes(&bytes)
+        self.str_from_bytes(&bytes)
     }
 
-    /// The nine named characters, which are the reference engine's list and not
-    /// a choice: `lib/` writes `#\newline` and expects a character back.
     /// A character literal, with `#\` already consumed.
     ///
     /// ENGINE SYNTAX, not a library reader macro. docs/syntax.md's dialect
@@ -289,77 +255,80 @@ impl Reader {
     ///   * a NAME, but only where the first byte is a letter, because a
     ///     non-letter scores immediately. That is what makes `#\(` and `#\;`
     ///     readable at all.
-    pub(crate) fn read_char(&mut self, a: &mut Objects) -> Obj {
-        let Some(first) = self.peek() else {
+    pub(crate) fn buf_read_char(&mut self, b: Obj) -> Obj {
+        let Some(first) = self.buf_peek(b) else {
             // `#\` at end of input: nothing to name a character with.
             return NIL;
         };
-        self.pos += 1;
+        self.buf_bump(b);
 
         if first >= 0x80 {
             // A multi-byte character: take its continuation bytes too.
-            let start = self.pos - 1;
-            while let Some(c) = self.peek() {
+            let start = self.buf_cursor(b) - 1;
+            while let Some(c) = self.buf_peek(b) {
                 if c & 0xc0 != 0x80 {
                     break;
                 }
-                self.pos += 1;
+                self.buf_bump(b);
             }
-            let text = String::from_utf8_lossy(&self.src[start..self.pos]).to_string();
+            let bytes = self.buf_slice(b, start, self.buf_cursor(b));
+            let text = String::from_utf8_lossy(&bytes).to_string();
             let cp = text.chars().next().map(|c| c as u32).unwrap_or(0);
-            return a.char_new(cp);
+            return self.char_new(cp);
         }
 
         if !first.is_ascii_alphabetic() {
             // Scores immediately, so `#\(` is the open paren and not a list.
-            return a.char_new(first as u32);
+            return self.char_new(first as u32);
         }
 
         // A letter: gather the rest of the name. One letter alone is the
         // character itself.
-        let start = self.pos - 1;
-        while let Some(c) = self.peek() {
+        let start = self.buf_cursor(b) - 1;
+        while let Some(c) = self.buf_peek(b) {
             if !c.is_ascii_alphabetic() {
                 break;
             }
-            self.pos += 1;
+            self.buf_bump(b);
         }
-        let name = String::from_utf8_lossy(&self.src[start..self.pos]).to_string();
+        let bytes = self.buf_slice(b, start, self.buf_cursor(b));
+        let name = String::from_utf8_lossy(&bytes).to_string();
         if name.len() == 1 {
-            return a.char_new(first as u32);
+            return self.char_new(first as u32);
         }
         for (n, cp) in crate::vocabulary::CHAR_NAMES {
             if *n == name {
-                return a.char_new(*cp);
+                return self.char_new(*cp);
             }
         }
         // An unknown name is the reference's error. This engine has no channel
         // to raise from inside the reader, so it answers the leading letter and
         // leaves the name — which a caller sees as a wrong character rather than
         // silence.
-        self.pos = start + 1;
-        a.char_new(first as u32)
+        self.set_buf_cursor(b, start + 1);
+        self.char_new(first as u32)
     }
 
-    pub(crate) fn read_atom(&mut self, a: &mut Objects) -> Obj {
-        let start = self.pos;
-        while let Some(c) = self.peek() {
+    pub(crate) fn buf_read_atom(&mut self, b: Obj) -> Obj {
+        let start = self.buf_cursor(b);
+        while let Some(c) = self.buf_peek(b) {
             if c.is_ascii_whitespace() || c == b'(' || c == b')' || c == b';' {
                 break;
             }
-            self.pos += 1;
+            self.buf_bump(b);
         }
-        let text = String::from_utf8_lossy(&self.src[start..self.pos]).to_string();
+        let bytes = self.buf_slice(b, start, self.buf_cursor(b));
+        let text = String::from_utf8_lossy(&bytes).to_string();
         if text.is_empty() {
-            self.pos += 1;
+            self.buf_bump(b);
             return NIL;
         }
         // An integer if it parses as one; a symbol otherwise. `-` alone is a
         // symbol, not a malformed number.
         if let Ok(v) = text.parse::<i64>() {
-            a.int(v)
+            self.int(v)
         } else {
-            a.sym(&text)
+            self.sym(&text)
         }
     }
 }
@@ -369,10 +338,15 @@ mod tests {
     use super::*;
     use crate::objects::Objects;
 
+    fn rbuf(o: &mut Objects, src: &str) -> Obj {
+        let t = o.str_new(src);
+        o.buf(t, 0)
+    }
+
     fn read_one(src: &str) -> (Objects, Obj) {
         let mut o = Objects::new();
-        let mut r = Reader::new(src);
-        let form = Reader::read(&mut r, &mut o).expect("a form");
+        let b = rbuf(&mut o, src);
+        let form = o.buf_read_form(b).expect("a form");
         (o, form)
     }
 
@@ -476,12 +450,12 @@ mod tests {
     #[test]
     fn unterminated_input_terminates() {
         let mut o = Objects::new();
-        let mut r = Reader::new("(1 2");
-        assert!(Reader::read(&mut r, &mut o).is_some());
-        assert!(Reader::read(&mut r, &mut o).is_none(), "and then stops");
+        let b = rbuf(&mut o, "(1 2");
+        assert!(o.buf_read_form(b).is_some());
+        assert!(o.buf_read_form(b).is_none(), "and then stops");
         let mut o = Objects::new();
-        let mut r = Reader::new(r#""unclosed"#);
-        let _ = Reader::read(&mut r, &mut o);
+        let b = rbuf(&mut o, r#""unclosed"#);
+        let _ = o.buf_read_form(b);
     }
 
     /// A stray close paren is consumed so the loop makes progress. Spinning on
@@ -489,19 +463,19 @@ mod tests {
     #[test]
     fn a_stray_close_paren_does_not_spin() {
         let mut o = Objects::new();
-        let mut r = Reader::new(")))42");
+        let b = rbuf(&mut o, ")))42");
         for _ in 0..4 {
-            let _ = Reader::read(&mut r, &mut o);
+            let _ = o.buf_read_form(b);
         }
-        assert!(Reader::read(&mut r, &mut o).is_none());
+        assert!(o.buf_read_form(b).is_none());
     }
 
     #[test]
     fn reading_consumes_forms_in_order() {
         let mut o = Objects::new();
-        let mut r = Reader::new("1 2 3");
+        let b = rbuf(&mut o, "1 2 3");
         let mut seen = Vec::new();
-        while let Some(f) = Reader::read(&mut r, &mut o) {
+        while let Some(f) = o.buf_read_form(b) {
             seen.push(o.as_int(f));
         }
         assert_eq!(seen, vec![1, 2, 3]);
