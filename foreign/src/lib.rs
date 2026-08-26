@@ -273,6 +273,49 @@ pub fn interrupted() -> bool {
     INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Read one byte of PROCESS memory at a real address — the inverse of the
+/// marshal door: a C call answered a pointer, and x-lang reads through it.
+/// The caller owns the address's validity, exactly as the reference's
+/// process-memory reads do.
+pub fn read_byte(at: u64) -> u8 {
+    unsafe { *(at as *const u8) }
+}
+
+/// Read one machine word of process memory at a real address.
+pub fn read_word(at: u64) -> u64 {
+    unsafe { std::ptr::read_unaligned(at as *const u64) }
+}
+
+/// The NUL-terminated bytes at a real address, copied out. A null pointer
+/// answers empty.
+pub fn c_str_bytes(at: u64) -> Vec<u8> {
+    if at == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut p = at;
+    loop {
+        let b = read_byte(p);
+        if b == 0 {
+            break;
+        }
+        out.push(b);
+        p += 1;
+    }
+    out
+}
+
+/// Write one byte of process memory at a real address — the inverse door's
+/// writer: x-lang fills a region a C call will read (an exec's argv array).
+pub fn write_byte(at: u64, v: u8) {
+    unsafe { *(at as *mut u8) = v }
+}
+
+/// Write one machine word of process memory at a real address.
+pub fn write_word(at: u64, v: u64) {
+    unsafe { std::ptr::write_unaligned(at as *mut u64, v) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
