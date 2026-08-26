@@ -230,6 +230,12 @@ pub struct Objects {
     /// One type object per built-in shape, so `(type of 1)` and `(type of 2)`
     /// answer the SAME object. Simple values carry no type word, so the
     /// stability x-lang requires comes from here rather than from the header.
+    /// The engine's input stream, refilling the interactive source buffer
+    /// one byte at a time — the reference's `x_base_read` channel. None for
+    /// an engine driven entirely by preloaded text.
+    pub(crate) input: Option<Box<dyn std::io::Read>>,
+    /// The interactive source region's capacity in bytes.
+    pub(crate) input_cap: u64,
     /// The current base — the reference's `p_base`: allocation stamps
     /// resolve through its type-alist. NIL only during registration; the
     /// engine's boot and `in_base` bracket keep it current.
@@ -372,6 +378,8 @@ impl Objects {
             false_obj: NIL,
 
             true_obj: NIL,
+            input: None,
+            input_cap: 0,
             base: NIL,
             state_nodes: [NIL; 4],
             int_read: NIL,

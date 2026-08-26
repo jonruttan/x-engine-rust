@@ -22,19 +22,83 @@ use crate::objects::Objects;
 
 impl Objects {
     /// The byte at the buffer's read mark, unconsumed.
-    pub(crate) fn buf_peek(&self, b: Obj) -> Option<u8> {
+    pub(crate) fn buf_peek(&mut self, b: Obj) -> Option<u8> {
         self.buf_byte_ahead(b, 0)
     }
 
     /// The byte `n` ahead of the read mark, for the one-byte lookahead `#\`
-    /// needs.
-    pub(crate) fn buf_byte_ahead(&self, b: Obj, n: u64) -> Option<u8> {
-        let i = self.buf_cursor(b) + n;
-        if i >= self.buf_write(b) {
-            return None;
+    /// needs. An exhausted INTERACTIVE source refills before answering
+    /// end-of-input.
+    pub(crate) fn buf_byte_ahead(&mut self, b: Obj, n: u64) -> Option<u8> {
+        loop {
+            let i = self.buf_cursor(b) + n;
+            if i < self.buf_write(b) {
+                let text = self.buf_text(b);
+                return Some(self.heap.byte(self.str_bytes(text).plus(i)));
+            }
+            if !self.buf_refill(b) {
+                return None;
+            }
+        }
+    }
+
+    /// One byte from the engine's input stream, appended at the write mark —
+    /// the extension path of the reference's `x_type_buffer_read`, with its
+    /// EOF latch: end of input flips the filein head to the fd's bitwise
+    /// complement, and every later read fails the latch check without
+    /// another syscall. The complement, not a flat -1, so the fd stays
+    /// recoverable. Answers whether a byte arrived.
+    fn buf_refill(&mut self, b: Obj) -> bool {
+        if self.buf_ro(b) {
+            return false;
+        }
+        let base = self.base;
+        if base.is_nil() {
+            return false;
+        }
+        let row = crate::base::get(self, base, crate::base::FILEIN);
+        if row.is_nil() {
+            return false;
+        }
+        let fd_obj = self.first(row);
+        if fd_obj.is_nil() || self.as_int(fd_obj) < 0 {
+            return false;
+        }
+        let Some(input) = self.input.as_mut() else {
+            return false;
+        };
+        let mut byte = [0u8; 1];
+        let got = matches!(input.read(&mut byte), Ok(1));
+        if !got {
+            // EOF, or a read error the stream cannot continue past: latch.
+            let fd = self.as_int(fd_obj);
+            self.set_data(fd_obj, 0, crate::obj::Word((!fd) as u64));
+            return false;
+        }
+        let mut w = self.buf_write(b);
+        if w >= self.input_cap {
+            // The region is full: compact the unread remainder to the front,
+            // as `buf retain` does, and give up only when a single span
+            // fills the whole region.
+            let c = self.buf_cursor(b);
+            if c == 0 {
+                return false;
+            }
+            let text = self.buf_text(b);
+            let at = self.str_bytes(text);
+            for i in c..w {
+                let v = self.heap.byte(at.plus(i));
+                self.heap.set_byte(at.plus(i - c), v);
+            }
+            self.set_buf_retain(b, 0);
+            self.set_buf_cursor(b, 0);
+            w -= c;
+            self.set_buf_write(b, w);
         }
         let text = self.buf_text(b);
-        Some(self.heap.byte(self.str_bytes(text).plus(i)))
+        self.heap.set_byte(self.str_bytes(text).plus(w), byte[0]);
+        self.set_buf_write(b, w + 1);
+        true
     }
 
     /// One byte, consumed. `None` at end of input — which is how `io read-char`
@@ -55,6 +119,30 @@ impl Objects {
         let text = self.buf_text(b);
         let at = self.str_bytes(text);
         (start..end).map(|i| self.heap.byte(at.plus(i))).collect()
+    }
+
+    /// Refill an interactive source until its region holds a newline at or
+    /// past the read mark, or the stream ends. A no-op for a read-only view.
+    pub(crate) fn buf_prefetch_line(&mut self, b: Obj) {
+        if self.buf_ro(b) {
+            return;
+        }
+        loop {
+            let c = self.buf_cursor(b);
+            let w = self.buf_write(b);
+            let text = self.buf_text(b);
+            let at = self.str_bytes(text);
+            let mut seen = false;
+            for i in c..w {
+                if self.heap.byte(at.plus(i)) == b'\n' {
+                    seen = true;
+                    break;
+                }
+            }
+            if seen || !self.buf_refill(b) {
+                return;
+            }
+        }
     }
 
     pub(crate) fn buf_skip_blanks(&mut self, b: Obj) {
@@ -103,7 +191,7 @@ impl Objects {
     }
 
     /// Is the byte at the read mark a lone `.` acting as a tail separator?
-    pub(crate) fn buf_at_dot_separator(&self, b: Obj) -> bool {
+    pub(crate) fn buf_at_dot_separator(&mut self, b: Obj) -> bool {
         self.buf_peek(b) == Some(b'.') && self.buf_dot_is_a_separator(b)
     }
 
@@ -186,7 +274,7 @@ impl Objects {
     }
 
     /// Is the `.` at the read mark a tail marker rather than part of an atom?
-    fn buf_dot_is_a_separator(&self, b: Obj) -> bool {
+    fn buf_dot_is_a_separator(&mut self, b: Obj) -> bool {
         match self.buf_byte_ahead(b, 1) {
             None => true,
             Some(c) => c.is_ascii_whitespace() || c == b'(' || c == b')',

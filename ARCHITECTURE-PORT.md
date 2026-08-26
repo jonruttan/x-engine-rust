@@ -169,7 +169,14 @@ base's `buffer` row, `include` pushes and pops the `filein`, `buffer`,
 and `line` rows as the reference's include does, and a reader macro's
 nested read continues on the same stream because there is only one.
 The Engine struct now holds Rust-side resources (open files, roots,
-the instruction table), not evaluator state. The full-suite gap to the
+the instruction table), not evaluator state. STDIN REFILLS: the
+program's own input arrives one byte at a time through the interactive
+source buffer — the reference's read channel, with its EOF latch (end
+of input flips the filein head to the fd's bitwise complement, sticky
+and recoverable). An interactive source prefetches to a line boundary
+before each form, so the analyser contest's bounded view holds every
+byte a token on the line can claim; a claimed token typed across a
+newline still scores short, which files never see. The full-suite gap to the
 reference (98 of 2549 — three pin checks past that batch's 60-second
 timeout, which the previous score already flaked against) is tracked
 in x-lang's suite, not here.

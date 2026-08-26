@@ -11,15 +11,10 @@
 //! code, and an engine that invented opinions about them would be implementing a
 //! protocol it has no part in.
 
-use std::io::Read;
 use x_engine::{diag, engine};
 
 fn main() {
-    let mut src = String::new();
     let mut engine = engine::Engine::new();
-    if std::io::stdin().read_to_string(&mut src).is_err() {
-        report(&engine, &diag::Cond::NoProgram);
-    }
 
     // EVERY argv element, argv[0] included: x-lang's own library documents
     // `args` as carrying the engine path first and drops it itself —
@@ -27,7 +22,7 @@ fn main() {
     // flags x.sh -f prepends", implemented as `(rest args)`.
     let argv: Vec<String> = std::env::args().collect();
     engine.bind_args(&argv);
-    engine.set_input(&src);
+    engine.set_input_stdin();
 
     // Read a form, evaluate it, read the next — the loop x-lang's wrapper pipes a
     // library into. A raise ends the run and is reported on stderr, the only
@@ -40,6 +35,9 @@ fn main() {
         if let Err(cond) = engine.eval_top(form) {
             report(&engine, &cond);
         }
+        // Between forms the unread remainder compacts to the region's
+        // front, which is what bounds a long session to the region.
+        engine.compact_input();
     }
     if std::env::var("X_HEAP_STATS").is_ok() {
         eprintln!(
