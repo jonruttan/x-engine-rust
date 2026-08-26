@@ -298,6 +298,8 @@ pub struct Objects {
     pub(crate) callable_call_handler: Obj,
     /// The LIST type's call handler — indexing and slicing.
     pub(crate) list_call_handler: Obj,
+    /// The one "BASE" tag atom every base's type word carries.
+    pub(crate) base_tag_atom: Obj,
     /// The instruction-table indexes of the four callable ENTRIES —
     /// procedure, operative, wrap, continuation — as the words a
     /// constructor stamps into slot 0. Written once at registration.
@@ -398,6 +400,7 @@ impl Objects {
             eval_handlers: [crate::obj::NIL; 2],
             callable_call_handler: crate::obj::NIL,
             list_call_handler: crate::obj::NIL,
+            base_tag_atom: crate::obj::NIL,
             entry_words: [crate::obj::Word(0); 4],
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's

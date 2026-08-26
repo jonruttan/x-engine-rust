@@ -28,9 +28,13 @@ fn byte_len(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// collapsing the two would lose the distinction the type system rests on.
 fn byte_ref(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let s = a[0];
-    let i = a_.as_int(a[1]).max(0) as u64;
+    let mut i = a_.as_int(a[1]);
+    if i < 0 {
+        // A negative index counts from the end of the NUL-bounded value.
+        i += a_.byte_len(s) as i64;
+    }
     let at = a_.str_bytes(s);
-    let b = a_.heap.byte(at.plus(i)) as u32;
+    let b = a_.heap.byte(at.plus(i.max(0) as u64)) as u32;
     Ok(a_.char_new(b))
 }
 /// `(str byte-sub s off LEN)` — a length, not an end index. ADDRESSES raw

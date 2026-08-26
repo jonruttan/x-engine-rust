@@ -66,8 +66,22 @@ impl Cond {
         match self {
             Cond::Raised(v) => *v,
             other => {
+                // An engine-raised condition delivers the CURRENT BASE's
+                // error atom with the message written into its region — one
+                // identity the printer knows (#54). `(error "msg")` delivers
+                // a real string and never comes through here.
                 let text = other.message(a);
-                a.str_new(&text)
+                let base = a.base;
+                let atom = if base.is_nil() {
+                    crate::obj::NIL
+                } else {
+                    crate::base::get(a, base, crate::base::ERROR_STR)
+                };
+                if atom.is_nil() {
+                    return a.str_new(&text);
+                }
+                a.error_atom_set(atom, &text);
+                atom
             }
         }
     }

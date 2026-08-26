@@ -117,7 +117,8 @@ fn alloc_limit(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     let b = base;
     base::set(&mut e.objects, b, base::ALLOC_LIMIT, a[0]);
     e.alloc_limit = if n > 0 { Some(n as usize) } else { None };
-    Ok(a[0])
+    // Side-effect primitive: answers nil, the C contract.
+    Ok(NIL)
 }
 
 /// `(heap check)` — DEBUG: walk the chain and verify every reference slot

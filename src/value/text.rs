@@ -7,6 +7,8 @@
 use crate::obj::{Addr, Obj, Word};
 use crate::objects::{Objects, FLAG_STR, FLAG_SYM};
 
+const ERROR_SCRATCH: usize = 255;
+
 impl Objects {
     /// A string object VIEWING bytes already in the objects, allocating no storage
     /// of its own. x-lang's rule is to wrap rather than reallocate, and
@@ -69,6 +71,36 @@ impl Objects {
     /// same spelling are different objects, because they carry different tags
     /// and the library reads the tag: `%reflect-handle-tw?` asks whether a word
     /// marks a HANDLE, and an interned symbol must answer no.
+    /// The engine-wide "BASE" tag, made once.
+    pub(crate) fn base_tag(&mut self) -> Obj {
+        if self.base_tag_atom.is_nil() {
+            self.base_tag_atom = self.handle("BASE");
+        }
+        self.base_tag_atom
+    }
+
+    /// A fresh error-scratch atom over its own byte region — the base's
+    /// error-str row. Engine-raised conditions write their message into the
+    /// region and raise the atom itself.
+    pub(crate) fn error_atom(&mut self) -> Obj {
+        let at = self.heap.alloc_bytes(ERROR_SCRATCH + 1);
+        self.heap.set_byte(at, 0);
+        let o = self.alloc(crate::objects::FLAG_HANDLE, 1);
+        self.set_data(o, 0, Word(at.raw()));
+        o
+    }
+
+    /// Write a message into an error atom's region, truncating to fit.
+    pub(crate) fn error_atom_set(&mut self, atom: Obj, text: &str) {
+        let at = self.data(atom, 0).as_addr();
+        let bytes = text.as_bytes();
+        let n = bytes.len().min(ERROR_SCRATCH);
+        for (i, &b) in bytes[..n].iter().enumerate() {
+            self.heap.set_byte(at.plus(i as u64), b);
+        }
+        self.heap.set_byte(at.plus(n as u64), 0);
+    }
+
     pub fn handle(&mut self, name: &str) -> Obj {
         let at = self.heap.store_bytes(name.as_bytes());
         let o = self.alloc(crate::objects::FLAG_HANDLE, 1);

@@ -45,11 +45,13 @@ fn str_to_ptr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.ptr(at))
 }
 
-/// A string object VIEWING bytes already in the objects, allocating no storage of
-/// its own. x-lang's rule is to wrap rather than reallocate.
+/// A COPY of the NUL-bounded bytes at the pointer, as the reference's
+/// `x_mkstr` copies — the caller may free or reuse the region, and a view
+/// would dangle with it.
 fn ptr_to_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let at = a_.as_ptr(a[0]);
-    Ok(a_.str_at(at))
+    let bytes = a_.heap.bytes_at(at);
+    Ok(a_.str_from_bytes(&bytes))
 }
 
 /// `(ptr ref p off width)` — `width` bytes from `p+off`, assembled into the low
@@ -94,7 +96,7 @@ fn ptr_set_word(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let v = a_.as_int(a[2]) as u64;
     let at = base.offset(off);
     a_.heap.set_word(at, Word(v));
-    Ok(NIL)
+    Ok(a[0])
 }
 
 fn mem_cmp(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {

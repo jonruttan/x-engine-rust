@@ -9,7 +9,7 @@
 //! have nothing else to do with each other.
 
 use crate::obj::{Flags, Obj, NIL};
-use crate::objects::{Objects, FLAG_FOREIGN, FLAG_ITER, FLAG_PRIM};
+use crate::objects::{Objects, FLAG_ITER};
 
 /// The families a type object carries, grouped as the reference engine groups
 /// them.
@@ -351,37 +351,11 @@ impl Objects {
         if !carried.is_nil() && carried != self.spair_marker && carried != self.satom_marker {
             return carried;
         }
-        let flags = self.reported_flags(o);
-        if self.base.is_nil() {
-            return NIL;
-        }
-        // Resolved through the current base — the reference's
-        // x_type_struct_get — creating and filing the type on a miss.
-        let base = self.base;
-        self.builtin_type_in(base, flags)
-    }
-
-    /// The flags a value's TYPE is keyed by, which are not always the flags it
-    /// carries.
-    ///
-    /// A foreign callable is flagged apart from a primitive INTERNALLY, because
-    /// their data words mean different things — a primitive's is an index into
-    /// the instruction table, a foreign callable's is a real machine address, and
-    /// dispatching on the wrong one segfaults instead of answering wrongly. That
-    /// is a representation concern and it stops at the engine's edge.
-    ///
-    /// x-lang sees one type. `obj make-callable` is the JIT's door: it takes the
-    /// address of code just emitted and hands back "something the evaluator will
-    /// call", and the conformance case pins exactly that — the result's type is
-    /// the type of a primitive. Reporting a second callable type would make the
-    /// library's type dispatch miss every compiled function.
-    fn reported_flags(&self, o: Obj) -> Flags {
-        let f = self.flags(o);
-        if f == FLAG_FOREIGN {
-            FLAG_PRIM
-        } else {
-            f
-        }
+        // A nil type word IS the answer: the reference leaves `#t`, `#f`,
+        // and its static sentinels untyped, and `lib/x/type/bool.x` claims
+        // the singletons precisely because `(type of #t)` answered nil.
+        // Fabricating a kind here made the claim guard skip forever.
+        NIL
     }
 
     pub fn set_iter_state(&mut self, o: Obj, s: Obj) {
