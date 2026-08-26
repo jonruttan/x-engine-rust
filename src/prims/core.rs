@@ -124,9 +124,9 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     };
     // With-env SAVES, as x_prim_eval pushes its compound save: a `def` inside
     // binds into the given environment, not globally.
-    e.saves += 1;
+    e.save_push(target);
     let out = e.eval(expr, target);
-    e.saves -= 1;
+    e.save_pop();
     out
 }
 

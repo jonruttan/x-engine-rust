@@ -76,7 +76,7 @@ pub struct Engine {
     /// reference tests `x_eval_field_error_handler` before raising. That field
     /// is a base slot there; `guard` is Rust-side here, so the depth is the
     /// same question asked of this stack.
-    pub(crate) guard_depth: u32,
+
     /// Collect every N evaluation steps. Zero — the default — never collects on
     /// its own, which is what `gc/explicit-only` promises.
     pub(crate) gc_stress: u32,
@@ -101,13 +101,6 @@ pub struct Engine {
     /// mean threading a Result through every constructor to catch something
     /// that is not a value error.
     pub(crate) alloc_limit: Option<usize>,
-    /// A form parked for the evaluator's own loop — the reference engine's
-    /// `tco-expr` and `tco-env`, which is what makes tail calls not grow the
-    /// stack.
-    pub(crate) tail: Option<(Obj, EnvId)>,
-    /// The reference's save-stack depth: how many closure bodies and
-    /// with-env evaluations are active. See [`Engine::nothing_pending`].
-    pub(crate) saves: u32,
     /// The one end-of-input sentinel, bound to every base as `%token-eof`.
     ///
     /// SHARED across bases, like the reference's static — asked and confirmed:
@@ -153,7 +146,7 @@ impl Engine {
             in_gc: false,
             active_evals: 0,
             base_stack: Vec::new(),
-            guard_depth: 0,
+
             gc_stress: std::env::var("X_GC_STRESS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -166,8 +159,7 @@ impl Engine {
             next_cont: 1,
             base_syms: HashMap::new(),
             alloc_limit: None,
-            tail: None,
-            saves: 0,
+
             token_eof: NIL,
             sigint_flag: NIL,
         };
@@ -241,6 +233,7 @@ impl Engine {
         // only in being the one the read-eval loop uses.
         e.base = e.make_base();
         e.objects.base = e.base;
+        e.objects.state_nodes = crate::base::state_nodes(&e.objects, e.base);
         e.register_builtin_types();
         e
     }
@@ -293,7 +286,10 @@ impl Engine {
         // ask carrying a nil type word, and the library reads that word
         // directly — so the ask has to happen here, before any of them exist.
         let base = self.base;
-        for (flags, _) in crate::objects::STAMPED_KINDS {
+        // REVERSED: the alist grows by prepending, so the kinds filed last
+        // sit at its head — and the stamp walk runs per allocation, so the
+        // hottest kinds (INT, PAIR at the list's front) belong there.
+        for (flags, _) in crate::objects::STAMPED_KINDS.iter().rev() {
             self.objects.builtin_type_in(base, *flags);
         }
 
@@ -326,7 +322,7 @@ impl Engine {
     /// C-registration handler the library's boot pushes shadow on a base that
     /// boots one; a child base never does, so this is what its stacks hold.
     fn file_fresh_builtin_types(&mut self, base: Obj) {
-        for (flags, _) in crate::objects::STAMPED_KINDS {
+        for (flags, _) in crate::objects::STAMPED_KINDS.iter().rev() {
             self.objects.builtin_type_in(base, *flags);
         }
     }
@@ -462,6 +458,8 @@ impl Engine {
         // The root frame serves the spine just built — stamped after, because
         // the spine cannot exist before its env does.
         self.envs.set_base(&mut self.objects, env, base);
+        // The sigint row holds the SAME object %sigint-flag is bound to.
+        crate::base::set(&mut self.objects, base, crate::base::SIGINT, f);
         // Fresh builtin types, except for the engine's own base: registration
         // has not run yet when it is built, and files the types itself.
         if !self.objects.base.is_nil() {
@@ -487,11 +485,15 @@ impl Engine {
         let outer = self.objects.swap_symbols(table);
         self.base_stack.push(self.base);
         let prev = std::mem::replace(&mut self.base, base);
-        // The stamp source follows — the reference's p_base is one pointer.
+        // The stamp source and the state nodes follow — the reference's
+        // p_base is one pointer.
         self.objects.base = base;
+        let fresh = crate::base::state_nodes(&self.objects, base);
+        let outer_nodes = std::mem::replace(&mut self.objects.state_nodes, fresh);
         let result = f(self);
         self.base = prev;
         self.objects.base = prev;
+        self.objects.state_nodes = outer_nodes;
         self.base_stack.pop();
         let inner = self.objects.swap_symbols(outer);
         self.base_syms.insert(base, inner);

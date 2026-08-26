@@ -285,7 +285,8 @@ impl crate::engine::Engine {
             self.objects.satom_marker,
         ];
         r.push(self.objects.int_read);
-        r.extend(self.objects.kind_handles.values().copied());
+        r.extend(self.objects.kind_handles.iter().copied());
+        r.extend(self.objects.other_kind_handles.values().copied());
         r.extend(self.objects.int_states.iter().copied());
         r.extend(self.objects.eval_handlers.iter().copied());
         r.push(self.objects.callable_call_handler);
@@ -297,12 +298,6 @@ impl crate::engine::Engine {
         }
         for syms in self.base_syms.values() {
             r.extend(syms.all());
-        }
-
-        // The parked tail: a form waiting to be evaluated is as live as one
-        // being evaluated.
-        if let Some((f, _)) = self.tail {
-            r.push(f);
         }
 
         // The reader's text objects — a buffer views their bytes.
@@ -330,8 +325,12 @@ impl crate::engine::Engine {
     /// else — the same problem the object roots have, with the same answer.
     fn env_root_set(&self) -> Vec<EnvId> {
         let mut e: Vec<EnvId> = vec![crate::base::env_of(&self.objects, self.base)];
-        if let Some((_, env)) = self.tail {
-            e.push(env);
+        // The parked tail's environment and the save/guard chains ride the
+        // base's own rows, reachable through the base root; the tco-env row
+        // still holds a HOLDER the frame walk must expand from.
+        let tco_env = crate::base::get(&self.objects, self.base, crate::base::TCO_ENV);
+        if !tco_env.is_nil() {
+            e.push(EnvId::from_obj(tco_env));
         }
         e.extend(self.env_roots.iter().copied());
         e

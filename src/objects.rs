@@ -234,6 +234,10 @@ pub struct Objects {
     /// resolve through its type-alist. NIL only during registration; the
     /// engine's boot and `in_base` bracket keep it current.
     pub(crate) base: Obj,
+    /// The current base's evaluator-state spine nodes — save-stack, tco-expr,
+    /// tco-env, error-handler — resolved once per base switch. Spine cells
+    /// never move, so the addresses hold while the base is current.
+    pub(crate) state_nodes: [Obj; 4],
     /// The INT token reader instruction, installed with the analyser states.
     pub(crate) int_read: Obj,
     /// The tag every registered type TYPE carries in its own type word.
@@ -277,7 +281,10 @@ pub struct Objects {
     /// child's INTEGER entry is `eq?` to `(type of 0)`'s answer and
     /// apps/logo's alist prune can compare identities. `make-type` names stay
     /// fresh per call, as the reference's strndup'd atoms are.
-    pub(crate) kind_handles: HashMap<Flags, Obj>,
+    pub(crate) kind_handles: [Obj; STAMPED_KINDS.len()],
+    /// Handles for kinds outside [`STAMPED_KINDS`] (FALSE, markers): rare,
+    /// so a map is fine here — the array serves the per-allocation path.
+    pub(crate) other_kind_handles: HashMap<Flags, Obj>,
     /// The engine's eval-handler objects: symbol, list. See prims::core.
     pub(crate) eval_handlers: [Obj; 2],
     /// The shared callable-call handler object, installed on every callable
@@ -323,6 +330,11 @@ pub const STAMPED_KINDS: &[(Flags, &str)] = &[
     (FLAG_CONT, "CONTINUATION"),
 ];
 
+/// A kind's position in [`STAMPED_KINDS`], or None for one nobody stamps.
+pub fn kind_index(flags: Flags) -> Option<usize> {
+    STAMPED_KINDS.iter().position(|(f, _)| *f == flags)
+}
+
 /// The kind a value REPORTS as, which is not always the one it carries.
 ///
 /// See [`Objects::reported_flags`] — this is the same rule at the point of
@@ -361,6 +373,7 @@ impl Objects {
 
             true_obj: NIL,
             base: NIL,
+            state_nodes: [NIL; 4],
             int_read: NIL,
             spair_marker: NIL,
             satom_marker: NIL,
@@ -370,7 +383,8 @@ impl Objects {
             poison_freed: std::env::var("X_GC_POISON").is_ok(),
             freed_kind: HashMap::new(),
             int_states: [crate::obj::NIL; 5],
-            kind_handles: HashMap::new(),
+            kind_handles: [NIL; STAMPED_KINDS.len()],
+            other_kind_handles: HashMap::new(),
             eval_handlers: [crate::obj::NIL; 2],
             callable_call_handler: crate::obj::NIL,
             entry_words: [crate::obj::Word(0); 4],
@@ -434,11 +448,20 @@ impl Objects {
     /// note above.
     /// The shared handle for a builtin kind's name.
     pub(crate) fn kind_handle(&mut self, flags: Flags, text: &str) -> Obj {
-        if let Some(&h) = self.kind_handles.get(&flags) {
+        let Some(i) = kind_index(flags) else {
+            if let Some(&h) = self.other_kind_handles.get(&flags) {
+                return h;
+            }
+            let h = self.handle(text);
+            self.other_kind_handles.insert(flags, h);
+            return h;
+        };
+        let h = self.kind_handles[i];
+        if !h.is_nil() {
             return h;
         }
         let h = self.handle(text);
-        self.kind_handles.insert(flags, h);
+        self.kind_handles[i] = h;
         h
     }
 
