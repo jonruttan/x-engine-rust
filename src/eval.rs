@@ -107,7 +107,7 @@ impl Engine {
             return false;
         }
         for entry in self.objects.list(from).collect::<Vec<_>>() {
-            if self.objects.first(self.objects.first(entry)) == name {
+            if self.objects.first(entry) == name {
                 return true;
             }
         }
