@@ -123,33 +123,11 @@ pub struct Engine {
     /// here, between forms. That is soon enough: x-lang's own case reads the
     /// flag in the form AFTER the one that raises.
     pub(crate) sigint_flag: Obj,
-    /// The render handler installed on builtin types; see prims::io.
-    pub(crate) engine_render: Obj,
-    /// The integer token reader installed beside the analyser states.
-    pub(crate) int_read: Obj,
 }
 
 /// The kinds whose types carry an engine call handler, and which. `FLAG_WRAP`
 /// shares the procedure handler: one type, the flag on the object, as the
 /// reference has it.
-const CALL_HANDLER_KINDS: &[(crate::obj::Flags, usize)] = &[
-    (crate::objects::FLAG_FN, 0),
-    (crate::objects::FLAG_WRAP, 0),
-    (crate::objects::FLAG_OP, 1),
-    (crate::objects::FLAG_PRIM, 2),
-    (crate::objects::FLAG_CONT, 3),
-];
-
-/// The kinds whose types carry the engine's render handler — the set the
-/// reference's per-kind registration gives write/display handlers that the
-/// library's own boot pushes then shadow.
-const RENDERED_KINDS: &[crate::obj::Flags] = &[
-    crate::objects::FLAG_INT,
-    crate::objects::FLAG_STR,
-    crate::objects::FLAG_SYM,
-    crate::objects::FLAG_PAIR,
-];
-
 /// The EXPRESSION LAYER's version, which `x-version` reports.
 ///
 /// Not this crate's version, and the distinction is the reference engine's:
@@ -192,8 +170,6 @@ impl Engine {
             saves: 0,
             token_eof: NIL,
             sigint_flag: NIL,
-            engine_render: NIL,
-            int_read: NIL,
         };
 
         // One pass over the whole instruction set. Each row contributes its bare
@@ -222,7 +198,7 @@ impl Engine {
         // deliberately outside the catalog and bound nowhere.
         let render_idx = e.prims.len();
         e.prims.push(crate::prims::io::ENGINE_RENDER);
-        e.engine_render = e.objects.prim(render_idx);
+        let _ = render_idx;
 
         // The integer token type's states and reader — same arrangement. The
         // state objects go into the store so a state can answer its successor.
@@ -233,7 +209,7 @@ impl Engine {
         }
         let idx = e.prims.len();
         e.prims.push(crate::prims::tok::INT_READ);
-        e.int_read = e.objects.prim(idx);
+        e.objects.int_read = e.objects.prim(idx);
 
         // The eval handlers: what a SYMBOL and a LIST mean when evaluated,
         // registered on the types like every other handler — the machine reads
@@ -264,6 +240,7 @@ impl Engine {
         // The engine's own base is made the same way as any other. It differs
         // only in being the one the read-eval loop uses.
         e.base = e.make_base();
+        e.objects.base = e.base;
         e.register_builtin_types();
         e
     }
@@ -315,17 +292,9 @@ impl Engine {
         // something first asks for it leaves every object allocated BEFORE that
         // ask carrying a nil type word, and the library reads that word
         // directly — so the ask has to happen here, before any of them exist.
-        for (flags, text) in crate::objects::STAMPED_KINDS {
-            if !self.objects.builtin_types.contains_key(flags) {
-                let name = self.objects.kind_handle(*flags, text);
-                let t = self.objects.type_new(name, NIL);
-                self.objects.builtin_types.insert(*flags, t);
-                self.objects.unfiled_types.push(t);
-            }
-        }
-        // Drained here and, from now on, by the `type of` instruction itself.
-        for t in self.objects.take_unfiled_types() {
-            self.file_type(t);
+        let base = self.base;
+        for (flags, _) in crate::objects::STAMPED_KINDS {
+            self.objects.builtin_type_in(base, *flags);
         }
 
         // BACKFILL the allocations that predate the types. Everything made
@@ -342,74 +311,12 @@ impl Engine {
         let mut at = self.objects.heap_chain;
         while !at.is_nil() {
             if at != t_true && self.objects.type_of_word(at).is_nil() {
-                let key = crate::objects::reported_kind(self.objects.flags(at));
-                if let Some(&t) = self.objects.builtin_types.get(&key) {
-                    self.objects.set_type_word(at, t);
-                }
+                let flags = self.objects.flags(at);
+                let t = self.objects.builtin_type_in(base, flags);
+                self.objects.set_type_word(at, t);
             }
             at = self.objects.chain_next(at);
         }
-
-        // The render handler on the printable kinds' types, root base
-        // included: the reference's per-kind registration installs a write
-        // handler the library's boot pushes then shadow — the stacks' SHAPE is
-        // contract (core/sandbox reads a child's as strictly shorter than the
-        // parent's and non-empty).
-        for k in RENDERED_KINDS {
-            if let Some(&t) = self.objects.builtin_types.get(k) {
-                self.install_render(t);
-            }
-        }
-        if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_INT) {
-            self.install_int_tok(t);
-        }
-        if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_SYM) {
-            self.install_eval_handler(t, 0);
-        }
-        if let Some(&t) = self.objects.builtin_types.get(&crate::objects::FLAG_PAIR) {
-            self.install_eval_handler(t, 1);
-        }
-        for (flags, _) in CALL_HANDLER_KINDS {
-            if let Some(&t) = self.objects.builtin_types.get(flags) {
-                self.install_call_handler(t);
-            }
-        }
-    }
-
-    /// The shared call door onto a type's call stack.
-    fn install_call_handler(&mut self, ty: Obj) {
-        let h = self.objects.callable_call_handler;
-        self.objects
-            .type_set_handler(ty, crate::vocabulary::Family::Call, h);
-    }
-
-    /// One of the engine's eval handlers onto a type's eval stack.
-    fn install_eval_handler(&mut self, ty: Obj, which: usize) {
-        let h = self.objects.eval_handlers[which];
-        self.objects
-            .type_set_handler(ty, crate::vocabulary::Family::Eval, h);
-    }
-
-    /// The render handler onto one type's write and display stacks.
-    fn install_render(&mut self, ty: Obj) {
-        let h = self.engine_render;
-        self.objects
-            .type_set_handler(ty, crate::vocabulary::Family::Write, h);
-        self.objects
-            .type_set_handler(ty, crate::vocabulary::Family::Display, h);
-    }
-
-    /// The integer token type's analyser and reader onto an INTEGER type — the
-    /// engine-side registration `x_type_int_register` performs, which is what
-    /// keeps a number a NUMBER through `tok read-str` on any base carrying the
-    /// type (apps/logo prunes a child's alist down to exactly these).
-    fn install_int_tok(&mut self, ty: Obj) {
-        let sign = self.objects.int_states[crate::prims::tok::ST_SIGN];
-        self.objects
-            .type_set_handler(ty, crate::vocabulary::Family::Analyse, sign);
-        let read = self.int_read;
-        self.objects
-            .type_set_handler(ty, crate::vocabulary::Family::Read, read);
     }
 
     /// FRESH builtin types for a new base, as `x_type_*_register(child, child)`
@@ -419,27 +326,8 @@ impl Engine {
     /// C-registration handler the library's boot pushes shadow on a base that
     /// boots one; a child base never does, so this is what its stacks hold.
     fn file_fresh_builtin_types(&mut self, base: Obj) {
-        for (flags, text) in crate::objects::STAMPED_KINDS {
-            let name = self.objects.kind_handle(*flags, text);
-            let t = self.objects.type_new(name, NIL);
-            if RENDERED_KINDS.contains(flags) {
-                self.install_render(t);
-            }
-            if *flags == crate::objects::FLAG_INT {
-                self.install_int_tok(t);
-            }
-            if *flags == crate::objects::FLAG_SYM {
-                self.install_eval_handler(t, 0);
-            }
-            if *flags == crate::objects::FLAG_PAIR {
-                self.install_eval_handler(t, 1);
-            }
-            for (cf, _) in CALL_HANDLER_KINDS {
-                if cf == flags {
-                    self.install_call_handler(t);
-                }
-            }
-            self.file_type_in(base, t);
+        for (flags, _) in crate::objects::STAMPED_KINDS {
+            self.objects.builtin_type_in(base, *flags);
         }
     }
 
@@ -470,21 +358,6 @@ impl Engine {
         // Unknown handle: hand it back rather than nil, so a caller storing it
         // keeps what it was given instead of silently losing the type.
         t
-    }
-
-    /// File a type in the base's `type-alist`, where the library looks it up.
-    ///
-    /// EVERY type goes here, the ones `type make` builds at runtime as much as
-    /// the builtins. `(type by-atom …)` in lib/x/type/struct.x walks this table
-    /// and answers nil for anything absent — and its callers do not check:
-    /// `lib/x/type/promise.x` pushes a call handler straight into what it gets
-    /// back, so an unfiled type turned into a write through nil.
-    ///
-    /// Handle and type are the same object here; the reference keys by a
-    /// separate sentinel. The library only cares about the alist's shape.
-    pub(crate) fn file_type(&mut self, t: Obj) {
-        let base = self.base;
-        self.file_type_in(base, t)
     }
 
     pub(crate) fn file_type_in(&mut self, base: Obj, t: Obj) {
@@ -590,9 +463,8 @@ impl Engine {
         // the spine cannot exist before its env does.
         self.envs.set_base(&mut self.objects, env, base);
         // Fresh builtin types, except for the engine's own base: registration
-        // has not run yet when it is built, and it gets the engine-wide types
-        // (the stamp source) filed by register_builtin_types instead.
-        if !self.objects.builtin_types.is_empty() {
+        // has not run yet when it is built, and files the types itself.
+        if !self.objects.base.is_nil() {
             self.file_fresh_builtin_types(base);
         }
         // A fresh base interns for itself, from empty. NOT a snapshot of the
@@ -615,8 +487,11 @@ impl Engine {
         let outer = self.objects.swap_symbols(table);
         self.base_stack.push(self.base);
         let prev = std::mem::replace(&mut self.base, base);
+        // The stamp source follows — the reference's p_base is one pointer.
+        self.objects.base = base;
         let result = f(self);
         self.base = prev;
+        self.objects.base = prev;
         self.base_stack.pop();
         let inner = self.objects.swap_symbols(outer);
         self.base_syms.insert(base, inner);
