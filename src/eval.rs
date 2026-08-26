@@ -844,7 +844,8 @@ mod tests {
     fn evaluation_is_replaceable_through_the_type() {
         let mut e = crate::engine::Engine::new();
         let hook = e.eval_str("(fn (_ s) 42)").unwrap();
-        let ty = e.objects.builtin_types[&crate::objects::FLAG_SYM];
+        let base = e.objects.base;
+        let ty = e.objects.builtin_type_in(base, crate::objects::FLAG_SYM);
         let old = e.objects.type_handler(ty, crate::vocabulary::Family::Eval);
         e.objects
             .type_set_handler(ty, crate::vocabulary::Family::Eval, hook);
@@ -865,7 +866,8 @@ mod tests {
     fn application_is_replaceable_through_the_type() {
         let mut e = crate::engine::Engine::new();
         let hook = e.eval_str("(op (f . a) env 99)").unwrap();
-        let ty = e.objects.builtin_types[&crate::objects::FLAG_FN];
+        let base = e.objects.base;
+        let ty = e.objects.builtin_type_in(base, crate::objects::FLAG_FN);
         let old = e.objects.type_handler(ty, crate::vocabulary::Family::Call);
         e.objects
             .type_set_handler(ty, crate::vocabulary::Family::Call, hook);

@@ -273,9 +273,6 @@ impl crate::engine::Engine {
         //
         //   spair/satom markers   sentinels the reference keeps as C statics;
         //                         nothing on the type references them.
-        //   builtin_types         the IDENTITY cache: a type made on demand and
-        //                         not yet filed would be swept and remade as a
-        //                         DIFFERENT object, breaking `type of` identity.
         //   symbol tables         per-base interning, engine-held as the
         //                         reference's are; an interned-but-unbound
         //                         symbol has no other reference.
@@ -287,12 +284,12 @@ impl crate::engine::Engine {
             self.objects.spair_marker,
             self.objects.satom_marker,
         ];
-        r.extend(self.objects.builtin_types.values().copied());
+        r.push(self.objects.int_read);
         r.extend(self.objects.kind_handles.values().copied());
         r.extend(self.objects.int_states.iter().copied());
         r.extend(self.objects.eval_handlers.iter().copied());
         r.push(self.objects.callable_call_handler);
-        r.extend(self.objects.unfiled_types.iter().copied());
+
         r.extend(self.objects.interned());
         for (name, obj) in &self.prim_bindings {
             r.push(*name);

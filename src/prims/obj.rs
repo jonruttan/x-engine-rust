@@ -91,14 +91,10 @@ fn type_make(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
 /// write into the nil. That is how `lib/x/type/iter.x` came to push a write
 /// handler through nothing.
 ///
-/// Filing here rather than at each construction site is deliberate: this
-/// instruction is the only door x-lang has to a type, so anything the library
-/// can name has passed through it.
-fn type_of(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+/// A type resolved on demand files itself into the current base as it is
+/// built, so this door only asks.
+fn type_of(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let t = e.objects.type_of(a[0]);
-    for fresh in e.objects.take_unfiled_types() {
-        e.file_type_in(base, fresh);
-    }
     Ok(t)
 }
 

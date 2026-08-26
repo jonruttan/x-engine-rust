@@ -264,15 +264,18 @@ impl Objects {
         if !self.is_handle(t) {
             return t;
         }
-        for &ty in self.builtin_types.values() {
-            if self.first(self.first(ty)) == t {
-                return ty;
+        if !self.base.is_nil() {
+            let mut at = crate::base::get(self, self.base, crate::base::TYPE_ALIST);
+            while !at.is_nil() {
+                let entry = self.first(at);
+                if self.first(entry) == t {
+                    return self.rest(entry);
+                }
+                at = self.rest(at);
             }
         }
-        // A library-made type: the engine keeps no reverse index, and the base's
-        // type-alist is the one the library maintains. Callers that own a base
-        // resolve through it; here a handle with no builtin behind it stays as it
-        // is rather than becoming nil.
+        // A library-made type the current base does not file stays as it is
+        // rather than becoming nil.
         t
     }
 
@@ -349,26 +352,13 @@ impl Objects {
             return carried;
         }
         let flags = self.reported_flags(o);
-        if let Some(&t) = self.builtin_types.get(&flags) {
-            return t;
+        if self.base.is_nil() {
+            return NIL;
         }
-        // The REFERENCE's name for this kind. It is read: with the type word
-        // stamped, `%reflect-type-name` dereferences the type and answers what
-        // it finds there.
-        let name = self.kind_handle(flags, crate::objects::kind_name(flags));
-        let t = self.type_new(name, NIL);
-        self.builtin_types.insert(flags, t);
-        // A type nobody filed is a type the library cannot reach: `type by-atom`
-        // walks the base's alist and answers nil, and its callers write into
-        // what they get back rather than checking. Record it here and let the
-        // `type of` instruction file it — this layer has no base to file into.
-        self.unfiled_types.push(t);
-        t
-    }
-
-    /// Types created since the last drain, for the caller that owns a base.
-    pub fn take_unfiled_types(&mut self) -> Vec<Obj> {
-        std::mem::take(&mut self.unfiled_types)
+        // Resolved through the current base — the reference's
+        // x_type_struct_get — creating and filing the type on a miss.
+        let base = self.base;
+        self.builtin_type_in(base, flags)
     }
 
     /// The flags a value's TYPE is keyed by, which are not always the flags it

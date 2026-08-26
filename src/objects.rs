@@ -223,15 +223,19 @@ pub struct Objects {
     /// `#f`. x-lang's falsy set is exactly {nil, #f} and that model is settled.
     false_obj: Obj,
     /// Builtin types made on demand and not yet filed in a base's type-alist.
-    /// See [`Objects::take_unfiled_types`].
-    pub(crate) unfiled_types: Vec<Obj>,
+
     /// `#t` — the very object the name `#t` evaluates to, interned in the SHARED
     /// table so a child base cannot mint a second one. See [`Objects::truth`].
     true_obj: Obj,
     /// One type object per built-in shape, so `(type of 1)` and `(type of 2)`
     /// answer the SAME object. Simple values carry no type word, so the
     /// stability x-lang requires comes from here rather than from the header.
-    pub(crate) builtin_types: HashMap<Flags, Obj>,
+    /// The current base — the reference's `p_base`: allocation stamps
+    /// resolve through its type-alist. NIL only during registration; the
+    /// engine's boot and `in_base` bracket keep it current.
+    pub(crate) base: Obj,
+    /// The INT token reader instruction, installed with the analyser states.
+    pub(crate) int_read: Obj,
     /// The tag every registered type TYPE carries in its own type word.
     ///
     /// x-lang derives this rather than being told it — `%reflect-spair-tw` is
@@ -284,6 +288,16 @@ pub struct Objects {
     /// constructor stamps into slot 0. Written once at registration.
     pub(crate) entry_words: [crate::obj::Word; 4],
 }
+
+/// The callable kinds and, for each, the instruction-table entry its
+/// constructor stamps into slot 0.
+pub(crate) const CALL_HANDLER_KINDS: &[(Flags, usize)] = &[
+    (FLAG_FN, 0),
+    (FLAG_WRAP, 0),
+    (FLAG_OP, 1),
+    (FLAG_PRIM, 2),
+    (FLAG_CONT, 3),
+];
 
 /// The kinds whose type word is stamped at birth.
 ///
@@ -344,9 +358,10 @@ impl Objects {
             symbols: Symbols::new(),
             shared_symbols: Symbols::new(),
             false_obj: NIL,
-            unfiled_types: Vec::new(),
+
             true_obj: NIL,
-            builtin_types: HashMap::new(),
+            base: NIL,
+            int_read: NIL,
             spair_marker: NIL,
             satom_marker: NIL,
             heap_chain: NIL,
@@ -427,15 +442,70 @@ impl Objects {
         h
     }
 
-    fn stamp_for(&self, flags: Flags) -> Obj {
+    fn stamp_for(&mut self, flags: Flags) -> Obj {
         if flags == FLAG_SPAIR {
             self.spair_marker
         } else if flags == FLAG_HANDLE {
             self.satom_marker
+        } else if self.base.is_nil() {
+            // Registration era: the types do not exist yet, and the
+            // registration backfill closes the gap.
+            NIL
         } else {
-            let key = reported_kind(flags);
-            self.builtin_types.get(&key).copied().unwrap_or(NIL)
+            let base = self.base;
+            self.builtin_type_in(base, flags)
         }
+    }
+
+    /// The base's registered type for a builtin kind — the reference's
+    /// `x_type_struct_get`: found in the base's type-alist by the kind's
+    /// handle, or built, filed there, and answered. The walk runs per typed
+    /// allocation, as the reference's does.
+    pub(crate) fn builtin_type_in(&mut self, base: Obj, flags: Flags) -> Obj {
+        let key = reported_kind(flags);
+        let handle = self.kind_handle(key, kind_name(key));
+        let mut at = crate::base::get(self, base, crate::base::TYPE_ALIST);
+        while !at.is_nil() {
+            let entry = self.first(at);
+            if self.first(entry) == handle {
+                return self.rest(entry);
+            }
+            at = self.rest(at);
+        }
+        let t = self.builtin_type_new(key);
+        let entry = self.spair(handle, t);
+        let head = crate::base::get(self, base, crate::base::TYPE_ALIST);
+        let cell = self.spair(entry, head);
+        crate::base::set(self, base, crate::base::TYPE_ALIST, cell);
+        t
+    }
+
+    /// One builtin kind's type, handlers installed — the reference's
+    /// per-kind `x_type_*_struct` builders.
+    pub(crate) fn builtin_type_new(&mut self, key: Flags) -> Obj {
+        let name = self.kind_handle(key, kind_name(key));
+        let t = self.type_new(name, NIL);
+        if key == FLAG_INT {
+            let sign = self.int_states[crate::prims::tok::ST_SIGN];
+            self.type_set_handler(t, crate::vocabulary::Family::Analyse, sign);
+            let read = self.int_read;
+            self.type_set_handler(t, crate::vocabulary::Family::Read, read);
+        }
+        if key == FLAG_SYM {
+            let h = self.eval_handlers[0];
+            self.type_set_handler(t, crate::vocabulary::Family::Eval, h);
+        }
+        if key == FLAG_PAIR {
+            let h = self.eval_handlers[1];
+            self.type_set_handler(t, crate::vocabulary::Family::Eval, h);
+        }
+        for (cf, _) in CALL_HANDLER_KINDS {
+            if *cf == key {
+                let h = self.callable_call_handler;
+                self.type_set_handler(t, crate::vocabulary::Family::Call, h);
+            }
+        }
+        t
     }
 
     /// Write an object's four header words in place, for a reused slot.

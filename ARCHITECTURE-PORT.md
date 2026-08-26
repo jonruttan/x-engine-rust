@@ -133,12 +133,15 @@ the extra argument. The doors differ per engine as base routes do under
 decision L1; the LAW (handlers govern, and can resolve names in the scope
 they run in) is the same.
 
-Known remaining after the arc: per-base STAMPING. Values are stamped
-with the engine base's types, so replacing a ROOT type's handler poisons
-the replacer's own body — on the reference, a re-aimed base's values
-carry that base's types and the host's carry the host's. The re-aiming
-story is complete for made types today and completes for builtin kinds
-when stamping follows the allocating base.
+PER-BASE STAMPING, COMPLETE: allocation resolves the kind's type
+through the current base's type-alist — found by the kind's handle, or
+built, filed there, and answered, as `x_type_struct_get` does — so a
+child base's values carry the child's types and the host's carry the
+host's. The walk runs per typed allocation, the reference's own cost
+model. Builtin types carry NO write/display handler (the reference's
+constructors leave those stacks nil-headed and the library's printer
+falls back by name); the engine-render-on-every-type deviation is gone
+with the singleton stamp table.
 
 ## The off-heap rule (paid for landing D)
 
@@ -155,8 +158,7 @@ because the stale reference is in a map no mark walks. Grep `HashMap<Obj`.
 Invariant 4's tail: the remaining Rust dispatch special cases shrink to
 walkers as their structures move. (The token base open recorded here
 earlier closed with the tokenizer arc — it is a base with a type-alist
-now.) Two knowns stand: per-base STAMPING (the paragraph above), and the
-`Engine` struct itself — the eval state it still holds as Rust fields
+now.) One known stands: the `Engine` struct itself — the eval state it still holds as Rust fields
 (the tail latch, the save counter, guard depth, the reader) belongs on
 the base spine, reached by route, like everything else that moved. The
 full-suite gap to the reference (95 of 2549, the failure set stable
