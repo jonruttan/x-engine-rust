@@ -177,9 +177,11 @@ and recoverable). An interactive source prefetches to a line boundary
 before each form, so the analyser contest's bounded view holds every
 byte a token on the line can claim; a claimed token typed across a
 newline still scores short, which files never see. The full-suite gap to the
-reference (98 of 2549 — three pin checks past that batch's 60-second
-timeout, which the previous score already flaked against) is tracked
-in x-lang's suite, not here.
+reference is 93 of 2549 from clean state, with the pin spec passing
+whole — the chronic pin failures were a lock its own spec stranded
+across runs, healed on the x-lang side. The gap's families: list
+call, float, proc and the posix tail, apply and improper call forms,
+error-atom printing, BOOL. Tracked in x-lang's suite, not here.
 
 ## What is NOT ported
 
