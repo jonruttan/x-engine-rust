@@ -78,9 +78,36 @@ pub const ROUTES: &[&str] = &[
     crate::vocabulary::ROUTE_TCO_ENV,
     crate::vocabulary::ROUTE_SIGINT,
     crate::vocabulary::ROUTE_ERROR_HANDLER,
+    // The true SINGLETON, walked by name as `false` is.
+    crate::vocabulary::ROUTE_TRUE,
+    // The global-binding TREE the isa spec walks: a BST view of the root
+    // frame, `(binding . (left . right))` per node, sharing the frame's own
+    // `(sym . val)` cells so redefinition is visible through both.
+    crate::vocabulary::ROUTE_ENV_GLOBAL_TREE,
 ];
 
 /// Slots the heap instructions reach for by name.
+pub const OBJ_META_EXTRA: usize = 6;
+pub const ERR_LINE: usize = 3;
+pub const ERR_FILE: usize = 4;
+pub const FILE_REGISTRY: usize = 5;
+
+/// The raw int inside a slot's cell — nil-safe on both hops.
+pub fn cell_int(o: &Objects, base: Obj, n: usize) -> i64 {
+    let c = slot(o, base, n);
+    if c.is_nil() {
+        return 0;
+    }
+    o.data(c, 0).raw() as i64
+}
+
+pub fn set_cell_int(o: &mut Objects, base: Obj, n: usize, v: i64) {
+    let c = slot(o, base, n);
+    if c.is_nil() {
+        return;
+    }
+    o.set_data(c, 0, crate::obj::Word(v as u64));
+}
 pub const TYPE_ALIST: usize = 1;
 pub const ERROR_STR: usize = 2;
 pub const MARK_HOOKS: usize = 8;
@@ -99,6 +126,8 @@ pub const TCO_EXPR: usize = 20;
 pub const TCO_ENV: usize = 21;
 pub const SIGINT: usize = 22;
 pub const ERROR_HANDLER: usize = 23;
+pub const TRUE: usize = 24;
+pub const ENV_GLOBAL_TREE: usize = 25;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -125,6 +154,17 @@ fn cell_spine(o: &mut Objects, n: usize) -> Obj {
     spine
 }
 
+/// As `cell_spine`, but with SPAIR cells the collector traverses — for rows
+/// whose cells hold object references (the files row's fd INT objects).
+fn obj_cell_spine(o: &mut Objects, n: usize) -> Obj {
+    let mut spine = NIL;
+    for _ in 0..n {
+        let cell = o.spair(NIL, NIL);
+        spine = o.spair(cell, spine);
+    }
+    spine
+}
+
 /// A cell whose first data word IS the number, not a pointer to one.
 ///
 /// `%cell-int` in lib/x/boot/data.x is a RAW WORD READ —
@@ -135,7 +175,11 @@ fn cell_spine(o: &mut Objects, n: usize) -> Obj {
 /// The library WRITES these too, with `%set-cell-int!`, so the slot has to be a
 /// place a bare integer lives rather than a reference to one.
 fn raw_cell(o: &mut Objects, n: i64) -> Obj {
-    let cell = o.spair(NIL, NIL);
+    // A RAW kind, not a spair: the collector marks it and never traverses
+    // it. Its value word GROWS (line numbers, counters), and a spair cell
+    // here had the mark phase treating every 8-aligned value as an object
+    // reference — writing mark bits into arbitrary heap words.
+    let cell = o.alloc(crate::objects::FLAG_BUFMARKS, 2);
     o.set_data(cell, 0, crate::obj::Word(n as u64));
     cell
 }
@@ -165,17 +209,41 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     // line one, and x-lang's own spec says so.
     let line = raw_cell(o, 1);
     set_slot(o, spine, LINE, line);
-    // stdin, stdout, stderr: the library indexes the second and third.
-    let files = cell_spine(o, 3);
+    // The extended-meta policy cell: how many meta words an allocation
+    // prepends. Zero until the boot arms it.
+    let mc = raw_cell(o, 0);
+    set_slot(o, spine, OBJ_META_EXTRA, mc);
+    // The raise-site snapshot cells (io error-line / error-file read them).
+    let el = raw_cell(o, 0);
+    set_slot(o, spine, ERR_LINE, el);
+    let ef = raw_cell(o, 0);
+    set_slot(o, spine, ERR_FILE, ef);
+    // stdin, stdout, stderr: the library indexes the second and third, and
+    // the engine's own write path reads the second, so the cells carry the
+    // real descriptors from birth.
+    let files = obj_cell_spine(o, 3);
+    let mut at = files;
+    for fd in 0..3i64 {
+        let c = o.first(at);
+        let v = o.int(fd);
+        o.set_data(c, 0, v.word());
+        at = o.rest(at);
+    }
     set_slot(o, spine, FILES, files);
     // Counters, read through %cell-int. Nine, which is what lib/x/tool/profile.x
     // names; unused ones simply stay zero.
     let profile = cell_spine(o, 9);
     set_slot(o, spine, PROFILE, profile);
-    // The false SINGLETON itself, not a cell holding it: x-lang writes into its
-    // rest, so the object the route answers must be the one with the room.
+    // A HOLDER CELL per singleton, as the reference's eval fields are: the
+    // route lands on the holder, whose FIRST is the singleton — what the
+    // predicates and the base-paths spec read — and whose REST is scratch
+    // x-lang writes (module.x hangs the include list there).
     let f = o.false_obj();
-    set_slot(o, spine, FALSE, f);
+    let fh = o.spair(f, NIL);
+    set_slot(o, spine, FALSE, fh);
+    let t = o.true_obj();
+    let th = o.spair(t, NIL);
+    set_slot(o, spine, TRUE, th);
     // A cell holding the fd, so `(%cell-int (first …))` reads it. 0 is stdin,
     // which is where a bare engine's program arrives.
     let fd = raw_cell(o, 0);
@@ -240,6 +308,11 @@ pub fn state_nodes(o: &Objects, base: Obj) -> [Obj; 4] {
     ]
 }
 
+/// The LINE and OBJ-META-EXTRA spine nodes, cached beside `state_nodes`.
+pub fn loc_nodes(o: &Objects, base: Obj) -> [Obj; 2] {
+    [cell(o, base, LINE), cell(o, base, OBJ_META_EXTRA)]
+}
+
 /// Read one of the named slots.
 pub fn get(o: &Objects, base: Obj, n: usize) -> Obj {
     slot(o, base, n)
@@ -260,6 +333,45 @@ pub fn push(o: &mut Objects, base: Obj, n: usize, v: Obj) -> Obj {
     let cell = o.pair(v, head);
     set_slot(o, base, n, cell);
     cell
+}
+
+/// A global-tree node: the binding, then a kids cell (left . right).
+fn tree_node(o: &mut Objects, binding: Obj) -> Obj {
+    let kids = o.spair(NIL, NIL);
+    o.spair(binding, kids)
+}
+
+/// Mirror one root-frame binding into the base's global tree.
+///
+/// The node holds the frame's own `(sym . val)` cell, so `set!` through
+/// either view is seen by both. Insertion is keyed by the symbol's word —
+/// any total order gives the walker its shape. A name already mirrored is
+/// left alone: `Envs::bind` rebinds in place, so its cell is already here.
+pub fn global_tree_insert(o: &mut Objects, base: Obj, binding: Obj) {
+    let c = cell(o, base, ENV_GLOBAL_TREE);
+    let root = o.first(c);
+    if root.is_nil() {
+        let n = tree_node(o, binding);
+        o.set_data(c, 0, n.word());
+        return;
+    }
+    let key = o.first(binding);
+    let mut at = root;
+    loop {
+        let b = o.first(at);
+        if o.first(b) == key {
+            return;
+        }
+        let kids = o.rest(at);
+        let left = key.word().raw() < o.first(b).word().raw();
+        let child = if left { o.first(kids) } else { o.rest(kids) };
+        if child.is_nil() {
+            let n = tree_node(o, binding);
+            o.set_data(kids, if left { 0 } else { 1 }, n.word());
+            return;
+        }
+        at = child;
+    }
 }
 
 #[cfg(test)]

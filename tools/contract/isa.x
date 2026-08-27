@@ -51,6 +51,7 @@
   (heap mark-hook! gc)
   (heap free-hook! gc)
   (heap mark-root! gc)
+  (heap check gc)             ; DEBUG: verify every reference slot on the chain
   (alloc limit! gc)           ; ENFORCED, not merely recorded
 
   ; --- the reader's tape and scorer ---
@@ -239,6 +240,7 @@
 )))
 
 (def %isa-aliases (lit (
+  (%raw-include include)
 )))
 
 (def %isa-values (lit (

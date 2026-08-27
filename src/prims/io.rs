@@ -44,12 +44,42 @@ pub(crate) fn engine_render(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 pub(crate) const ENGINE_RENDER: PrimDef =
     PrimDef::row(Some("%engine-render"), None, 1, engine_render_u);
 
-fn write_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let text = a_.str_val(a[0]);
-    let out = std::io::stdout();
-    let mut h = out.lock();
-    let _ = h.write_all(text.as_bytes());
-    let _ = h.flush();
+/// The fd the library has routed output to: the second cell of the base's
+/// files row, which `Stream with-file` and `%stderr` swap.
+fn out_fd(a_: &Objects, base: Obj) -> i64 {
+    let files = crate::base::get(a_, base, crate::base::FILES);
+    if files.is_nil() {
+        return 1;
+    }
+    let cell = a_.first(a_.rest(files));
+    if cell.is_nil() {
+        return 1;
+    }
+    // The slot holds an INT object — the boot fills 0/1/2 and
+    // `%set-output-fd!` stores `File open`'s answer with set-first!. A raw
+    // word (library code writing through %set-cell-int!) is taken as the
+    // descriptor itself; the object test is strict enough that a small fd
+    // can never read as one.
+    let w = a_.data(cell, 0);
+    let o = w.as_obj();
+    if w.raw() >= 8 && w.raw() % 8 == 0 && a_.is(o, crate::objects::FLAG_INT) {
+        a_.as_int(o)
+    } else {
+        w.raw() as i64
+    }
+}
+
+fn write_str(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
+    let text = e.objects.str_val(a[0]);
+    let fd = out_fd(&e.objects, base);
+    if fd == 1 {
+        let out = std::io::stdout();
+        let mut h = out.lock();
+        let _ = h.write_all(text.as_bytes());
+        let _ = h.flush();
+    } else {
+        x_engine_foreign::write_fd(fd as i32, text.as_bytes());
+    }
     Ok(NIL)
 }
 
@@ -129,6 +159,27 @@ fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     #[cfg(not(unix))]
     let fd = -1;
     e.files.push(file);
+    // Register (id . path) in the persistent file registry and stamp the
+    // file's buffer with the id — a form's file id rides its meta and is
+    // read when an error fires, possibly long after this include pops.
+    let file_id = {
+        let base = e.base;
+        // The row's VALUE is the (id . path) alist itself; ids grow
+        // monotonically and the head entry carries the highest.
+        let alist = crate::base::get(&e.objects, base, crate::base::FILE_REGISTRY);
+        let id = if alist.is_nil() {
+            1
+        } else {
+            let head = e.objects.first(alist);
+            e.objects.data(e.objects.first(head), 0).raw() as i64 + 1
+        };
+        let idc = e.objects.spair(NIL, NIL);
+        e.objects.set_data(idc, 0, crate::obj::Word(id as u64));
+        let entry = e.objects.spair(idc, p);
+        let cell = e.objects.spair(entry, alist);
+        crate::base::set(&mut e.objects, base, crate::base::FILE_REGISTRY, cell);
+        id
+    };
     let top = e.root_env();
     // HIDE what is pending, so every form in the file sees tail position exactly
     // as it would at the true top level. The reference does the same thing to
@@ -143,7 +194,7 @@ fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     // The hidden list is reachable from nothing while the load runs.
     let mark = e.root_mark();
     e.root_push(outer);
-    let r = e.eval_source_fd(&src, top, fd);
+    let r = e.eval_source_file(&src, top, fd, file_id);
     e.restore_pending(outer);
     e.root_truncate(mark);
     e.files.pop();
@@ -152,7 +203,7 @@ fn include(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 
 crate::uniform_value!(engine_render_u, engine_render, 1);
 crate::uniform_op!(include_u, include);
-crate::uniform_value!(write_str_u, write_str, 1);
+crate::uniform_engine!(write_str_u, write_str, 1);
 crate::uniform_engine!(read_char_u, read_char, 0);
 crate::uniform_engine!(read_form_u, read_form, 0);
 crate::uniform_engine!(repl_read_u, repl_read, 0);

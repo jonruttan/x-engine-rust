@@ -45,6 +45,13 @@ fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
         // depth, silently turning a non-local exit into a handled error.
         Err(cond) if e.is_escaping() => Err(cond),
         Err(cond) => {
+            // Freeze the raise-site location into err-line/err-file BEFORE the
+            // handler body runs and moves the live counters — the reference
+            // snapshots at raise time, and nothing evaluates in between.
+            let line = crate::base::cell_int(&e.objects, e.base, crate::base::LINE);
+            crate::base::set_cell_int(&mut e.objects, e.base, crate::base::ERR_LINE, line);
+            let file = e.live_file;
+            crate::base::set_cell_int(&mut e.objects, e.base, crate::base::ERR_FILE, file);
             let (name, handler) = if e.objects.is_cell(spec) {
                 (e.objects.first(spec), e.objects.rest(spec))
             } else {

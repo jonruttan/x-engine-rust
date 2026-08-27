@@ -59,6 +59,7 @@ impl Engine {
         self.objects.set_buf_retain(b, 0);
         self.objects.set_buf_cursor(b, 0);
         self.objects.set_buf_write(b, w - c);
+        self.objects.buf_line_shift(b, c);
     }
 
     pub fn set_input(&mut self, src: &str) {
@@ -74,9 +75,13 @@ impl Engine {
 
     /// Push a source onto the base's input rows — the reference's include
     /// pushing (fd, line counter, read buffer) onto the base stacks.
-    pub(crate) fn input_push(&mut self, src: &str, fd: i64) {
+    /// Push a source, stamping the buffer with the source-file id that
+    /// `include` registered — every form read from it carries the id in its
+    /// meta, which is what error-file reports.
+    pub(crate) fn input_push_file(&mut self, src: &str, fd: i64, file_id: i64) {
         let text = self.objects.str_new(src);
         let b = self.objects.buf(text, 0);
+        self.objects.set_buf_file_id(b, file_id);
         let base = self.base;
         let bhead = crate::base::get(&self.objects, base, crate::base::BUFFER);
         let bcell = self.objects.spair(b, bhead);
@@ -179,11 +184,16 @@ impl Engine {
     /// As `eval_source`, recording `fd` on the filein row for the duration —
     /// what `include` pushes for the file it opened.
     pub fn eval_source_fd(&mut self, src: &str, env: EnvId, fd: i64) -> EvalResult {
+        self.eval_source_file(src, env, fd, 0)
+    }
+
+    /// As `eval_source_fd`, with the source-file id `include` registered.
+    pub fn eval_source_file(&mut self, src: &str, env: EnvId, fd: i64, file_id: i64) -> EvalResult {
         // PUSHED as the current source, so `io read` inside a reader handler
         // reads from THIS text rather than from the process's input. The vector
         // reader in lib/x/type/vector.x does exactly that, and reaching past the
         // file ate a form off stdin — which is how the REPL launcher disappeared.
-        self.input_push(src, fd);
+        self.input_push_file(src, fd, file_id);
         // Top level owns the root stack; the previous source's rooted result
         // is done with when another source arrives. Nested entry — include
         // evaluates a file mid-eval — must not touch it: the outer

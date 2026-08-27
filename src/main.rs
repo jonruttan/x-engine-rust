@@ -15,6 +15,10 @@ use x_engine::{diag, engine};
 
 fn main() {
     let mut engine = engine::Engine::new();
+    // Arm two meta units per allocation — source line and file id — as the
+    // reference's CLI does. The engine core leaves the policy at zero; the
+    // CLI is where source-location tracking is a decision.
+    engine.arm_source_meta();
 
     // EVERY argv element, argv[0] included: x-lang's own library documents
     // `args` as carrying the engine path first and drops it itself —

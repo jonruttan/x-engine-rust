@@ -92,6 +92,7 @@ impl Objects {
             }
             self.set_buf_retain(b, 0);
             self.set_buf_cursor(b, 0);
+            self.buf_line_shift(b, c);
             w -= c;
             self.set_buf_write(b, w);
         }

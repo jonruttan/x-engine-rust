@@ -123,6 +123,12 @@ macro_rules! uniform_tower2 {
             match e.op_try($spell, vals[0], vals[1])? {
                 Some(v) => Ok(v),
                 None => {
+                    // After op_try, so a typed operand never reaches it: the
+                    // raw prims are the only nil guard on the bare-core and
+                    // child-base paths (#52, #239).
+                    if vals[0].is_nil() || vals[1].is_nil() {
+                        return Err(e.nil_operand($spell));
+                    }
                     let f: fn(i64, i64) -> i64 = $op;
                     let (x, y) = (e.objects.as_int(vals[0]), e.objects.as_int(vals[1]));
                     Ok(e.objects.int(f(x, y)))

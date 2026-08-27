@@ -70,6 +70,17 @@ impl Envs {
 
     pub fn set_base(&mut self, o: &mut Objects, id: EnvId, base: Obj) {
         o.set_data(id.obj(), BASE, base.word());
+        // A ROOT frame stamped with its base backfills the base's global
+        // tree: registration binds the instruction set before any base
+        // exists, and those bindings are what the isa spec walks.
+        if o.data(id.obj(), PARENT).as_obj().is_nil() && !base.is_nil() {
+            let mut at = o.data(id.obj(), CHAIN).as_obj();
+            while !at.is_nil() {
+                let p = o.first(at);
+                crate::base::global_tree_insert(o, base, p);
+                at = o.rest(at);
+            }
+        }
     }
 
     pub fn base_of(&self, o: &Objects, id: EnvId) -> Obj {
@@ -97,6 +108,14 @@ impl Envs {
         let head = o.data(h, CHAIN).as_obj();
         let cell = o.spair(pair, head);
         o.set_data(h, CHAIN, cell.word());
+        // A NEW binding in a based root frame is mirrored into the base's
+        // global tree; a rebind updated its shared cell above.
+        if o.data(h, PARENT).as_obj().is_nil() {
+            let base = o.data(h, BASE).as_obj();
+            if !base.is_nil() {
+                crate::base::global_tree_insert(o, base, pair);
+            }
+        }
         if let Some(m) = self.index.get_mut(&h) {
             m.insert(name, pair);
         } else if self.chain_len(o, h) > INDEX_AT {
