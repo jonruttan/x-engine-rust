@@ -54,8 +54,37 @@ fn int_to_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 crate::uniform_tower2!(u_op_1, "+", i64::wrapping_add);
-crate::uniform_tower2!(u_op_2, "-", i64::wrapping_sub);
 crate::uniform_tower2!(u_op_3, "*", i64::wrapping_mul);
+
+/// `(- a)` negates, `(- a b)` subtracts — the reference's `x_prim_sub`.
+/// Unary keeps the int path (typed negation is the tower layer's concern,
+/// not binary op dispatch); binary offers the type-ops registry first.
+/// Nil operands raise on both lanes (#52).
+fn u_op_2(
+    e: &mut crate::engine::Engine,
+    _c: Obj,
+    args: Obj,
+    env: crate::obj::EnvId,
+) -> crate::eval::EvalResult {
+    let vals = e.eargs(args, env, 1)?;
+    if vals.len() < 2 {
+        if vals[0].is_nil() {
+            return Err(e.nil_operand("-"));
+        }
+        let x = e.objects.as_int(vals[0]);
+        return Ok(e.objects.int(x.wrapping_neg()));
+    }
+    match e.op_try("-", vals[0], vals[1])? {
+        Some(v) => Ok(v),
+        None => {
+            if vals[0].is_nil() || vals[1].is_nil() {
+                return Err(e.nil_operand("-"));
+            }
+            let (x, y) = (e.objects.as_int(vals[0]), e.objects.as_int(vals[1]));
+            Ok(e.objects.int(x.wrapping_sub(y)))
+        }
+    }
+}
 crate::uniform_int2!(u_op_4, "&", |x, y| x & y);
 crate::uniform_int2!(u_op_5, "|", |x, y| x | y);
 crate::uniform_int2!(u_op_6, "^", |x, y| x ^ y);
@@ -178,13 +207,24 @@ mod tests {
         assert!(e.objects.truthy(v), "(int +) and + must be the same object");
     }
 
-    /// A MISSING OPERAND IS NIL, and nil has no slots, so it reads as zero.
-    /// x-engine-c raises "+: operand is nil" here; that is a check at the wrong
-    /// layer, and copying it would import someone else's layer violation.
+    /// A nil operand RAISES — #52 ruled, and the raw prims are the only
+    /// guard on the bare-core and child-base paths (#239). A missing
+    /// operand is nil, so `(+ 1)` raises too; the library's variadic fold
+    /// is what answers 1 there, one layer up.
     #[test]
-    fn a_missing_operand_reads_as_zero() {
-        assert_eq!(int_of("(+ 1)"), 1);
-        assert_eq!(int_of("(*)"), 0);
+    fn a_nil_operand_raises() {
+        assert!(raises("(+ 1)"));
+        assert!(raises("(+ 1 ())"));
+        assert!(raises("(- ())"));
+        assert!(raises("(* () 2)"));
+        assert!(raises("(/ 6 ())"));
+        assert!(raises("(% () 2)"));
+    }
+
+    /// Unary minus negates; the tower layer owns typed negation.
+    #[test]
+    fn unary_minus_negates() {
+        assert_eq!(int_of("(- 5)"), -5);
     }
 
     /// Extra operands are ignored: a body indexes the slots its arity declares.

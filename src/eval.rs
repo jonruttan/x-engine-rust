@@ -297,6 +297,14 @@ impl Engine {
             if form.is_nil() {
                 break Ok(NIL);
             }
+            // The live line/file counters follow the form being evaluated —
+            // the reference updates them from each expression's meta, so a
+            // raise anywhere below snapshots the raise site.
+            if self.objects.meta_stamped(form) {
+                let line = self.objects.meta_i(form, 0);
+                self.objects.set_live_line(line);
+                self.live_file = self.objects.meta_i(form, 1);
+            }
             // THE MACHINE, as `x_eval` draws it: a value whose type word is
             // nil or a raw marker is ITSELF, and everything else is decided by
             // its type's EVAL handler — symbol lookup is the SYMBOL type's
@@ -849,11 +857,11 @@ mod tests {
         );
     }
 
-    /// Missing operands are nil, extra ones ignored. Not a check — a machine
-    /// reads the slots its instruction declares.
+    /// Missing operands are nil (which `+` then refuses under #52), extra
+    /// ones ignored — a machine reads the slots its instruction declares.
     #[test]
     fn operands_are_padded_and_extras_dropped() {
-        assert_eq!(int_of("(+ 1)"), 1);
+        assert!(raises("(+ 1)"));
         assert_eq!(int_of("(+ 1 2 99)"), 3);
     }
 

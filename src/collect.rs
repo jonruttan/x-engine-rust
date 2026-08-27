@@ -118,12 +118,27 @@ impl Objects {
             && (w / 8) as usize + crate::objects::META_LEN as usize <= self.heap.words_len()
     }
 
+    /// Does an object's claimed data extent fit inside the heap? True for
+    /// every real object; a conservative hit on a word run that is not one
+    /// fails it and is marked without traversal.
+    fn extent_ok(&self, o: Obj, n: u64) -> bool {
+        (o.word().raw() / 8)
+            .checked_add(crate::objects::META_LEN + n)
+            .map(|end| end as usize <= self.heap.words_len())
+            .unwrap_or(false)
+    }
+
     /// Mark everything reachable from `stack`. One walk: an environment is
     /// heap data — a holder whose slots are its chain, its parent holder and
     /// its base — so a closure's captured env traces like any other slot.
     pub(crate) fn mark(&mut self, stack: &mut Vec<Obj>) {
         while let Some(o) = stack.pop() {
             if o.is_nil() || !self.plausible(o.word().raw()) || self.is_marked(o) {
+                continue;
+            }
+            // Only a word run carrying the allocation magic is an object.
+            // Writing a mark through anything else corrupts live data.
+            if self.flags_word(o) & crate::objects::FLAG_MAGIC_BIT == 0 {
                 continue;
             }
             self.set_mark(o);
@@ -134,7 +149,13 @@ impl Objects {
                 stack.push(ty);
             }
 
-            let flags = Flags::from_word(Word(self.flags_word(o) & !MARK));
+            // The KIND bits only: the mark bit, the meta bit and the meta
+            // count all ride the same word, and a flags value they contaminate
+            // matches no kind — an armed PAIR would traverse as opaque and its
+            // children would be swept alive.
+            let flags = Flags::from_word(Word(
+                self.flags_word(o) & !crate::objects::FLAG_META_BIT & 0x00ff_ffff_ffff_ffff,
+            ));
             let n = self.data_len(o);
             match flags {
                 // Both words are references.
@@ -164,8 +185,10 @@ impl Objects {
                 // REST — lib/x/boot/module.x does that at boot and reads it for
                 // the rest of the run.
                 f if f == FLAG_FALSE => {
-                    for i in 0..n {
-                        stack.push(self.data(o, i).as_obj());
+                    if self.extent_ok(o, n) {
+                        for i in 0..n {
+                            stack.push(self.data(o, i).as_obj());
+                        }
                     }
                 }
                 // val mark (raw), the marks pair, the text, the RO flag (raw).
@@ -184,7 +207,12 @@ impl Objects {
                 // are x-lang's to use. The raw kinds have no references to miss;
                 // the instances are traced conservatively.
                 _ => {
-                    if flags.raw() == 0 {
+                    // Bounded by the heap: a conservative reference can land
+                    // on a word run whose fake "length" is an address — armed
+                    // allocations put zero meta words before every header, so
+                    // a misaligned hit reads flags 0 with a giant n, and an
+                    // unclamped walk burns a minute inside one mark step.
+                    if flags.raw() == 0 && self.extent_ok(o, n) {
                         for i in 0..n {
                             let w = self.data(o, i).raw();
                             if self.plausible(w) {
@@ -218,6 +246,7 @@ impl Objects {
                 // free list for an allocation of exactly this size. Nothing is
                 // compacted, so every address x-lang is holding stays valid.
                 let n = self.data_len(at);
+                let meta = (self.flags_word(at) >> crate::objects::FLAG_META_SHIFT) & 0x3f;
                 if self.poison_freed {
                     let was = self.flags_word(at) & !MARK;
                     // Keep the first two data words as well: when the trap
@@ -230,7 +259,7 @@ impl Objects {
                 } else {
                     self.set_flags_word(at, FREED);
                 }
-                self.free.entry(n).or_default().push(at);
+                self.free.entry((n << 8) | meta).or_default().push(at);
                 freed += 1;
             }
             at = next;
@@ -240,14 +269,17 @@ impl Objects {
         freed
     }
 
-    /// Take a free object of exactly `n` data words, if one is waiting.
-    pub(crate) fn take_free(&mut self, n: usize) -> Option<Obj> {
+    /// Take a free object of exactly `n` data words and `meta` meta words, if
+    /// one is waiting.
+    pub(crate) fn take_free(&mut self, n: usize, meta: usize) -> Option<Obj> {
         // While poisoning, nothing is handed back: reuse overwrites the poison,
         // which is exactly what hides the bug being hunted.
         if self.poison_freed {
             return None;
         }
-        self.free.get_mut(&(n as u64)).and_then(|v| v.pop())
+        self.free
+            .get_mut(&(((n as u64) << 8) | meta as u64))
+            .and_then(|v| v.pop())
     }
 
     /// How many objects are on the free list.

@@ -56,7 +56,7 @@
   ; literal first/rest chains in lib/, which assumed x-engine-c's layout; the
   ; library now resolves them by name, which is what decision L1 requires.
   (line    base r r r r r r r r r r r r r f)
-  (files   base r r r r r r r r r r r r r r)
+  (files   base r r r r r r r r r r r r r r f)
   (profile base r r r r r r r r r r r r r r r)
   ; The false SINGLETON, whose REST x-lang uses as scratch (module.x hangs the
   ; include list there), so this answers the OBJECT ITSELF -- the final step
@@ -81,6 +81,10 @@
   (tco-env       base r r r r r r r r r r r r r r r r r r r r r f)
   (sigint        base r r r r r r r r r r r r r r r r r r r r r r)
   (error-handler base r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; The true SINGLETON, value-kind as false's row is.
+  (true          base r r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; The global-binding tree: a BST view of the root frame, (binding . (left . right)).
+  (env-global-tree base r r r r r r r r r r r r r r r r r r r r r r r r r f)
 
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
   ; These steps are the REFERENCE ENGINE'S, chosen

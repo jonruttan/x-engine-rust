@@ -75,6 +75,25 @@ pub const FLAG_CHAR: Flags = Flags::new(0x13);
 pub const FLAG_STR: Flags = Flags::new(0x14);
 pub const FLAG_PTR: Flags = Flags::new(0x15);
 
+/// EXTENDED META marker, 0x80: set on an object whose allocation prepended
+/// meta words (source line, file id) BEFORE its header. Committed in
+/// tools/contract/obj-layout.x as `%obj-flag-meta`; the library reads the raw
+/// flags word and tests this bit, so it lives in STORAGE — `flags()` masks it
+/// back out so kind tests stay exact.
+pub const FLAG_META_BIT: u64 = 0x80;
+/// Where the meta-word COUNT rides in the stored flags word — high byte, out
+/// of reach of every kind bit and of the library's `& %obj-flag-meta` test.
+/// Sweep keys the free list with it so a chunk is only reused by an
+/// allocation wanting exactly the meta room it has.
+pub const FLAG_META_SHIFT: u64 = 56;
+/// The ALLOCATION MAGIC bit, set in every allocated object's stored flags
+/// word and cleared when the sweep frees it. The mark phase refuses to
+/// traverse or mark a word run that does not carry it: a conservative
+/// reference (an instance slot holding a raw length, an offset that merely
+/// looks aligned) must never have mark bits WRITTEN through it — that was
+/// live-data corruption, surfacing as garbage digests mid-collect.
+pub const FLAG_MAGIC_BIT: u64 = 1 << 62;
+
 /// Not simple-type codes: these have their own marker bits, because the low
 /// nibble is reserved for per-type attributes.
 pub const FLAG_PAIR: Flags = Flags::new(0x0100);
@@ -244,6 +263,12 @@ pub struct Objects {
     /// tco-env, error-handler — resolved once per base switch. Spine cells
     /// never move, so the addresses hold while the base is current.
     pub(crate) state_nodes: [Obj; 4],
+    /// The LINE and OBJ-META-EXTRA spine nodes of the current base, cached at
+    /// base switch: the line is written per evaluated form and the policy read
+    /// per allocation, and walking the spine each time was the whole suite's
+    /// runtime. The NODES are spine-stable; their inner cells swap (include
+    /// pushes a fresh line cell), so the cache holds nodes, not cells.
+    pub(crate) loc_nodes: [Obj; 2],
     /// The INT token reader instruction, installed with the analyser states.
     pub(crate) int_read: Obj,
     /// The tag every registered type TYPE carries in its own type word.
@@ -327,7 +352,8 @@ pub const STAMPED_KINDS: &[(Flags, &str)] = &[
     (FLAG_CHAR, "CHARACTER"),
     (FLAG_STR, "STRING"),
     (FLAG_SYM, "SYMBOL"),
-    (FLAG_PAIR, "PAIR"),
+    // "LIST", as the reference names its pair kind (X_TYPE_LIST_NAME).
+    (FLAG_PAIR, "LIST"),
     (FLAG_PTR, "POINTER"),
     (FLAG_PRIM, "PRIMITIVE"),
     (FLAG_FN, "PROCEDURE"),
@@ -351,7 +377,19 @@ pub fn kind_index(flags: Flags) -> Option<usize> {
 /// allocation, where there is no object to ask yet.
 pub fn reported_kind(flags: Flags) -> Flags {
     if flags == FLAG_FOREIGN {
-        FLAG_PRIM
+        // A dlsym'd address is a POINTER on the reference — `(type of
+        // %c-fork)` equals `(type of (%str->ptr "x"))` — its callability
+        // is flag dispatch, not type.
+        FLAG_PTR
+    } else if flags == FLAG_WRAP {
+        // The reference builds a wrap AS a procedure (`x_mkwrap` =
+        // `x_make_procedure` with the WRAP flag), so both kinds carry the ONE
+        // registered PROCEDURE type. A continuation stays its own kind: the
+        // reference's is a real closure whose call restores the captured
+        // stack, and this engine's cannot re-enter a returned extent — typing
+        // it PROCEDURE made `(procedure? k)` invite exactly that call, whose
+        // uncatchable escape tears down the whole run.
+        FLAG_FN
     } else {
         flags
     }
@@ -386,6 +424,7 @@ impl Objects {
             input_cap: 0,
             base: NIL,
             state_nodes: [NIL; 4],
+            loc_nodes: [NIL; 2],
             int_read: NIL,
             spair_marker: NIL,
             satom_marker: NIL,
@@ -429,12 +468,28 @@ impl Objects {
         self.heap.note_allocation();
         self.live += 1;
         let ty = self.stamp_for(flags);
+        let meta = self.meta_extra();
 
-        // A swept object of exactly this size is reused before the heap grows.
-        // Exactly, because the collector is NON-MOVING: reclaimed words stay
-        // where they are and can only serve an allocation that fits them.
-        if let Some(o) = self.take_free(n) {
+        // A swept object of exactly this size AND meta room is reused before
+        // the heap grows. Exactly, because the collector is NON-MOVING:
+        // reclaimed words stay where they are and can only serve an
+        // allocation that fits them — meta words included, since they live
+        // BEFORE the header.
+        if let Some(o) = self.take_free(n, meta) {
             self.write_header(o, ty, flags, n);
+            let w = self
+                .heap
+                .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+                .raw();
+            let mbits = if meta > 0 {
+                FLAG_META_BIT | ((meta as u64) << FLAG_META_SHIFT)
+            } else {
+                0
+            };
+            self.heap.set_word(
+                o.addr().plus(SLOT_FLAGS * WORD as u64),
+                Word(w | FLAG_MAGIC_BIT | mbits),
+            );
             for i in 0..n as u64 {
                 self.set_data(o, i, NIL.word());
             }
@@ -442,13 +497,25 @@ impl Objects {
             return o;
         }
 
+        // Meta units are PREPENDED: unit I at word -(I+1) from the object,
+        // which is the layout obj-layout.x commits and reflect.x reads.
+        for _ in 0..meta {
+            self.heap.push(Word(0));
+        }
         let at = self.heap.frontier();
         // THREADED ON THE CHAIN at birth. The collector has no other way to find
         // an object: the heap is a flat Vec of words with no object table, so
         // sweeping means walking this link from the newest allocation back.
         self.heap.push(self.heap_chain.word());
         self.heap.push(ty.word());
-        self.heap.push(Word(flags.raw()));
+        let stored = flags.raw()
+            | FLAG_MAGIC_BIT
+            | if meta > 0 {
+                FLAG_META_BIT | ((meta as u64) << FLAG_META_SHIFT)
+            } else {
+                0
+            };
+        self.heap.push(Word(stored));
         self.heap.push(Word(n as u64));
         for _ in 0..n {
             self.heap.push(NIL.word());
@@ -456,6 +523,72 @@ impl Objects {
         let o = at.as_obj();
         self.heap_chain = o;
         o
+    }
+
+    /// Whether this object's allocation prepended meta words — the raw
+    /// flags word's META bit, which `flags()` masks out of kind tests.
+    pub fn meta_stamped(&self, o: Obj) -> bool {
+        !o.is_nil()
+            && self
+                .heap
+                .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+                .raw()
+                & FLAG_META_BIT
+                != 0
+    }
+
+    /// Meta unit `i`, at word -(i+1) from the object — obj-layout.x's
+    /// committed placement. Zero for an object with none.
+    pub fn meta_i(&self, o: Obj, i: u64) -> i64 {
+        if !self.meta_stamped(o) {
+            return 0;
+        }
+        let at = o.addr().raw().wrapping_sub((i + 1) * WORD as u64);
+        self.heap.word(crate::obj::Addr::new(at)).raw() as i64
+    }
+
+    pub fn set_meta_i(&mut self, o: Obj, i: u64, v: i64) {
+        if !self.meta_stamped(o) {
+            return;
+        }
+        let at = o.addr().raw().wrapping_sub((i + 1) * WORD as u64);
+        self.heap
+            .set_word(crate::obj::Addr::new(at), Word(v as u64));
+    }
+
+    /// Stamp a freshly read object's source location: line in meta 0, file id
+    /// in meta 1 — what the reference's `x_token_read` does per token.
+    pub fn stamp_meta(&mut self, o: Obj, line: i64, file: i64) {
+        self.set_meta_i(o, 0, line);
+        self.set_meta_i(o, 1, file);
+    }
+
+    /// How many meta words the current base's policy cell arms, read live —
+    /// the library writes the cell directly with `%set-cell-int!`. Capped so a
+    /// clobbered cell cannot turn every allocation into a runaway.
+    fn meta_extra(&self) -> usize {
+        let node = self.loc_nodes[1];
+        if node.is_nil() {
+            return 0;
+        }
+        let cell = self.first(node);
+        if cell.is_nil() {
+            return 0;
+        }
+        (self.data(cell, 0).raw() as usize).min(16)
+    }
+
+    /// Write the live source line through the cached LINE node.
+    pub(crate) fn set_live_line(&mut self, line: i64) {
+        let node = self.loc_nodes[0];
+        if node.is_nil() {
+            return;
+        }
+        let cell = self.first(node);
+        if cell.is_nil() {
+            return;
+        }
+        self.set_data(cell, 0, Word(line as u64));
     }
 
     /// The type word a fresh object of these flags carries. See the type-word
@@ -589,7 +722,13 @@ impl Objects {
                 self.holders_of(o)
             );
         }
-        Flags::from_word(self.heap.word(o.addr().plus(SLOT_FLAGS * WORD as u64)))
+        Flags::from_word(Word(
+            self.heap
+                .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+                .raw()
+                & !FLAG_META_BIT
+                & 0x00ff_ffff_ffff_ffff,
+        ))
     }
 
     pub fn is(&self, o: Obj, flags: Flags) -> bool {

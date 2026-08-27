@@ -74,17 +74,23 @@ impl Engine {
         if self.objects.buf_peek(b).is_none() {
             return Ok(None);
         }
-        if let Some(v) = self.try_macro(b)? {
-            return Ok(Some(v));
-        }
-        if self.objects.buf_peek(b) == Some(b'(') {
+        // The form's source location, taken where it BEGINS — stamped on
+        // whatever comes back, as the reference's `x_token_read` stamps each
+        // token. Meta words exist only while the policy cell arms them.
+        let line = self.objects.buf_line(b);
+        let file = self.objects.buf_file_id(b);
+        let got = if let Some(v) = self.try_macro(b)? {
+            v
+        } else if self.objects.buf_peek(b) == Some(b'(') {
             self.objects.buf_bump(b);
-            return Ok(Some(self.read_list_form(b)?));
-        }
-        if let Some(v) = self.objects.buf_read_one_builtin_except_atom(b) {
-            return Ok(Some(v));
-        }
-        Ok(Some(self.read_atom_delimited(b)?))
+            self.read_list_form(b)?
+        } else if let Some(v) = self.objects.buf_read_one_builtin_except_atom(b) {
+            v
+        } else {
+            self.read_atom_delimited(b)?
+        };
+        self.objects.stamp_meta(got, line, file);
+        Ok(Some(got))
     }
 
     /// An atom scan that honours registered DELIMIT handlers: after each

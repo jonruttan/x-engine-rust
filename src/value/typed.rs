@@ -351,6 +351,13 @@ impl Objects {
         if !carried.is_nil() && carried != self.spair_marker && carried != self.satom_marker {
             return carried;
         }
+        // An engine-built spine cell REPORTS as a pair — the reference's
+        // catalog rows answer `pair?` #t — while its marker word keeps it
+        // self-evaluating (the eval loop reads the raw word, not this).
+        if carried == self.spair_marker && !self.base.is_nil() {
+            let base = self.base;
+            return self.builtin_type_in(base, crate::objects::FLAG_PAIR);
+        }
         // A nil type word IS the answer: the reference leaves `#t`, `#f`,
         // and its static sentinels untyped, and `lib/x/type/bool.x` claims
         // the singletons precisely because `(type of #t)` answered nil.

@@ -26,13 +26,18 @@ use crate::eval::EvalResult;
 use crate::obj::{Obj, NIL};
 use crate::prim::PrimDef;
 
-/// `(heap count)` — how many objects have been allocated.
+/// `(heap count)` — how many objects are on the heap NOW.
 ///
-/// Must INCREASE across an allocation, which is the whole of what the contract
-/// asks — so it counts allocations EVER and collection does not lower it. The
-/// live count is a different number and is not what x-lang asked for here.
+/// The reference walks its live chain, so the count DROPS across a
+/// collection — the #294 digest spec measures net growth with it.
+/// Allocations-ever is the `alloc-count` profile counter, not this.
 fn count(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
-    let n = e.objects.alloc_count() as i64;
+    let mut n: i64 = 0;
+    let mut at = e.objects.heap_chain;
+    while !at.is_nil() {
+        n += 1;
+        at = e.objects.chain_next(at);
+    }
     Ok(e.objects.int(n))
 }
 

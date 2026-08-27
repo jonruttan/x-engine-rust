@@ -55,6 +55,10 @@ pub struct Engine {
     pub(crate) files: Vec<std::fs::File>,
     /// Displaced line cells, one per pushed input source.
     pub(crate) line_stack: Vec<Obj>,
+    /// The live source-FILE counter, updated per evaluated form from its meta
+    /// — the reference's `x_eval_field_file`. The line twin lives on the
+    /// base's LINE row.
+    pub(crate) live_file: i64,
     /// Values the EVALUATOR is holding that nothing else points at.
     ///
     /// A form being evaluated came from the reader and lives in a Rust local; a
@@ -145,6 +149,7 @@ impl Engine {
 
             files: Vec::new(),
             line_stack: Vec::new(),
+            live_file: 0,
             roots: Vec::new(),
             env_roots: Vec::new(),
             in_gc: false,
@@ -242,6 +247,7 @@ impl Engine {
         e.base = e.make_base();
         e.objects.base = e.base;
         e.objects.state_nodes = crate::base::state_nodes(&e.objects, e.base);
+        e.objects.loc_nodes = crate::base::loc_nodes(&e.objects, e.base);
         e.register_builtin_types();
         e
     }
@@ -333,6 +339,13 @@ impl Engine {
         for (flags, _) in crate::objects::STAMPED_KINDS.iter().rev() {
             self.objects.builtin_type_in(base, *flags);
         }
+    }
+
+    /// Arm the extended-meta policy at two units — source line and file id —
+    /// which is `x-cli.c`'s `obj_meta_extra = 2`.
+    pub fn arm_source_meta(&mut self) {
+        let base = self.base;
+        crate::base::set_cell_int(&mut self.objects, base, crate::base::OBJ_META_EXTRA, 2);
     }
 
     /// The TYPE a handle names, resolved through the base's type-alist.
@@ -498,10 +511,13 @@ impl Engine {
         self.objects.base = base;
         let fresh = crate::base::state_nodes(&self.objects, base);
         let outer_nodes = std::mem::replace(&mut self.objects.state_nodes, fresh);
+        let fresh_loc = crate::base::loc_nodes(&self.objects, base);
+        let outer_loc = std::mem::replace(&mut self.objects.loc_nodes, fresh_loc);
         let result = f(self);
         self.base = prev;
         self.objects.base = prev;
         self.objects.state_nodes = outer_nodes;
+        self.objects.loc_nodes = outer_loc;
         self.base_stack.pop();
         let inner = self.objects.swap_symbols(outer);
         self.base_syms.insert(base, inner);

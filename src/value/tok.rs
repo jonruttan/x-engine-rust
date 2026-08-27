@@ -30,12 +30,58 @@ impl Objects {
         let marks = self.alloc(FLAG_BUFMARKS, 2);
         self.set_data(marks, 0, Word(at));
         self.set_data(marks, 1, Word(write));
-        let o = self.alloc(FLAG_BUF, 4);
+        let o = self.alloc(FLAG_BUF, 7);
         self.set_data(o, 0, Word(at));
         self.set_data(o, 1, marks.word());
         self.set_data(o, 2, text.word());
         self.set_data(o, 3, Word(0));
+        // Source-location slots, invisible to x-lang (first/rest stop at 0/1):
+        // the line anchor — "line ANCHOR_LINE at byte ANCHOR_POS" — and the
+        // file id `include` stamps.
+        self.set_data(o, 4, Word(0));
+        self.set_data(o, 5, Word(1));
+        self.set_data(o, 6, Word(0));
         o
+    }
+
+    /// The 1-based source line at the cursor, counted from the anchor and
+    /// re-anchored there — each call scans only the bytes since the last.
+    pub fn buf_line(&mut self, b: Obj) -> i64 {
+        let text = self.buf_text(b);
+        let at = self.str_bytes(text);
+        let cursor = self.buf_cursor(b);
+        let mut pos = self.data(b, 4).raw();
+        let mut line = self.data(b, 5).raw() as i64;
+        if pos > cursor {
+            // A rewound cursor (a contest unread): count from the start.
+            pos = 0;
+            line = 1;
+        }
+        for i in pos..cursor {
+            if self.heap.byte(at.plus(i)) == b'\n' {
+                line += 1;
+            }
+        }
+        self.set_data(b, 4, Word(cursor));
+        self.set_data(b, 5, Word(line as u64));
+        line
+    }
+
+    /// Slide the line anchor left by `shift` bytes — what a compaction that
+    /// discards the region's prefix owes the anchor. Lines in the discarded
+    /// prefix were already counted or never will be; the anchor's LINE value
+    /// stays and only its position moves.
+    pub fn buf_line_shift(&mut self, b: Obj, shift: u64) {
+        let pos = self.data(b, 4).raw();
+        self.set_data(b, 4, Word(pos.saturating_sub(shift)));
+    }
+
+    pub fn buf_file_id(&self, b: Obj) -> i64 {
+        self.data(b, 6).raw() as i64
+    }
+
+    pub fn set_buf_file_id(&mut self, b: Obj, id: i64) {
+        self.set_data(b, 6, Word(id as u64));
     }
 
     pub fn is_buf(&self, o: Obj) -> bool {

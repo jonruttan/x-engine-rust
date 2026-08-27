@@ -58,6 +58,7 @@ extern "C" {
     fn dlsym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
     fn clock() -> c_long;
     fn signal(sig: c_int, handler: usize) -> usize;
+    fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
     /// VARIADIC, and declared that way deliberately. On aarch64 a variadic
     /// argument goes on the STACK where a fixed one goes in a register, so a
     /// non-variadic declaration would compile, run, and hand the kernel
@@ -271,6 +272,15 @@ pub fn interrupt_restore() {
 
 pub fn interrupted() -> bool {
     INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Write bytes to a raw file descriptor — the engine's `io write-str` door
+/// when the library has redirected the base's out fd. Answers write(2)'s
+/// result.
+pub fn write_fd(fd: i32, bytes: &[u8]) -> i64 {
+    // SAFETY: write(2) validates the descriptor and reports refusal as
+    // -errno rather than by faulting; the buffer is a live Rust slice.
+    unsafe { write(fd, bytes.as_ptr(), bytes.len()) as i64 }
 }
 
 /// Read one byte of PROCESS memory at a real address — the inverse of the
