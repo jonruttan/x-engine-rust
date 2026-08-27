@@ -58,6 +58,23 @@ fn marshal(e: &Engine, o: Obj) -> u64 {
     e.objects.as_int(o) as u64
 }
 
+/// The #244 guard: nil marshals as NULL in its own slot; int, str, ptr and
+/// foreign values marshal; anything else RAISES BEFORE the call fires —
+/// a structure crossing this door with a wrong argument would fault inside
+/// the callee, past any guard.
+fn marshal_guarded(e: &mut Engine, o: Obj, door: &str) -> Result<u64, crate::diag::Cond> {
+    if o.is_nil() {
+        return Ok(0);
+    }
+    let a_ = &e.objects;
+    if a_.is_str(o) || a_.is_foreign(o) || a_.is_ptr(o) || a_.is_int(o) || a_.is_char(o) {
+        return Ok(marshal(e, o));
+    }
+    let msg = format!("{}: argument is not nil/int/str", door);
+    let v = e.objects.str_new(&msg);
+    Err(crate::diag::Cond::Raised(v))
+}
+
 /// `(ffi dlopen path flags)` — nil path is the SELF handle.
 fn dlopen(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let path = cstr(e, a[0]);
@@ -88,7 +105,10 @@ fn dlsym(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 /// `(ptr call f args...)` — the integer convention, up to seven arguments.
 fn ptr_call(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let f = Foreign(marshal(e, a[0]));
-    let args: Vec<u64> = a[1..].iter().map(|&o| marshal(e, o)).collect();
+    let mut args: Vec<u64> = Vec::with_capacity(a.len().saturating_sub(1));
+    for &o in &a[1..] {
+        args.push(marshal_guarded(e, o, "ptr-call")?);
+    }
     let r = foreign::call_ints(f, &args);
     Ok(e.objects.int(r as i64))
 }
@@ -146,7 +166,10 @@ fn ffi_call(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 /// `(syscall n args...)` — bare, because `lib/x/sys/` reaches it by name.
 fn syscall(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let n = e.objects.as_int(a[0]);
-    let args: Vec<u64> = a[1..].iter().map(|&o| marshal(e, o)).collect();
+    let mut args: Vec<u64> = Vec::with_capacity(a.len().saturating_sub(1));
+    for &o in &a[1..] {
+        args.push(marshal_guarded(e, o, "syscall")?);
+    }
     Ok(e.objects.int(foreign::kernel(n, &args)))
 }
 

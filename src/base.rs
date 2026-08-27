@@ -82,6 +82,7 @@ pub const ROUTES: &[&str] = &[
 
 /// Slots the heap instructions reach for by name.
 pub const TYPE_ALIST: usize = 1;
+pub const ERROR_STR: usize = 2;
 pub const MARK_HOOKS: usize = 8;
 pub const FREE_HOOKS: usize = 9;
 pub const MARK_ROOTS: usize = 10;
@@ -144,6 +145,17 @@ pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
     for _ in 0..ROUTES.len() {
         spine = o.spair(NIL, spine);
     }
+    // The base's own tag: a NON-navigable atom whose bytes are "BASE" — the
+    // reference's x_eval_obj sentinel. `type name` answers its bytes, and the
+    // printer renders the base as the bounded opaque form instead of walking
+    // the whole spine.
+    let tag = o.base_tag();
+    o.set_type_word(spine, tag);
+    // The error-scratch atom: every engine-raised condition writes its
+    // message into this base's atom and raises THE ATOM — one identity the
+    // printer knows (#54). Its bytes are this base's error-str row.
+    let scratch = o.error_atom();
+    set_slot(o, spine, ERROR_STR, scratch);
     let env_obj = o.env_obj(env);
     set_slot(o, spine, PRIMS_SLOT, catalog);
     set_slot(o, spine, ENV_SLOT, env_obj);

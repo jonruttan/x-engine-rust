@@ -169,7 +169,9 @@ impl Objects {
     ///
     /// It does NOT skip blanks: the caller has already done that, and may have
     /// offered the position to a macro first.
-    pub(crate) fn buf_read_one_builtin(&mut self, b: Obj) -> Option<Obj> {
+    /// The non-atom builtin cases; `None` means "a list or an atom starts
+    /// here", which the caller reads with its own machinery.
+    pub(crate) fn buf_read_one_builtin_except_atom(&mut self, b: Obj) -> Option<Obj> {
         let c = self.buf_peek(b)?;
         match c {
             b'(' => None,
@@ -186,7 +188,22 @@ impl Objects {
                 self.buf_bump(b);
                 Some(self.buf_read_char(b))
             }
-            _ => Some(self.buf_read_atom(b)),
+            _ => None,
+        }
+    }
+
+    /// The atom between two marks, as `buf_read_atom` builds one.
+    pub(crate) fn buf_atom_from(&mut self, b: Obj, start: u64, end: u64) -> Obj {
+        let bytes = self.buf_slice(b, start, end);
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        if text.is_empty() {
+            self.buf_bump(b);
+            return NIL;
+        }
+        if let Ok(v) = text.parse::<i64>() {
+            self.int(v)
+        } else {
+            self.sym(&text)
         }
     }
 
@@ -248,7 +265,9 @@ impl Objects {
                 }
                 // A lone `.` between forms marks the tail. `.` is only special
                 // when it stands alone: `.5` and `foo.bar` are ordinary atoms.
-                Some(b'.') if self.buf_dot_is_a_separator(b) && !items.is_empty() => {
+                // With no elements before it, the list IS its tail: `( . x)`
+                // reads as the bare form x.
+                Some(b'.') if self.buf_dot_is_a_separator(b) => {
                     self.buf_bump(b);
                     self.buf_skip_blanks(b);
                     if let Some(t) = self.buf_read_form(b) {

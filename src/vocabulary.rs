@@ -166,6 +166,8 @@ pub const CHAR_UNKNOWN: &str = "?";
 /// The truth answer of every predicate, and the name that evaluates to it.
 /// What an interrupt raises, so a guard can recognise it.
 pub const MSG_STOP: &str = "STOP";
+/// The applicative arg walk's refusal of a dotted spine (#69).
+pub const MSG_IMPROPER_ARGS: &str = "improper argument list";
 
 pub const TRUE: &str = "#t";
 pub const FALSE: &str = "#f";

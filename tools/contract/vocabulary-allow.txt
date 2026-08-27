@@ -43,3 +43,6 @@
 "collect: freed {} objects, {} live; {} envs made (heap-owned)"	(heap check) diagnostic summary; data, not a name
 "read of a FREED object at {:?} slot {} (was {:?})\n  held by: {:?}"	poison read-trap panic; an engine bug, never reachable from x-lang
 "call hooks dispatch through combine"	a Rust unreachable! message; never reaches x-lang
+"heap: pinned reservation exhausted"	diagnostic text, not a name
+"ptr-call"	diagnostic prefix in the marshal guard's message, not a binding
+"syscall"	diagnostic prefix in the marshal guard's message; the row itself is named in ffi.rs

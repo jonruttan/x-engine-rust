@@ -24,6 +24,9 @@
 
 use crate::obj::{Addr, Word, WORD};
 
+/// The pinned reservation: 8GB of virtual address space, committed lazily.
+const PINNED_WORDS: usize = 1 << 30;
+
 pub struct Heap {
     words: Vec<u64>,
     /// How many objects have been allocated.
@@ -37,9 +40,37 @@ pub struct Heap {
 impl Heap {
     pub fn new() -> Self {
         // One reserved word so no real allocation can land at offset 0.
+        // The backing store is PINNED: its full capacity is reserved in one
+        // virtual allocation, pages committing only as they are touched, and
+        // growth stays within it — so the arena's base address NEVER MOVES.
+        // That is what lets a pointer that crosses the foreign door be a real
+        // machine address (law 7, both directions): the reference's heap is
+        // process memory and its addresses are stable, and now so are these.
+        let mut words = Vec::with_capacity(PINNED_WORDS);
+        words.push(0);
         Heap {
-            words: vec![0],
+            words,
             allocations: 0,
+        }
+    }
+
+    /// Growth that would move the base is refused: past the reservation the
+    /// engine stops loudly instead of silently invalidating every pointer
+    /// x-lang holds.
+    fn grow_guard(&self, more: usize) {
+        if self.words.len() + more > self.words.capacity() {
+            panic!("heap: pinned reservation exhausted");
+        }
+    }
+
+    /// The arena offset for a REAL address inside the pinned region, if it is.
+    pub fn from_real(&self, real: u64) -> Option<Addr> {
+        let base = self.words.as_ptr() as u64;
+        let end = base + (self.words.len() * WORD) as u64;
+        if real >= base && real < end {
+            Some(Addr::new(real - base))
+        } else {
+            None
         }
     }
 
@@ -108,6 +139,7 @@ impl Heap {
     }
 
     pub fn push(&mut self, v: Word) {
+        self.grow_guard(1);
         self.words.push(v.raw());
     }
 
@@ -115,6 +147,7 @@ impl Heap {
     /// that the heap grows, which the `core` profile permits precisely because
     /// it has no isa/gc.
     pub fn alloc_bytes(&mut self, n: usize) -> Addr {
+        self.grow_guard(n / WORD + 2);
         let start = self.frontier();
         for _ in 0..n.div_ceil(WORD).max(1) {
             self.words.push(0);
@@ -161,6 +194,7 @@ impl Heap {
     /// unobservable — and storing them terminated is what makes that true here
     /// rather than something to remember at each site.
     pub fn store_bytes(&mut self, bytes: &[u8]) -> Addr {
+        self.grow_guard(bytes.len() / WORD + 2);
         let start = self.frontier();
         let mut w: u64 = 0;
         let mut n = 0;

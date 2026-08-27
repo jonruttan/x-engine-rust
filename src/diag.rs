@@ -49,7 +49,7 @@ impl Cond {
     pub fn message(&self, a: &Objects) -> String {
         match self {
             Cond::Raised(v) => value_text(a, *v),
-            Cond::Unbound(sym) => format!("Unbound SYMBOL '{}", a.sym_name(*sym)),
+            Cond::Unbound(sym) => format!("Unbound SYMBOL '{}'", a.sym_name(*sym)),
             Cond::CannotInclude(path) => crate::vocabulary::MSG_CANNOT_INCLUDE.replace("{}", path),
             Cond::NotAnEnvironment(_) => crate::vocabulary::MSG_NOT_AN_ENV.to_string(),
             Cond::NoProgram => crate::vocabulary::MSG_NO_PROGRAM.to_string(),
@@ -66,8 +66,22 @@ impl Cond {
         match self {
             Cond::Raised(v) => *v,
             other => {
+                // An engine-raised condition delivers the CURRENT BASE's
+                // error atom with the message written into its region — one
+                // identity the printer knows (#54). `(error "msg")` delivers
+                // a real string and never comes through here.
                 let text = other.message(a);
-                a.str_new(&text)
+                let base = a.base;
+                let atom = if base.is_nil() {
+                    crate::obj::NIL
+                } else {
+                    crate::base::get(a, base, crate::base::ERROR_STR)
+                };
+                if atom.is_nil() {
+                    return a.str_new(&text);
+                }
+                a.error_atom_set(atom, &text);
+                atom
             }
         }
     }
@@ -190,7 +204,7 @@ mod tests {
         let sym = a.sym("nope");
         let line = Cond::Unbound(sym).diagnostic(&a).to_string();
         assert!(line.starts_with(PREFIX));
-        assert_eq!(line, "*** ERROR: Unbound SYMBOL 'nope");
+        assert_eq!(line, "*** ERROR: Unbound SYMBOL 'nope'");
     }
 
     /// Matched against x-engine-c deliberately, and asserted here so a reworded
@@ -199,7 +213,7 @@ mod tests {
     fn the_unbound_message_matches_the_reference_engine() {
         let mut a = Objects::new();
         let sym = a.sym("nope");
-        assert_eq!(Cond::Unbound(sym).message(&a), "Unbound SYMBOL 'nope");
+        assert_eq!(Cond::Unbound(sym).message(&a), "Unbound SYMBOL 'nope'");
     }
 
     /// A deliberate raise hands back the VALUE, not its text. `(guard (e e)

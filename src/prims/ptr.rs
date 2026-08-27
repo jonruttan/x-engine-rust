@@ -16,7 +16,7 @@
 //! language, and the ruling is x-lang's, not this engine's to soften.
 
 use crate::diag::Cond;
-use crate::obj::{Addr, Word};
+use crate::obj::Addr;
 use crate::obj::{Obj, NIL};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
@@ -40,16 +40,74 @@ fn int_to_ptr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 fn str_to_ptr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    // The REAL address of the bytes — what leaves for a C call, and what an
+    // argv array a C call reads must hold. The pinned heap is what makes the
+    // address stable enough to hand out. `obj ->ptr` stays the arena-offset
+    // reflection door; this is the FFI one.
     let s = a[0];
     let at = a_.str_bytes(s);
-    Ok(a_.ptr(at))
+    let real = a_.heap.address_of(at);
+    Ok(a_.ptr(Addr::new(real)))
 }
 
-/// A string object VIEWING bytes already in the objects, allocating no storage of
-/// its own. x-lang's rule is to wrap rather than reallocate.
+/// A COPY of the NUL-bounded bytes at the pointer, as the reference's
+/// `x_mkstr` copies — the caller may free or reuse the region, and a view
+/// would dangle with it.
 fn ptr_to_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let at = a_.as_ptr(a[0]);
-    Ok(a_.str_at(at))
+    let mut bytes = Vec::new();
+    let mut p = at.raw();
+    loop {
+        let b = rd_byte(a_, p);
+        if b == 0 {
+            break;
+        }
+        bytes.push(b);
+        p += 1;
+    }
+    Ok(a_.str_from_bytes(&bytes))
+}
+
+/// An accessor operand is either an ARENA OFFSET (what `obj ->ptr` answers,
+/// for reflection) or a REAL ADDRESS (what `str ->ptr` and C calls answer).
+/// The two ranges do not overlap — an offset is bounded by the heap, real
+/// mappings sit far above it — so the value discriminates itself, the same
+/// way the marshal door discriminates on the way out.
+fn in_arena(a_: &Objects, at: u64) -> bool {
+    (at as usize) < a_.heap.words_len() * crate::obj::WORD
+}
+
+/// One byte at an offset-or-real operand address.
+fn rd_byte(a_: &Objects, at: u64) -> u8 {
+    if in_arena(a_, at) {
+        a_.heap.byte(Addr::new(at))
+    } else {
+        crate::foreign::read_byte(at)
+    }
+}
+
+fn wr_byte(a_: &mut Objects, at: u64, v: u8) {
+    if in_arena(a_, at) {
+        a_.heap.set_byte(Addr::new(at), v);
+    } else {
+        crate::foreign::write_byte(at, v);
+    }
+}
+
+fn rd_word(a_: &Objects, at: u64) -> u64 {
+    if in_arena(a_, at) {
+        a_.heap.word(Addr::new(at)).raw()
+    } else {
+        crate::foreign::read_word(at)
+    }
+}
+
+fn wr_word(a_: &mut Objects, at: u64, v: u64) {
+    if in_arena(a_, at) {
+        a_.heap.set_word(Addr::new(at), crate::obj::Word(v));
+    } else {
+        crate::foreign::write_word(at, v);
+    }
 }
 
 /// `(ptr ref p off width)` — `width` bytes from `p+off`, assembled into the low
@@ -63,7 +121,11 @@ fn ptr_ref(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let base = a_.as_ptr(a[0]);
     let off = a_.as_int(a[1]);
     let w = a_.as_int(a[2]).clamp(0, 8) as u32;
-    let v = a_.heap.read_le(base.offset(off), w);
+    let at = base.offset(off);
+    let mut v = 0u64;
+    for i in 0..w as u64 {
+        v |= (rd_byte(a_, at.raw() + i) as u64) << (8 * i);
+    }
     Ok(a_.int(v as i64))
 }
 
@@ -73,7 +135,10 @@ fn ptr_set(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let off = a_.as_int(a[1]);
     let v = a_.as_int(a[2]) as u64;
     let w = a_.as_int(a[3]).clamp(0, 8) as u32;
-    a_.heap.write_le(base.offset(off), v, w);
+    let at = base.offset(off);
+    for i in 0..w as u64 {
+        wr_byte(a_, at.raw() + i, ((v >> (8 * i)) & 0xff) as u8);
+    }
     Ok(NIL)
 }
 
@@ -85,7 +150,7 @@ fn ptr_ref_word(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let base = a_.as_ptr(a[0]);
     let off = a_.as_int(a[1]);
     let at = base.offset(off);
-    Ok(a_.int(a_.heap.word(at).as_i64()))
+    Ok(a_.int(rd_word(a_, at.raw()) as i64))
 }
 
 fn ptr_set_word(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
@@ -93,8 +158,8 @@ fn ptr_set_word(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let off = a_.as_int(a[1]);
     let v = a_.as_int(a[2]) as u64;
     let at = base.offset(off);
-    a_.heap.set_word(at, Word(v));
-    Ok(NIL)
+    wr_word(a_, at.raw(), v);
+    Ok(a[0])
 }
 
 fn mem_cmp(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
@@ -103,8 +168,8 @@ fn mem_cmp(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let n = a_.as_int(a[2]).max(0) as u64;
     let mut r: i64 = 0;
     for i in 0..n {
-        let x = a_.heap.byte(pa.plus(i));
-        let y = a_.heap.byte(pb.plus(i));
+        let x = rd_byte(a_, pa.raw() + i);
+        let y = rd_byte(a_, pb.raw() + i);
         if x != y {
             r = if x < y { -1 } else { 1 };
             break;
@@ -117,7 +182,10 @@ fn mem_copy(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let pd = a_.as_ptr(a[0]);
     let ps = a_.as_ptr(a[1]);
     let n = a_.as_int(a[2]).max(0) as u64;
-    a_.heap.copy_bytes(pd, ps, n);
+    for i in 0..n {
+        let b = rd_byte(a_, ps.raw() + i);
+        wr_byte(a_, pd.raw() + i, b);
+    }
     Ok(NIL)
 }
 
@@ -125,14 +193,19 @@ fn mem_set(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let pd = a_.as_ptr(a[0]);
     let v = a_.as_int(a[1]) as u8;
     let n = a_.as_int(a[2]).max(0) as u64;
-    a_.heap.fill_bytes(pd, v, n);
+    for i in 0..n {
+        wr_byte(a_, pd.raw() + i, v);
+    }
     Ok(NIL)
 }
 
 fn mem_alloc(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    // Answers the REAL address, like `str ->ptr`: an allocated region exists
+    // to be filled and handed across the door.
     let n = a_.as_int(a[0]).max(0) as usize;
     let at = a_.heap.alloc_bytes(n);
-    Ok(a_.ptr(at))
+    let real = a_.heap.address_of(at);
+    Ok(a_.ptr(Addr::new(real)))
 }
 
 /// A NO-OP, and honestly so: the objects never reuses a region, so releasing one

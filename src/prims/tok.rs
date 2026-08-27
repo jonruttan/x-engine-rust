@@ -404,9 +404,26 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
                 e.root_push(scratch);
                 let form = e.in_base(target, |e| e.read_form_in(scratch))?;
                 let Some(form) = form else { break };
+                // A nil token has always STOPPED read-str — the drop-
+                // unterminated-tail contract's other half.
+                if form.is_nil() {
+                    break;
+                }
+                let pos = e.objects.buf_cursor(scratch);
+                // An atom running to the very end of the input has no
+                // delimiter to finish it: it is TRUNCATED, and read-str's
+                // contract drops it silently, as the reference's analyse
+                // protocol does when end of input arrives mid-token.
+                if pos >= len {
+                    let last = e.objects.buf_text(scratch);
+                    let tail = e.objects.heap.byte(e.objects.str_bytes(last).plus(pos - 1));
+                    let delimited = tail.is_ascii_whitespace() || tail == b')' || tail == b';';
+                    if !delimited {
+                        break;
+                    }
+                }
                 e.root_push(form);
                 tokens.push(form);
-                let pos = e.objects.buf_cursor(scratch);
                 e.objects.set_buf_retain(buf, pos);
                 e.objects.set_buf_cursor(buf, pos);
                 continue;
@@ -569,6 +586,11 @@ fn int_sign(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// Leading zero reads DECIMAL (019 = 19); only an explicit 0x/0X prefix is
 /// hex — x-lang #45 R5b, as `x_sexp_int_read` keeps it.
+///
+/// The VALUE parse runs on the raw text past the token span, stopping at the
+/// first invalid character, as the reference's `strtoint(bufferval, NULL, base)`
+/// does: a capped analyser can award `0xFF` a one-byte span, and the value is
+/// still 255 while `xFF` follows as its own token.
 fn int_read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
     let (start, end) = (a_.buf_retain(b), a_.buf_cursor(b));
@@ -577,16 +599,24 @@ fn int_read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     }
     let text = a_.buf_text(b);
     let bytes = a_.bytes_of(text);
-    let raw = std::str::from_utf8(&bytes[start as usize..end as usize]).unwrap_or("");
-    let (sign, body) = match raw.as_bytes().first() {
+    // Greedy over BUFFERED text only: the region past the write mark is
+    // capacity, and under stdin refill it holds stale bytes from earlier fills.
+    let stop = (a_.buf_write(b) as usize).min(bytes.len());
+    let raw = &bytes[(start as usize).min(stop)..stop];
+    let (sign, body) = match raw.first() {
         Some(b'-') => (-1i64, &raw[1..]),
         Some(b'+') => (1, &raw[1..]),
         _ => (1, raw),
     };
-    let n = if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-        i64::from_str_radix(hex, 16).unwrap_or(0)
+    let n = if body.len() > 1 && body[0] == b'0' && (body[1] == b'x' || body[1] == b'X') {
+        body[2..]
+            .iter()
+            .map_while(|c| (*c as char).to_digit(16))
+            .fold(0i64, |acc, d| acc.wrapping_mul(16).wrapping_add(d as i64))
     } else {
-        body.parse::<i64>().unwrap_or(0)
+        body.iter()
+            .map_while(|c| (*c as char).to_digit(10))
+            .fold(0i64, |acc, d| acc.wrapping_mul(10).wrapping_add(d as i64))
     };
     Ok(a_.int(sign * n))
 }

@@ -227,6 +227,10 @@ impl Engine {
         let idx = e.prims.len();
         e.prims.push(crate::prims::core::CALLABLE_CALL);
         e.objects.callable_call_handler = e.objects.prim(idx);
+        // The LIST type's own call handler: indexing and slicing.
+        let idx = e.prims.len();
+        e.prims.push(crate::prims::core::LIST_CALL);
+        e.objects.list_call_handler = e.objects.prim(idx);
 
         // The `%isa-values` objects, made BEFORE the first base, because every
         // base binds them and the root base is made the same way as any other.
