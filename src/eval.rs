@@ -93,8 +93,12 @@ impl Engine {
     /// When BOTH sides carry a handler, the tie is broken by the conversions the
     /// types already declare rather than by an ordering invented here: the side
     /// whose type declares a conversion FROM the other absorbs it (complex
-    /// declares from float, so complex wins). Neither declaring the other falls
-    /// through — an unrelated pair is not this layer's to decide.
+    /// declares from float, so complex wins). Neither declaring the other:
+    /// `=` answers #f — unrelated values are not equal, a question with an
+    /// answer — and every other op RAISES the teaching error, since both
+    /// sides registered it and the callers' raw integer path read instance
+    /// payload words as integers — the address garbage the cross-engine
+    /// fuzzer caught as a divergence (x-lang#584).
     ///
     /// Ops-less types have a nil ops alist, so int/int arithmetic costs a couple
     /// of slot reads and falls through.
@@ -130,8 +134,17 @@ impl Engine {
                     h
                 } else if self.declares_from(tb, name_a) {
                     other
+                } else if op == "=" {
+                    // Unrelated values are not equal — a question with an
+                    // answer, unlike ordering and arithmetic below.
+                    return Ok(Some(self.objects.false_obj()));
                 } else {
-                    return Ok(None);
+                    // Both registered the op: raise, as the reference does
+                    // (x-lang#584) — byte-identical text, second type named.
+                    let b_name = self.objects.sym_name(name_b);
+                    let msg = crate::vocabulary::MSG_NO_CVT_RELATION.replace("{}", &b_name);
+                    let v = self.objects.str_new(&msg);
+                    return Err(Cond::Raised(v));
                 }
             }
         };
