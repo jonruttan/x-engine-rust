@@ -91,10 +91,9 @@ impl Engine {
         let snap = match self.cont_snapshots.get(&id) {
             Some(s) if s.resumable => s.recs.clone(),
             _ => {
-                let msg = self
-                    .objects
-                    .str_new("continuation: extent is not resumable");
-                return Some(Err(Cond::Raised(msg)));
+                return Some(Err(Cond::EngineMsg(
+                    "continuation: extent is not resumable".to_string(),
+                )));
             }
         };
         Some(self.replay(&snap, v))

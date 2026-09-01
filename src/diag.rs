@@ -29,6 +29,14 @@ pub enum Cond {
     /// carried, not its text, because `guard` binds it and a handler that only
     /// ever saw a string could not tell an error from the spelling of one.
     Raised(Obj),
+    /// An ENGINE-raised diagnostic with a formatted message. Carries the
+    /// text, not a string object: `value` delivers the base's error atom
+    /// (the reference's identity, #54) and writes the message into its
+    /// region only when a guard actually binds it. An engine raise wrapped
+    /// in `Raised(str_new(...))` instead is a write-representation
+    /// divergence — the reference's atom writes bare, a string writes
+    /// quoted (#23).
+    EngineMsg(String),
     /// A name with no binding. Carries the symbol.
     Unbound(Obj),
     /// `include` could not read a file.
@@ -49,6 +57,7 @@ impl Cond {
     pub fn message(&self, a: &Objects) -> String {
         match self {
             Cond::Raised(v) => value_text(a, *v),
+            Cond::EngineMsg(text) => text.clone(),
             Cond::Unbound(sym) => format!("Unbound SYMBOL '{}'", a.sym_name(*sym)),
             Cond::CannotInclude(path) => crate::vocabulary::MSG_CANNOT_INCLUDE.replace("{}", path),
             Cond::NotAnEnvironment(_) => crate::vocabulary::MSG_NOT_AN_ENV.to_string(),

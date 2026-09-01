@@ -187,8 +187,7 @@ impl Engine {
                 // rather than answering a partial list.
                 None => {
                     self.root_truncate(mark);
-                    let v = self.objects.str_new("Unterminated input");
-                    return Err(Cond::Raised(v));
+                    return Err(Cond::EngineMsg("Unterminated input".to_string()));
                 }
                 Some(b')') => {
                     self.objects.buf_bump(b);
