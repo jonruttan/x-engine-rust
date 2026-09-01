@@ -148,6 +148,9 @@ pub fn opaque(name: &str) -> String {
 //
 // `{}` is the value the condition carries.
 pub const MSG_CANNOT_INCLUDE: &str = "cannot include {}";
+/// The op-arbitration refusal (x-lang#584); the reference appends the type
+/// name through x_eval_error, quoted, so the slot carries the quotes here.
+pub const MSG_NO_CVT_RELATION: &str = "no declared promotion; declare the cvt relation for '{}'";
 pub const MSG_NOT_AN_ENV: &str = "tail-eval: not an environment";
 pub const MSG_NO_PROGRAM: &str = "cannot read program from stdin";
 pub const MSG_ALLOC_LIMIT: &str = "allocation limit exceeded";
