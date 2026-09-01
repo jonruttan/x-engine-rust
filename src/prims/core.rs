@@ -188,7 +188,10 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     // With-env SAVES, as x_prim_eval pushes its compound save: a `def` inside
     // binds into the given environment, not globally.
     e.save_push(target);
+    let depth = e.active_evals;
+    e.control.push(crate::eval::ControlRec::Pass { depth });
     let out = e.eval(expr, target);
+    e.control.pop();
     e.save_pop();
     out
 }
@@ -198,7 +201,11 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 fn eval_here(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let form = e.nth(args, 0);
     let expr = e.eval(form, env)?;
-    e.eval(expr, env)
+    let depth = e.active_evals;
+    e.control.push(crate::eval::ControlRec::Pass { depth });
+    let out = e.eval(expr, env);
+    e.control.pop();
+    out
 }
 
 /// `(apply f args)` — call with an argument list already built. The elements are

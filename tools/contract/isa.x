@@ -32,6 +32,7 @@
   (base make spine)
   (base eval spine)
   (base bind spine)
+  (base def-global spine)     ; the depth-blind define an operative surface needs (x-lang#527)
   (base make-tok spine)       ; a base with NO types -- for the reader protocol
   (base make-type spine)      ; register a reader type: analyse + read handlers
   (ctrl call/cc spine)

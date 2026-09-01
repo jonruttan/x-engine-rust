@@ -64,11 +64,11 @@ macro_rules! uniform_value {
     ($name:ident, $leaf:path, $n:expr) => {
         fn $name(
             e: &mut $crate::engine::Engine,
-            _c: $crate::obj::Obj,
+            c: $crate::obj::Obj,
             args: $crate::obj::Obj,
             env: $crate::obj::EnvId,
         ) -> $crate::eval::EvalResult {
-            let vals = e.eargs(args, env, $n)?;
+            let vals = e.eargs_for(c, args, env, $n)?;
             $leaf(&mut e.objects, &vals)
         }
     };
@@ -81,11 +81,11 @@ macro_rules! uniform_engine {
     ($name:ident, $leaf:path, $n:expr) => {
         fn $name(
             e: &mut $crate::engine::Engine,
-            _c: $crate::obj::Obj,
+            c: $crate::obj::Obj,
             args: $crate::obj::Obj,
             env: $crate::obj::EnvId,
         ) -> $crate::eval::EvalResult {
-            let vals = e.eargs(args, env, $n)?;
+            let vals = e.eargs_for(c, args, env, $n)?;
             let base = e.base;
             $leaf(e, base, &vals)
         }
@@ -115,11 +115,11 @@ macro_rules! uniform_tower2 {
     ($name:ident, $spell:literal, $op:expr) => {
         fn $name(
             e: &mut $crate::engine::Engine,
-            _c: $crate::obj::Obj,
+            c: $crate::obj::Obj,
             args: $crate::obj::Obj,
             env: $crate::obj::EnvId,
         ) -> $crate::eval::EvalResult {
-            let vals = e.eargs(args, env, 2)?;
+            let vals = e.eargs_for(c, args, env, 2)?;
             match e.op_try($spell, vals[0], vals[1])? {
                 Some(v) => Ok(v),
                 None => {
@@ -144,11 +144,11 @@ macro_rules! uniform_tower_pred {
     ($name:ident, $spell:literal, $op:expr) => {
         fn $name(
             e: &mut $crate::engine::Engine,
-            _c: $crate::obj::Obj,
+            c: $crate::obj::Obj,
             args: $crate::obj::Obj,
             env: $crate::obj::EnvId,
         ) -> $crate::eval::EvalResult {
-            let vals = e.eargs(args, env, 2)?;
+            let vals = e.eargs_for(c, args, env, 2)?;
             match e.op_try($spell, vals[0], vals[1])? {
                 Some(v) => Ok(v),
                 None => {
@@ -169,11 +169,11 @@ macro_rules! uniform_int2 {
     ($name:ident, $spell:literal, $op:expr) => {
         fn $name(
             e: &mut $crate::engine::Engine,
-            _c: $crate::obj::Obj,
+            c: $crate::obj::Obj,
             args: $crate::obj::Obj,
             env: $crate::obj::EnvId,
         ) -> $crate::eval::EvalResult {
-            let vals = e.eargs(args, env, 2)?;
+            let vals = e.eargs_for(c, args, env, 2)?;
             if vals[0].is_nil() || vals[1].is_nil() {
                 return Err(e.nil_operand($spell));
             }
@@ -190,11 +190,11 @@ macro_rules! uniform_int1 {
     ($name:ident, $spell:literal, $op:expr) => {
         fn $name(
             e: &mut $crate::engine::Engine,
-            _c: $crate::obj::Obj,
+            c: $crate::obj::Obj,
             args: $crate::obj::Obj,
             env: $crate::obj::EnvId,
         ) -> $crate::eval::EvalResult {
-            let vals = e.eargs(args, env, 1)?;
+            let vals = e.eargs_for(c, args, env, 1)?;
             if vals[0].is_nil() {
                 return Err(e.nil_operand($spell));
             }
