@@ -41,15 +41,30 @@ fn base_bind(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(a[2])
 }
 
+/// `(base def-global name value)` — bind in the base's GLOBAL frame,
+/// whatever the frame depth.
+///
+/// `def` chooses global-versus-local by save depth, so an OPERATIVE cannot
+/// define for its caller — the accident x-lang#527 records. This takes the
+/// global path unconditionally; a name already bound updates in place, as
+/// the frame's own rebind rule has it.
+fn base_def_global(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let env = e.root_env();
+    e.envs.bind(&mut e.objects, env, a[0], a[1]);
+    Ok(a[1])
+}
+
 crate::uniform_engine!(base_make_u, base_make, 0);
 crate::uniform_engine!(base_eval_u, base_eval, 2);
 crate::uniform_engine!(base_bind_u, base_bind, 3);
+crate::uniform_engine!(base_def_global_u, base_def_global, 2);
 
 #[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
     PrimDef::row(Some("make-base"), Some(("base", "make")), 0, base_make_u),
     PrimDef::row(None, Some(("base", "eval")), 2, base_eval_u),
     PrimDef::row(None, Some(("base", "bind")), 3, base_bind_u),
+    PrimDef::row(None, Some(("base", "def-global")), 2, base_def_global_u),
 ];
 
 #[cfg(test)]
