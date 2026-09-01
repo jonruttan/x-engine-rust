@@ -71,8 +71,7 @@ fn marshal_guarded(e: &mut Engine, o: Obj, door: &str) -> Result<u64, crate::dia
         return Ok(marshal(e, o));
     }
     let msg = format!("{}: argument is not nil/int/str", door);
-    let v = e.objects.str_new(&msg);
-    Err(crate::diag::Cond::Raised(v))
+    Err(crate::diag::Cond::EngineMsg(msg))
 }
 
 /// `(ffi dlopen path flags)` — nil path is the SELF handle.

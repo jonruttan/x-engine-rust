@@ -143,8 +143,7 @@ impl Engine {
                     // (x-lang#584) — byte-identical text, second type named.
                     let b_name = self.objects.sym_name(name_b);
                     let msg = crate::vocabulary::MSG_NO_CVT_RELATION.replace("{}", &b_name);
-                    let v = self.objects.str_new(&msg);
-                    return Err(Cond::Raised(v));
+                    return Err(Cond::EngineMsg(msg));
                 }
             }
         };
@@ -343,8 +342,7 @@ impl Engine {
                 let flag = self.sigint_flag;
                 if self.objects.as_int(flag) != 0 {
                     self.objects.set_data(flag, 0, crate::obj::Word(0));
-                    let v = self.objects.str_new(crate::vocabulary::MSG_STOP);
-                    break Err(Cond::Raised(v));
+                    break Err(Cond::EngineMsg(crate::vocabulary::MSG_STOP.to_string()));
                 }
             }
             // STRESS: collect far more often than x-lang ever would, to shake
@@ -674,8 +672,7 @@ impl Engine {
 
     /// The #239 raise: "<op>: operand is nil", as the reference words it.
     pub fn nil_operand(&mut self, name: &str) -> Cond {
-        let v = self.objects.str_new(&format!("{}: operand is nil", name));
-        Cond::Raised(v)
+        Cond::EngineMsg(format!("{}: operand is nil", name))
     }
 
     /// Evaluate an argument spine into values.
@@ -714,8 +711,9 @@ impl Engine {
             at = self.objects.rest(at);
         }
         if !at.is_nil() {
-            let v = self.objects.str_new(crate::vocabulary::MSG_IMPROPER_ARGS);
-            return Err(Cond::Raised(v));
+            return Err(Cond::EngineMsg(
+                crate::vocabulary::MSG_IMPROPER_ARGS.to_string(),
+            ));
         }
         // Collected first so the iterator's borrow of the objects ends before
         // `eval` needs it mutably.
