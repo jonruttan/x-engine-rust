@@ -381,12 +381,53 @@ impl crate::engine::Engine {
         for e in self.env_root_set() {
             ostack.push(e.obj());
         }
+        // The control records and continuation snapshots hold spines, names
+        // and values nothing else points at while an evaluation is captured.
+        let push_rec = |ostack: &mut Vec<Obj>, r: &crate::eval::ControlRec| match r {
+            crate::eval::ControlRec::Body { rest, env, .. } => {
+                ostack.push(*rest);
+                ostack.push(env.obj());
+            }
+            crate::eval::ControlRec::Args {
+                callee,
+                done,
+                rest,
+                env,
+                ..
+            } => {
+                ostack.push(*callee);
+                ostack.extend(done.iter().copied());
+                ostack.push(*rest);
+                ostack.push(env.obj());
+            }
+            crate::eval::ControlRec::Bind { name, env, .. } => {
+                ostack.push(*name);
+                ostack.push(env.obj());
+            }
+            crate::eval::ControlRec::Pass { .. } => {}
+        };
+        for r in &self.control {
+            push_rec(&mut ostack, r);
+        }
+        for snap in self.cont_snapshots.values() {
+            for r in &snap.recs {
+                push_rec(&mut ostack, r);
+            }
+        }
         self.objects.mark(&mut ostack);
 
         // Between mark and sweep, as the reference does it.
         self.run_gc_hooks(crate::base::FREE_HOOKS);
 
         let freed = self.objects.sweep();
+
+        // A snapshot outlives its continuation OBJECT only as garbage: when
+        // the sweep frees the cont, its snapshot goes too — the same
+        // freed-flag purge the frame index uses.
+        self.cont_snapshots.retain(|_, snap| {
+            let w = self.objects.flags_word(snap.k);
+            w != crate::collect::FREED && w != crate::collect::POISON
+        });
 
         // Rust-side maps keyed by heap ADDRESS outlive what they describe: an
         // address outlives its object, and a recycled chunk at the same

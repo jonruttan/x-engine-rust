@@ -21,6 +21,61 @@ use crate::obj::{EnvId, Obj, NIL};
 
 pub type EvalResult = Result<Obj, Cond>;
 
+/// One resumable step of the evaluation in flight — what REMAINS at a
+/// recursion site the engine can describe. The reference re-enters a
+/// continuation by copying its C stack back; this engine cannot copy its
+/// stack soundly, so `call/cc` snapshots these records instead and a
+/// DEAD-extent invocation replays them, inner to outer. A capture that
+/// crosses a frame with no record (an operative's private evaluation)
+/// is refused at invoke time, catchably — conservative, never silently
+/// wrong.
+#[derive(Clone)]
+pub(crate) enum ControlRec {
+    /// A body mid-walk: the forms still to run after the current one.
+    Body { rest: Obj, env: EnvId, depth: u32 },
+    /// An argument list mid-evaluation: values so far, forms to come, and
+    /// the callee to apply when they are all in.
+    Args {
+        callee: Obj,
+        done: Vec<Obj>,
+        rest: Obj,
+        env: EnvId,
+        n: usize,
+        depth: u32,
+    },
+    /// A `def`/`set!` waiting on its value.
+    Bind {
+        name: Obj,
+        env: EnvId,
+        set: bool,
+        depth: u32,
+    },
+    /// A frame whose only remaining work is to hand the value outward —
+    /// `(eval form env)`'s restore has already run by the time an unwind
+    /// passes it, so replay is the identity. It exists for COVERAGE: the
+    /// frame is described, not skipped.
+    Pass { depth: u32 },
+}
+
+impl ControlRec {
+    pub(crate) fn depth(&self) -> u32 {
+        match self {
+            ControlRec::Body { depth, .. }
+            | ControlRec::Args { depth, .. }
+            | ControlRec::Bind { depth, .. }
+            | ControlRec::Pass { depth } => *depth,
+        }
+    }
+}
+
+/// What a `call/cc` capture keeps: the control records at capture time and
+/// whether they covered every in-flight frame.
+pub(crate) struct ContSnapshot {
+    pub k: Obj,
+    pub recs: Vec<ControlRec>,
+    pub resumable: bool,
+}
+
 impl Engine {
     /// GENERIC-OPERATOR DISPATCH — `x_type_op_try`, the ops half of the type
     /// system's hot path.
@@ -138,6 +193,7 @@ impl Engine {
     /// is in tail position from the top level, and a `def` is global.
     pub fn eval(&mut self, form: Obj, env: EnvId) -> EvalResult {
         self.active_evals += 1;
+
         let r = self.eval_pending(form, env);
         self.active_evals -= 1;
         // THE RESULT IS ROOTED until the enclosing evaluation moves on.
@@ -526,9 +582,20 @@ impl Engine {
     /// slot to exist, but a missing operand is nil, not an error — counting
     /// arguments is x-lang's job, one layer up.
     pub fn eargs(&mut self, args: Obj, env: EnvId, n: usize) -> Result<Vec<Obj>, Cond> {
+        self.eargs_for(NIL, args, env, n)
+    }
+
+    /// As `eargs`, with the callee threaded through for the capture trail.
+    pub fn eargs_for(
+        &mut self,
+        callee: Obj,
+        args: Obj,
+        env: EnvId,
+        n: usize,
+    ) -> Result<Vec<Obj>, Cond> {
         let mark = self.root_mark();
         self.root_push(args);
-        let out = self.eval_args(args, env);
+        let out = self.eval_args_for(callee, args, env, n);
         self.root_truncate(mark);
         let mut vals = out?;
         if vals.len() < n {
@@ -558,6 +625,19 @@ impl Engine {
     /// caller, where rooting at each of them would have covered the ones I
     /// thought of.
     pub(crate) fn eval_args(&mut self, args: Obj, env: EnvId) -> Result<Vec<Obj>, Cond> {
+        self.eval_args_for(NIL, args, env, 0)
+    }
+
+    /// As `eval_args`, leaving an [`ControlRec::Args`] trail when the callee is
+    /// known — what lets a continuation captured inside an argument position
+    /// replay the application.
+    pub(crate) fn eval_args_for(
+        &mut self,
+        callee: Obj,
+        args: Obj,
+        env: EnvId,
+        n: usize,
+    ) -> Result<Vec<Obj>, Cond> {
         // An APPLICATIVE's argument list must be proper (#69): the walk
         // guards the spine and a dotted tail raises, catchably, naming the
         // fault. Ops never come through here — they receive spines raw.
@@ -577,8 +657,25 @@ impl Engine {
             self.root_push(*f);
         }
         let mut out = Vec::with_capacity(forms.len());
+        let mut node = args;
         for f in forms {
-            match self.eval(f, env) {
+            node = self.objects.rest(node);
+            if !callee.is_nil() {
+                let depth = self.active_evals;
+                self.control.push(ControlRec::Args {
+                    callee,
+                    done: out.clone(),
+                    rest: node,
+                    env,
+                    n,
+                    depth,
+                });
+            }
+            let r = self.eval(f, env);
+            if !callee.is_nil() {
+                self.control.pop();
+            }
+            match r {
                 Ok(v) => {
                     self.root_push(v);
                     out.push(v);
@@ -634,7 +731,7 @@ impl Engine {
     /// function in the conformance prelude is written with a leading `self`. It
     /// recurses without ever having been named.
     pub(crate) fn apply_closure(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
-        let vals = self.eval_args(args, env)?;
+        let vals = self.eval_args_for(callee, args, env, 0)?;
         self.apply_closure_bound(callee, vals)
     }
 
@@ -754,8 +851,18 @@ impl Engine {
         let Some((last, rest)) = forms.split_last() else {
             return Ok(NIL);
         };
+        let mut node = body;
         for f in rest {
-            self.eval(*f, env)?;
+            node = self.objects.rest(node);
+            let depth = self.active_evals;
+            self.control.push(ControlRec::Body {
+                rest: node,
+                env,
+                depth,
+            });
+            let r = self.eval(*f, env);
+            self.control.pop();
+            r?;
         }
         Ok(self.park_tail(*last, env))
     }
@@ -765,8 +872,18 @@ impl Engine {
         // `eval` needs it mutably.
         let forms: Vec<Obj> = self.objects.list(body).collect();
         let mut last = NIL;
+        let mut node = body;
         for f in forms {
-            last = self.eval(f, env)?;
+            node = self.objects.rest(node);
+            let depth = self.active_evals;
+            self.control.push(ControlRec::Body {
+                rest: node,
+                env,
+                depth,
+            });
+            let r = self.eval(f, env);
+            self.control.pop();
+            last = r?;
         }
         Ok(last)
     }

@@ -381,14 +381,13 @@ pub fn reported_kind(flags: Flags) -> Flags {
         // %c-fork)` equals `(type of (%str->ptr "x"))` — its callability
         // is flag dispatch, not type.
         FLAG_PTR
-    } else if flags == FLAG_WRAP {
+    } else if flags == FLAG_WRAP || flags == FLAG_CONT {
         // The reference builds a wrap AS a procedure (`x_mkwrap` =
-        // `x_make_procedure` with the WRAP flag), so both kinds carry the ONE
-        // registered PROCEDURE type. A continuation stays its own kind: the
-        // reference's is a real closure whose call restores the captured
-        // stack, and this engine's cannot re-enter a returned extent — typing
-        // it PROCEDURE made `(procedure? k)` invite exactly that call, whose
-        // uncatchable escape tears down the whole run.
+        // `x_make_procedure` with the WRAP flag) and a continuation as an
+        // ordinary closure (`x_mkproc` in callcc.c), so all three kinds carry
+        // the ONE registered PROCEDURE type. Safe to invite the call now:
+        // a dead-extent invocation replays the capture's control records
+        // instead of escaping uncaught.
         FLAG_FN
     } else {
         flags

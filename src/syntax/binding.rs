@@ -41,7 +41,16 @@ use crate::prim::PrimDef;
 fn def(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let name = e.nth(args, 0);
     let form = e.nth(args, 1);
-    let v = e.eval(form, env)?;
+    let depth = e.active_evals;
+    e.control.push(crate::eval::ControlRec::Bind {
+        name,
+        env,
+        set: false,
+        depth,
+    });
+    let r = e.eval(form, env);
+    e.control.pop();
+    let v = r?;
     let target = if e.nothing_pending() {
         e.root_env()
     } else {
@@ -57,7 +66,16 @@ fn def(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 fn set(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let name = e.nth(args, 0);
     let form = e.nth(args, 1);
-    let v = e.eval(form, env)?;
+    let depth = e.active_evals;
+    e.control.push(crate::eval::ControlRec::Bind {
+        name,
+        env,
+        set: true,
+        depth,
+    });
+    let r = e.eval(form, env);
+    e.control.pop();
+    let v = r?;
     if e.envs.set_existing(&mut e.objects, env, name, v) {
         Ok(v)
     } else {

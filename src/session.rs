@@ -143,7 +143,16 @@ impl Engine {
         let env = self.root_env();
         // Top level owns the stack: the previous result is done with the
         // moment the next form evaluates, so only this result stays rooted.
-        let out = self.eval(form, env);
+        let mut out = self.eval(form, env);
+        // A dead-extent continuation invocation unwinds all the way here —
+        // its own call/cc frame has returned and guards pass escapes by
+        // design. Replaying its snapshot IS entering the continuation.
+        while let Err(c) = &out {
+            match self.resume_escape(c) {
+                Some(r) => out = r,
+                None => break,
+            }
+        }
         if self.active_evals == 0 {
             self.root_truncate(0);
         }
@@ -212,17 +221,29 @@ impl Engine {
         let mut last = NIL;
         let out = loop {
             match self.read_form() {
-                Ok(Some(form)) => match self.eval(form, env) {
-                    Ok(v) => {
-                        self.root_truncate(mark);
-                        self.root_push(v);
-                        last = v;
+                Ok(Some(form)) => {
+                    let mut out = self.eval(form, env);
+                    // The dead-extent replay, as eval_top does it: the
+                    // snapshot rebuilds the captured frames and its value
+                    // stands as this form's.
+                    while let Err(c) = &out {
+                        match self.resume_escape(c) {
+                            Some(r) => out = r,
+                            None => break,
+                        }
                     }
-                    Err(c) => {
-                        self.root_truncate(mark);
-                        break Err(c);
+                    match out {
+                        Ok(v) => {
+                            self.root_truncate(mark);
+                            self.root_push(v);
+                            last = v;
+                        }
+                        Err(c) => {
+                            self.root_truncate(mark);
+                            break Err(c);
+                        }
                     }
-                },
+                }
                 Ok(None) => break Ok(last),
                 Err(c) => break Err(c),
             }

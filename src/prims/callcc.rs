@@ -7,8 +7,8 @@
 
 use crate::diag::Cond;
 use crate::engine::Engine;
-use crate::eval::EvalResult;
-use crate::obj::{EnvId, Obj};
+use crate::eval::{ContSnapshot, ControlRec, EvalResult};
+use crate::obj::{EnvId, Obj, NIL};
 use crate::prim::PrimDef;
 
 /// `(call/cc f)` — ESCAPE-only continuations.
@@ -34,10 +34,19 @@ impl Engine {
     }
 
     /// Run `f` with a fresh escape continuation, catching only its own.
+    ///
+    /// The capture also SNAPSHOTS the control records in flight: a live
+    /// invocation still unwinds to this frame, but one arriving after this
+    /// frame has returned replays the snapshot at the top level instead —
+    /// the re-entry the reference gets from copying its C stack.
     pub fn with_escape(&mut self, f: Obj, env: EnvId) -> EvalResult {
         let id = self.next_cont;
         self.next_cont += 1;
         let k = self.objects.cont(id);
+        let recs = self.control.clone();
+        let resumable = Self::covers_every_frame(&recs, self.active_evals);
+        self.cont_snapshots
+            .insert(id, ContSnapshot { k, recs, resumable });
         match self.call_with_values(f, &[k], env) {
             Ok(v) => Ok(v),
             Err(e) => match self.escaping {
@@ -55,6 +64,120 @@ impl Engine {
     /// strand it.
     pub fn is_escaping(&self) -> bool {
         self.escaping.is_some()
+    }
+
+    /// Did the records at capture time describe every in-flight frame?
+    ///
+    /// Each nested evaluation below the top-level form must have exactly one
+    /// record — depths 1 through D-1, in order. A frame with none is an
+    /// operative holding evaluation state in Rust locals the replay cannot
+    /// see, so the capture is refused rather than resumed wrongly.
+    fn covers_every_frame(recs: &[ControlRec], depth: u32) -> bool {
+        if depth == 0 {
+            return false;
+        }
+        if recs.len() as u32 != depth - 1 {
+            return false;
+        }
+        recs.iter()
+            .enumerate()
+            .all(|(i, r)| r.depth() == i as u32 + 1)
+    }
+
+    /// An escape that reached the top with no live catcher: replay its
+    /// snapshot if the capture covered every frame, else refuse catchably.
+    /// Answers None for conditions that are not dead-extent escapes.
+    pub(crate) fn resume_escape(&mut self, c: &Cond) -> Option<EvalResult> {
+        let (id, v) = self.escaping?;
+        let _ = c;
+        self.escaping = None;
+        let snap = match self.cont_snapshots.get(&id) {
+            Some(s) if s.resumable => s.recs.clone(),
+            _ => {
+                let msg = self
+                    .objects
+                    .str_new("continuation: extent is not resumable");
+                return Some(Err(Cond::Raised(msg)));
+            }
+        };
+        Some(self.replay(&snap, v))
+    }
+
+    /// Rebuild the captured evaluation, inner record first, delivering `v`
+    /// where `call/cc` originally returned.
+    fn replay(&mut self, recs: &[ControlRec], v: Obj) -> EvalResult {
+        let mut val = v;
+        for r in recs.iter().rev() {
+            let mark = self.root_mark();
+            self.root_push(val);
+            let out = match r {
+                ControlRec::Bind { name, env, set, .. } => {
+                    if *set {
+                        if self.envs.set_existing(&mut self.objects, *env, *name, val) {
+                            Ok(val)
+                        } else {
+                            Err(Cond::Unbound(*name))
+                        }
+                    } else {
+                        let target = if self.nothing_pending() {
+                            self.root_env()
+                        } else {
+                            *env
+                        };
+                        self.envs.bind(&mut self.objects, target, *name, val);
+                        Ok(*name)
+                    }
+                }
+                ControlRec::Body { rest, env, .. } => {
+                    if rest.is_nil() {
+                        Ok(val)
+                    } else {
+                        self.eval_body(*rest, *env)
+                    }
+                }
+                ControlRec::Pass { .. } => Ok(val),
+                ControlRec::Args {
+                    callee,
+                    done,
+                    rest,
+                    env,
+                    n,
+                    ..
+                } => {
+                    let mut vals = done.clone();
+                    vals.push(val);
+                    for x in &vals {
+                        self.root_push(*x);
+                    }
+                    let more: Vec<Obj> = self.objects.list(*rest).collect();
+                    let mut failed = None;
+                    for f in more {
+                        match self.eval(f, *env) {
+                            Ok(x) => {
+                                self.root_push(x);
+                                vals.push(x);
+                            }
+                            Err(c) => {
+                                failed = Some(c);
+                                break;
+                            }
+                        }
+                    }
+                    match failed {
+                        Some(c) => Err(c),
+                        None => {
+                            if vals.len() < *n {
+                                vals.resize(*n, NIL);
+                            }
+                            self.call_with_values(*callee, &vals, *env)
+                        }
+                    }
+                }
+            };
+            self.root_truncate(mark);
+            val = out?;
+        }
+        Ok(val)
     }
 }
 

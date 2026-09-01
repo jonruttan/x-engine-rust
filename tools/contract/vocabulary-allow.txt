@@ -46,3 +46,4 @@
 "heap: pinned reservation exhausted"	diagnostic text, not a name
 "ptr-call"	diagnostic prefix in the marshal guard's message, not a binding
 "syscall"	diagnostic prefix in the marshal guard's message; the row itself is named in ffi.rs
+"continuation: extent is not resumable"	the dead-extent refusal a capture crossing an undescribed frame raises
