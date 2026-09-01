@@ -534,6 +534,11 @@ impl Engine {
         if out == 0 {
             return Ok(NIL);
         }
+        // Either currency, as jit_obj discriminates: an emitted analyser
+        // returning an fvar object returns the OFFSET its imm64 carried.
+        if (out as usize) < self.objects.heap.words_len() * crate::obj::WORD {
+            return Ok(crate::obj::Addr::new(out).as_obj());
+        }
         match self.objects.heap.from_real(out) {
             Some(at) => Ok(at.as_obj()),
             None => Ok(NIL),
@@ -596,7 +601,11 @@ impl Engine {
         for v in vals {
             self.root_push(*v);
         }
-        let spine = self.quote_values(vals);
+        let spine = if self.objects.is_foreign(callee) {
+            self.value_spine(vals)
+        } else {
+            self.quote_values(vals)
+        };
         self.root_push(spine);
         let out = match self.combine(callee, spine, env) {
             Some(r) => r,
@@ -613,12 +622,20 @@ impl Engine {
         // values still waiting in the caller's slice — and callers hand this a
         // plain Rust slice from anywhere: `apply`, the class dispatcher, every
         // reader handler.
+        //
+        // A FOREIGN callee takes the values RAW: the (lit v) wrap protects a
+        // closure from double-eval, but emitted analyser code reads spine
+        // slots without eval, per the C ABI (see value_spine).
         let mark = self.root_mark();
         self.root_push(callee);
         for v in vals {
             self.root_push(*v);
         }
-        let spine = self.quote_values(vals);
+        let spine = if self.objects.is_foreign(callee) {
+            self.value_spine(vals)
+        } else {
+            self.quote_values(vals)
+        };
         self.root_push(spine);
         let out = self.eval_call(callee, spine, env);
         self.root_truncate(mark);
@@ -967,6 +984,20 @@ impl Engine {
             let inner = self.objects.pair(v, NIL);
             let q = self.objects.pair(lit, inner);
             out = self.objects.pair(q, out);
+        }
+        out
+    }
+
+    /// A spine of the values THEMSELVES, no `(lit v)` wrap — the C prim ABI.
+    /// The reference's callers hand live values in the spine and its
+    /// `x_eargs` re-evaluates them harmlessly (values self-evaluate); emitted
+    /// ANALYSER code goes further and reads spine slots raw, no eval at all,
+    /// so a quote wrap there is read as the argument (x-engine-rust#26 — the
+    /// compiled quote analyser lost the reader contest and boot died).
+    pub fn value_spine(&mut self, vals: &[Obj]) -> Obj {
+        let mut out = NIL;
+        for &v in vals.iter().rev() {
+            out = self.objects.pair(v, out);
         }
         out
     }

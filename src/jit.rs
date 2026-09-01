@@ -22,11 +22,20 @@ impl Engine {
         self.objects.heap.address_of(o.addr())
     }
 
-    /// The object a crossed real address names; nil for 0 or an address
-    /// outside the arena.
+    /// The object a crossed value names; nil for 0 or an address outside
+    /// the arena.
+    ///
+    /// EITHER CURRENCY, the same discrimination `prims/ptr.rs` applies: a
+    /// value under the arena's byte length is an OFFSET — the x-lang#583
+    /// emitter embeds fvar objects as `(%ptr->int (%obj->ptr val))`, which
+    /// this engine's `obj ->ptr` answers in offsets — and anything above is
+    /// a REAL address from `jit_real`. The ranges do not overlap.
     fn jit_obj(&self, real: u64) -> Obj {
         if real == 0 {
             return NIL;
+        }
+        if (real as usize) < self.objects.heap.words_len() * crate::obj::WORD {
+            return crate::obj::Addr::new(real).as_obj();
         }
         match self.objects.heap.from_real(real) {
             Some(at) => at.as_obj(),
