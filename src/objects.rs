@@ -377,10 +377,12 @@ pub fn kind_index(flags: Flags) -> Option<usize> {
 /// allocation, where there is no object to ask yet.
 pub fn reported_kind(flags: Flags) -> Flags {
     if flags == FLAG_FOREIGN {
-        // A dlsym'd address is a POINTER on the reference — `(type of
-        // %c-fork)` equals `(type of (%str->ptr "x"))` — its callability
-        // is flag dispatch, not type.
-        FLAG_PTR
+        // A made callable IS a primitive on the reference (`x_make_prim`),
+        // distinguishable from a registered one only by where its entry
+        // points; the conformance suite pins `(type of (make-callable p))`
+        // equal to a real prim's (#28). dlsym products are plain POINTERS
+        // and never carry this flag.
+        FLAG_PRIM
     } else if flags == FLAG_WRAP || flags == FLAG_CONT {
         // The reference builds a wrap AS a procedure (`x_mkwrap` =
         // `x_make_procedure` with the WRAP flag) and a continuation as an

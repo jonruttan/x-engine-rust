@@ -82,7 +82,9 @@ fn dlopen(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(if h.is_null() {
         NIL
     } else {
-        e.objects.foreign(h.0)
+        // A handle is an opaque ADDRESS, as the reference answers: a POINTER,
+        // not a callable. `obj make-callable` is the one door to callability.
+        e.objects.ptr(crate::obj::Addr::new(h.0))
     })
 }
 
@@ -97,7 +99,10 @@ fn dlsym(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(if p.is_null() {
         NIL
     } else {
-        e.objects.foreign(p.0)
+        // A dlsym'd address is a POINTER on the reference — `(type of
+        // %c-fork)` equals `(type of (%str->ptr "x"))`. Callability is
+        // `obj make-callable`'s to grant, and what IT makes is a PRIM.
+        e.objects.ptr(crate::obj::Addr::new(p.0))
     })
 }
 
