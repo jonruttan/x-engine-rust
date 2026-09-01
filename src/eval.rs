@@ -466,6 +466,14 @@ impl Engine {
     /// reached: `lib/x/type/class.x` installs `%class-call-handler` on a
     /// class's type, and the engine finds it exactly as it finds its own.
     pub(crate) fn combine(&mut self, callee: Obj, args: Obj, env: EnvId) -> Option<EvalResult> {
+        // A FOREIGN callable — `obj make-callable` over an emitted function's
+        // address — applies with the C prim convention: (base, raw argument
+        // spine), both as REAL addresses; the code evaluates its own
+        // arguments through the jit_* door. The reference applies its
+        // made-callables the same way.
+        if self.objects.is_foreign(callee) {
+            return Some(self.apply_foreign(callee, args, env));
+        }
         let ty = self.objects.obj_type(callee);
         if ty.is_nil() {
             return None;
@@ -487,6 +495,36 @@ impl Engine {
         // selector and the rest are the handler's to interpret.
         let spine = self.objects.pair(callee, args);
         Some(self.eval_call(hook, spine, env))
+    }
+
+    /// Apply an emitted function: hand it the base and the raw argument
+    /// spine as real addresses, take an object back the same way.
+    fn apply_foreign(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+        let addr = self.objects.foreign_addr(callee);
+        let f = x_engine_foreign::Foreign(addr);
+        let base_real = if self.base.is_nil() {
+            0
+        } else {
+            self.objects.heap.address_of(self.base.addr())
+        };
+        // The C prim shape: the spine's head is SELF, the arguments follow —
+        // the emitted prologue skips one cell before its first argument.
+        let spine = self.objects.pair(callee, args);
+        let args_real = self.objects.heap.address_of(spine.addr());
+        // The code evaluates its arguments through jit_eval_arg, which must
+        // resolve them where the CALL stands — the reference's x_eval_arg
+        // reads the base's live environment, and a closure passing its
+        // locals to an emitted function is the ordinary case.
+        let prev_env = self.jit_env.replace(env);
+        let out = x_engine_foreign::call_ints(f, &[base_real, args_real]);
+        self.jit_env = prev_env;
+        if out == 0 {
+            return Ok(NIL);
+        }
+        match self.objects.heap.from_real(out) {
+            Some(at) => Ok(at.as_obj()),
+            None => Ok(NIL),
+        }
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the

@@ -19,6 +19,13 @@ fn main() {
     // reference's CLI does. The engine core leaves the policy at zero; the
     // CLI is where source-location tracking is a decision.
     engine.arm_source_meta();
+    // The JIT runtime door: emitted machine code resolves nine C-ABI helpers
+    // from THIS binary with dlsym. The engine is the host (the safe trait
+    // impl); the exported shims live in the foreign crate, and referencing
+    // their addresses here keeps the linker from discarding them.
+    let host: *mut dyn x_engine_foreign::JitHost = &mut engine;
+    x_engine_foreign::jit_install(host);
+    std::hint::black_box(x_engine_foreign::jit_exports());
 
     // EVERY argv element, argv[0] included: x-lang's own library documents
     // `args` as carrying the engine path first and drops it itself —

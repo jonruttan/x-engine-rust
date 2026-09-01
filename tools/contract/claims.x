@@ -78,4 +78,12 @@
   ; int/ptr-same-width is: a pointer IS an arena offset, so the round trip is a
   ; re-tagging rather than a conversion.
   (provides reflect/word-probe)
+
+  ; The in-process assembler lane: this engine exports the nine jit_*
+  ; runtime helpers from the running binary (the safe trait half lives in
+  ; src/jit.rs, the exported shims in the foreign crate), applies an
+  ; `obj make-callable` foreign with the C prim convention, and permits
+  ; executing the pages the assembler writes. Object references cross the
+  ; door as REAL addresses, which the pinned arena keeps stable.
+  (provides native/jit)
 )))

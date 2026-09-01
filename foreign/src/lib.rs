@@ -326,6 +326,124 @@ pub fn write_word(at: u64, v: u64) {
     unsafe { std::ptr::write_unaligned(at as *mut u64, v) }
 }
 
+// --- the JIT runtime door -----------------------------------------------------
+//
+// Machine code the assembler lane emits calls back into the engine through
+// nine C-ABI symbols, resolved with `dlsym(dlopen(NULL))` — so the RUNNING
+// BINARY must export them. The engine cannot define them (it forbids unsafe,
+// and an exported C function has no engine to hold), so the arrangement is
+// inverted: the engine implements the safe [`JitHost`] trait and installs
+// itself here once; the exported shims below hold the only unsafe part, one
+// raw-pointer dereference each.
+//
+// REENTRANCY, stated plainly: a shim runs while the engine sits suspended
+// inside a `ptr call` into the emitted code, so the `&mut` produced here
+// aliases the borrow far up the Rust stack. That is the standard FFI-callback
+// compromise; it is confined to this file, the engine is single-threaded, and
+// no shim call outlives the `ptr call` that triggered it.
+
+/// What the emitted code needs from the engine. Object references cross as
+/// REAL machine addresses (the engine's arena is pinned); nil crosses as 0.
+pub trait JitHost {
+    fn jit_mkint(&mut self, v: i64) -> u64;
+    fn jit_mkpair(&mut self, a: u64, b: u64) -> u64;
+    fn jit_firstobj(&mut self, p: u64) -> u64;
+    fn jit_restobj(&mut self, p: u64) -> u64;
+    fn jit_atomint(&mut self, p: u64) -> i64;
+    fn jit_eval_arg(&mut self, expr: u64) -> u64;
+    fn jit_score_set(&mut self, score: u64, sign: i64, buffer: u64) -> u64;
+    fn jit_buffer_unread(&mut self, buffer: u64) -> u64;
+    fn jit_buffer_len(&mut self, buffer: u64) -> i64;
+}
+
+struct HostPtr(*mut dyn JitHost);
+// SAFETY: the engine is single-threaded; the pointer is only ever used from
+// the thread that installed it.
+unsafe impl Send for HostPtr {}
+
+static JIT_HOST: std::sync::Mutex<Option<HostPtr>> = std::sync::Mutex::new(None);
+
+/// Install the engine as the JIT host. Call once, before any emitted code can
+/// run; the engine must outlive every later `ptr call`.
+pub fn jit_install(host: *mut dyn JitHost) {
+    *JIT_HOST.lock().unwrap() = Some(HostPtr(host));
+}
+
+/// The host, reborrowed for one call. The guard is dropped BEFORE the
+/// dereference so a host method that re-enters emitted code cannot deadlock.
+fn jit_host() -> &'static mut dyn JitHost {
+    let p = JIT_HOST
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|h| h.0)
+        .expect("jit: no host installed");
+    // SAFETY: see the module note — single-threaded, installed before use,
+    // never outliving the engine.
+    unsafe { &mut *p }
+}
+
+#[no_mangle]
+pub extern "C" fn jit_mkint(_base: u64, v: i64) -> u64 {
+    jit_host().jit_mkint(v)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_mkpair(_base: u64, a: u64, b: u64) -> u64 {
+    jit_host().jit_mkpair(a, b)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_firstobj(p: u64) -> u64 {
+    jit_host().jit_firstobj(p)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_restobj(p: u64) -> u64 {
+    jit_host().jit_restobj(p)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_atomint(p: u64) -> i64 {
+    jit_host().jit_atomint(p)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_eval_arg(_base: u64, expr: u64) -> u64 {
+    jit_host().jit_eval_arg(expr)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_score_set(score: u64, sign: i64, buffer: u64) -> u64 {
+    jit_host().jit_score_set(score, sign, buffer)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_buffer_unread(buffer: u64) -> u64 {
+    jit_host().jit_buffer_unread(buffer)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_buffer_len(buffer: u64) -> i64 {
+    jit_host().jit_buffer_len(buffer)
+}
+
+/// The nine exported addresses, for the binary to anchor so the linker keeps
+/// them reachable by `dlsym`.
+pub fn jit_exports() -> [usize; 9] {
+    [
+        jit_mkint as extern "C" fn(u64, i64) -> u64 as usize,
+        jit_mkpair as extern "C" fn(u64, u64, u64) -> u64 as usize,
+        jit_firstobj as extern "C" fn(u64) -> u64 as usize,
+        jit_restobj as extern "C" fn(u64) -> u64 as usize,
+        jit_atomint as extern "C" fn(u64) -> i64 as usize,
+        jit_eval_arg as extern "C" fn(u64, u64) -> u64 as usize,
+        jit_score_set as extern "C" fn(u64, i64, u64) -> u64 as usize,
+        jit_buffer_unread as extern "C" fn(u64) -> u64 as usize,
+        jit_buffer_len as extern "C" fn(u64) -> i64 as usize,
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

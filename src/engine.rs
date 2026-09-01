@@ -98,6 +98,9 @@ pub struct Engine {
     pub(crate) next_cont: u64,
     /// The control records in flight — see [`crate::eval::ControlRec`].
     pub(crate) control: Vec<crate::eval::ControlRec>,
+    /// The environment of the foreign application in flight, for
+    /// `jit_eval_arg` — the reference's "base's live env" spelled explicitly.
+    pub(crate) jit_env: Option<crate::obj::EnvId>,
     /// Every capture's snapshot, keyed by continuation id. Purged when the
     /// continuation object itself is swept.
     pub(crate) cont_snapshots: std::collections::HashMap<u64, crate::eval::ContSnapshot>,
@@ -172,6 +175,7 @@ impl Engine {
             escaping: None,
             next_cont: 1,
             control: Vec::new(),
+            jit_env: None,
             cont_snapshots: std::collections::HashMap::new(),
             base_syms: HashMap::new(),
             alloc_limit: None,

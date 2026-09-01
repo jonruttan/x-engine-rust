@@ -14,10 +14,6 @@ use crate::obj::Obj;
 use crate::objects::Objects;
 use crate::prim::PrimDef;
 
-/// Shifts go through the unsigned word and back. A signed shift would make
-/// `(<< 1 63)` a different number here than in an engine shifting the raw word,
-/// and the width is a fact of a build rather than something the language fixes.
-///
 /// The count is masked to the word, so an over-wide shift wraps instead of
 /// panicking — Rust's `<<` panics on overflow in debug builds, which would turn a
 /// program's arithmetic mistake into an engine abort, and an aborting engine
@@ -26,8 +22,11 @@ fn shl(x: i64, y: i64) -> i64 {
     ((x as u64) << (y as u64 & 63)) as i64
 }
 
+/// ARITHMETIC, as the reference's signed `>>` lands on every target it
+/// builds for — `(>> -1 63)` is -1, probed, and the emitted lane's `asrv`
+/// agrees. The count masks to the word so an over-wide shift wraps.
 fn shr(x: i64, y: i64) -> i64 {
-    ((x as u64) >> (y as u64 & 63)) as i64
+    x >> (y as u64 & 63)
 }
 
 /// Division by zero answers ZERO, which is what x-engine-c answers -- asked,
@@ -132,10 +131,11 @@ mod tests {
         use super::super::{shl, shr};
 
         #[test]
-        fn shifts_are_on_the_unsigned_word() {
+        fn right_shift_is_arithmetic_as_the_reference_answers() {
             assert_eq!(shl(1, 4), 16);
             assert_eq!(shr(16, 4), 1);
-            assert_eq!(shr(-1, 63), 1, "a logical shift, not an arithmetic one");
+            assert_eq!(shr(-1, 63), -1, "sign-propagating, probed against the C");
+            assert_eq!(shr(-16, 2), -4);
         }
 
         /// Rust's `<<` panics on an over-wide count in debug builds. Masking is

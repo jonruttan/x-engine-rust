@@ -100,6 +100,7 @@ pub mod env;
 pub mod eval;
 pub mod form;
 pub mod heap;
+pub mod jit;
 pub mod obj;
 pub mod objects;
 pub mod prim;
