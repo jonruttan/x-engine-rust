@@ -1,5 +1,7 @@
 # x-engine-rust
 
+<p align="center"><img src="docs/bitwise-banner.svg" alt="x-engine-rust, with Bitwise the owl" width="100%"></p>
+
 A second engine for [x-lang](https://github.com/jonruttan/x-lang), in Rust.
 
 The engine core `forbid`s unsafe code. It is not "safe Rust" outright, and the
@@ -163,3 +165,5 @@ no way to test a primitive in isolation.
 
 The binary is named `x-engine`, not `x-bin`; `claims.x` says so in a `(binary …)`
 row, and x-lang's wrapper reads it rather than assuming a filename.
+
+<p align="center"><img src="docs/bitwise-mark.svg" alt="Bitwise" width="96"></p>
