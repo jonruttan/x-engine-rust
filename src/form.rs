@@ -84,7 +84,7 @@ impl Engine {
         } else if self.objects.buf_peek(b) == Some(b'(') {
             self.objects.buf_bump(b);
             self.read_list_form(b)?
-        } else if let Some(v) = self.objects.buf_read_one_builtin_except_atom(b) {
+        } else if let Some(v) = self.objects.buf_read_one_builtin_except_atom(b)? {
             v
         } else {
             self.read_atom_delimited(b)?

@@ -10,12 +10,15 @@
 //! continue, `()` to decline, or records a length through the score object to
 //! accept.
 //!
-//! A TOKEN MUST BE DELIMITED. The accept branch runs when a character arrives
-//! that the current state rejects, so text ending mid-token is never scored:
-//! `"42"` produces nothing where `"42 "` produces a token. x-lang's own note on
-//! this says it cost an hour of "the protocol does not work" before the trailing
-//! space was added, and an engine that accepted at end-of-input would read a
-//! token every reader type in the library is written not to expect.
+//! A TOKEN IS DELIMITED, OR ITS STATE SAYS THE SPAN IS WHOLE. The accept branch
+//! runs when a character arrives that the current state rejects, so a state
+//! that scores only there claims nothing when the text ends mid-token: `"42"`
+//! produces nothing where `"42 "` produces a token, and x-lang's conformance
+//! suite asserts exactly that for such an analyser. A state that sets the
+//! score while it is still consuming has said the span so far is a token, and
+//! when the input ends under it that span is its claim (`analyse`'s
+//! end-of-input rule). The engine's own integer states do so, so a number a
+//! source ends on is read rather than dropped.
 //!
 //! The marks are moved by the tokenizer in an order only the tokenizer knows.
 //! That does not put them out of reach — it puts them out of reach FROM OUTSIDE,
@@ -409,19 +412,10 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
                 if form.is_nil() {
                     break;
                 }
+                // An atom running to the very end of the input is a whole
+                // token, as the reference's own analysers claim it: the
+                // engine's reader took it, and it is delivered.
                 let pos = e.objects.buf_cursor(scratch);
-                // An atom running to the very end of the input has no
-                // delimiter to finish it: it is TRUNCATED, and read-str's
-                // contract drops it silently, as the reference's analyse
-                // protocol does when end of input arrives mid-token.
-                if pos >= len {
-                    let last = e.objects.buf_text(scratch);
-                    let tail = e.objects.heap.byte(e.objects.str_bytes(last).plus(pos - 1));
-                    let delimited = tail.is_ascii_whitespace() || tail == b')' || tail == b';';
-                    if !delimited {
-                        break;
-                    }
-                }
                 e.root_push(form);
                 tokens.push(form);
                 e.objects.set_buf_retain(buf, pos);
@@ -524,6 +518,14 @@ fn unread(a_: &mut Objects, b: Obj) {
     a_.set_buf_cursor(b, c.saturating_sub(1));
 }
 
+/// Keep the score current: the span so far is a whole integer, so a number
+/// the input ends on is claimed by the end-of-input rule in `analyse`.  Every
+/// state that consumes a character says so before answering the next state.
+fn int_keep_score(a_: &mut Objects, a: &[Obj]) {
+    let n = buf_span(a_, a[0]);
+    a_.set_data(a[1], 0, crate::obj::Word::from_i64(n as i64));
+}
+
 /// Accept: unread the delimiter, score the span, answer the SCORE object —
 /// or decline when the span is empty.
 fn int_accept(a_: &mut Objects, a: &[Obj]) -> Obj {
@@ -543,6 +545,7 @@ fn chr_of(a_: &Objects, a: &[Obj]) -> u32 {
 
 fn int_digits(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     if chr_of(a_, a).is_ascii_digit_u32() {
+        int_keep_score(a_, a);
         return Ok(a_.int_states[ST_DIGITS]);
     }
     Ok(int_accept(a_, a))
@@ -551,6 +554,7 @@ fn int_digits(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 fn int_xdigits(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let c = chr_of(a_, a);
     if c.is_ascii_digit_u32() || (0x61..=0x66).contains(&c) || (0x41..=0x46).contains(&c) {
+        int_keep_score(a_, a);
         return Ok(a_.int_states[ST_XDIGITS]);
     }
     Ok(int_accept(a_, a))
@@ -559,6 +563,7 @@ fn int_xdigits(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 fn int_base(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let c = chr_of(a_, a);
     if c == b'x' as u32 || c == b'X' as u32 {
+        int_keep_score(a_, a);
         return Ok(a_.int_states[ST_XDIGITS]);
     }
     int_digits(a_, a)
@@ -567,12 +572,14 @@ fn int_base(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 fn int_prefix(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let c = chr_of(a_, a);
     if c == b'0' as u32 {
+        int_keep_score(a_, a);
         return Ok(a_.int_states[ST_BASE]);
     }
     if !c.is_ascii_digit_u32() {
         unread(a_, a[0]);
         return Ok(NIL);
     }
+    int_keep_score(a_, a);
     Ok(a_.int_states[ST_DIGITS])
 }
 
@@ -795,6 +802,29 @@ mod tests {
             crate::testkit::truthy(&format!("{} (eq? (%rs tb \"42\") ())", p)),
             "an undelimited one is not"
         );
+    }
+
+    /// The integer states keep the score current, so a number the input ends
+    /// on is claimed by `analyse`'s end-of-input rule: through `tok read-str`
+    /// on a full base, `"12 34"` yields both, and the second is the INTEGER
+    /// type's, not the symbol fallback's.
+    #[test]
+    fn a_digit_run_keeps_its_score_current() {
+        let mut a = Objects::new();
+        let text = a.str_new("42");
+        let b = a.buf(text, 0);
+        let score = a.int(0);
+        a.set_buf_cursor(b, 2);
+        let chr = a.char_new(b'2' as u32);
+        let next = int_digits(&mut a, &[b, score, chr]).expect("digits");
+        assert_eq!(next, a.int_states[ST_DIGITS], "still consuming");
+        assert_eq!(a.as_int(score), 2, "and the span so far is the claim");
+    }
+
+    #[test]
+    fn an_integer_the_input_ends_on_is_read() {
+        let src = "(def r ((%coord (lit tok) (lit read-str)) (%base) \"12 34\")) r";
+        assert_eq!(crate::testkit::text_of(src), "(12 34)");
     }
 
     #[test]

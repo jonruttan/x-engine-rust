@@ -17,6 +17,7 @@
 //! `io read-char` and a reader macro see exactly what is left after the current
 //! form.
 
+use crate::diag::Cond;
 use crate::obj::{Obj, NIL};
 use crate::objects::Objects;
 
@@ -170,26 +171,31 @@ impl Objects {
     ///
     /// It does NOT skip blanks: the caller has already done that, and may have
     /// offered the position to a macro first.
-    /// The non-atom builtin cases; `None` means "a list or an atom starts
-    /// here", which the caller reads with its own machinery.
-    pub(crate) fn buf_read_one_builtin_except_atom(&mut self, b: Obj) -> Option<Obj> {
-        let c = self.buf_peek(b)?;
+    /// The non-atom builtin cases; `Ok(None)` means "a list or an atom starts
+    /// here", which the caller reads with its own machinery.  Input ending
+    /// inside a string or on a bare `#\` is truncation, and raises as end of
+    /// input inside a list does.
+    pub(crate) fn buf_read_one_builtin_except_atom(&mut self, b: Obj) -> Result<Option<Obj>, Cond> {
+        let Some(c) = self.buf_peek(b) else {
+            return Ok(None);
+        };
+        let truncated = || Cond::EngineMsg("Unterminated input".to_string());
         match c {
-            b'(' => None,
+            b'(' => Ok(None),
             b')' => {
                 self.buf_bump(b);
-                Some(NIL)
+                Ok(Some(NIL))
             }
             b'"' => {
                 self.buf_bump(b);
-                Some(self.buf_read_string(b))
+                self.buf_read_string(b).map(Some).ok_or_else(truncated)
             }
             b'#' if self.buf_byte_ahead(b, 1) == Some(b'\\') => {
                 self.buf_bump(b);
                 self.buf_bump(b);
-                Some(self.buf_read_char(b))
+                self.buf_read_char(b).map(Some).ok_or_else(truncated)
             }
-            _ => None,
+            _ => Ok(None),
         }
     }
 
@@ -230,12 +236,12 @@ impl Objects {
             }
             b'"' => {
                 self.buf_bump(b);
-                Some(self.buf_read_string(b))
+                self.buf_read_string(b)
             }
             b'#' if self.buf_byte_ahead(b, 1) == Some(b'\\') => {
                 self.buf_bump(b);
                 self.buf_bump(b);
-                Some(self.buf_read_char(b))
+                self.buf_read_char(b)
             }
             _ => Some(self.buf_read_atom(b)),
         }
@@ -306,15 +312,18 @@ impl Objects {
     /// byte above 0x7F. Escapes are the reference's set (`\" \\ n t r 0`,
     /// `\xNN` with exactly two hex digits); an UNKNOWN escape keeps the
     /// backslash AND the character.
-    pub(crate) fn buf_read_string(&mut self, b: Obj) -> Obj {
+    ///
+    /// `None` when the input ends before the closing quote: the reader raises
+    /// on it, as the reference's does, rather than answering the truncated
+    /// text as a value.
+    pub(crate) fn buf_read_string(&mut self, b: Obj) -> Option<Obj> {
         let mut bytes: Vec<u8> = Vec::new();
-        while let Some(c) = self.buf_next_byte(b) {
+        loop {
+            let c = self.buf_next_byte(b)?;
             match c {
                 b'"' => break,
                 b'\\' => {
-                    let Some(e) = self.buf_next_byte(b) else {
-                        break;
-                    };
+                    let e = self.buf_next_byte(b)?;
                     match e {
                         b'"' => bytes.push(b'"'),
                         b'\\' => bytes.push(b'\\'),
@@ -346,7 +355,7 @@ impl Objects {
                 other => bytes.push(other),
             }
         }
-        self.str_from_bytes(&bytes)
+        Some(self.str_from_bytes(&bytes))
     }
 
     /// A character literal, with `#\` already consumed.
@@ -363,13 +372,16 @@ impl Objects {
     ///   * a NAME, but only where the first byte is a letter, because a
     ///     non-letter scores immediately. That is what makes `#\(` and `#\;`
     ///     readable at all.
-    pub(crate) fn buf_read_char(&mut self, b: Obj) -> Obj {
-        let Some(first) = self.buf_peek(b) else {
-            // `#\` at end of input: nothing to name a character with.
-            return NIL;
-        };
+    pub(crate) fn buf_read_char(&mut self, b: Obj) -> Option<Obj> {
+        // `#\` at end of input: nothing to name a character with, and the
+        // reader raises on it.
+        let first = self.buf_peek(b)?;
         self.buf_bump(b);
+        Some(self.buf_char_literal(b, first))
+    }
 
+    /// The literal after `#\`, its first byte already consumed.
+    fn buf_char_literal(&mut self, b: Obj, first: u8) -> Obj {
         if first >= 0x80 {
             // A multi-byte character: take its continuation bytes too.
             let start = self.buf_cursor(b) - 1;
@@ -676,6 +688,39 @@ mod string_tests {
     fn escapes_decode_as_the_reference_decodes_them() {
         let (e, v) = eval(r#""a\x41\r\q""#);
         assert_eq!(e.objects.bytes_of(v.unwrap()), b"aA\r\\q".to_vec());
+    }
+
+    /// Input ending inside a literal is truncation, and raises as end of
+    /// input inside a list does; the text that was there is not a value.
+    #[test]
+    fn a_string_the_input_ends_inside_raises() {
+        let (e, v) = eval(r#""abc"#);
+        let cond = v.expect_err("truncated");
+        assert_eq!(cond.message(&e.objects), "Unterminated input");
+        let (e, v) = eval(r#""abc\"#);
+        assert_eq!(
+            v.expect_err("truncated escape").message(&e.objects),
+            "Unterminated input"
+        );
+    }
+
+    #[test]
+    fn a_character_prefix_the_input_ends_on_raises() {
+        let (e, v) = eval(r"#\");
+        assert_eq!(
+            v.expect_err("truncated").message(&e.objects),
+            "Unterminated input"
+        );
+    }
+
+    /// The atoms the input ends on are read: nothing here needs a delimiter
+    /// after the last token of a source.
+    #[test]
+    fn atoms_the_input_ends_on_are_read() {
+        assert_eq!(crate::testkit::int_of("42"), 42);
+        assert_eq!(crate::testkit::text_of("(lit ab)"), "ab");
+        let (e, v) = eval(r"#\a");
+        assert_eq!(e.objects.as_char(v.unwrap()), b'a' as u32);
     }
 }
 
