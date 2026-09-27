@@ -39,7 +39,7 @@ pub(crate) fn engine_render(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 /// Not part of the instruction set: in the prim table so types can hold a
-/// callable, never bound and never filed in the catalog.
+/// callable, never bound and never filed in the catalogue.
 #[rustfmt::skip]
 pub(crate) const ENGINE_RENDER: PrimDef =
     PrimDef::row(Some("%engine-render"), None, 1, engine_render_u);
@@ -220,7 +220,7 @@ pub const TABLE: &[PrimDef] = &[
 #[cfg(test)]
 mod tests {
     use crate::engine::Engine;
-    use crate::testkit::{raises, truthy, CATALOG};
+    use crate::testkit::{raises, truthy, CATALOGUE};
 
     /// NIL, not a byte count. Both halves of the contract in one assertion, the
     /// way x-lang states it.
@@ -255,7 +255,7 @@ mod tests {
         let mut e = Engine::new();
         e.set_input("()");
         let read = e
-            .eval_str(&format!("{}\n(%coord (lit io) (lit repl-read))", CATALOG))
+            .eval_str(&format!("{}\n(%coord (lit io) (lit repl-read))", CATALOGUE))
             .expect("repl-read");
 
         // `()` reads as nil and is a VALUE. It must not look like an ending.
@@ -282,7 +282,7 @@ mod tests {
         let mut e = Engine::new();
         e.set_input("");
         let read = e
-            .eval_str(&format!("{}\n(%coord (lit io) (lit read))", CATALOG))
+            .eval_str(&format!("{}\n(%coord (lit io) (lit read))", CATALOGUE))
             .expect("read");
         let env = e.root_env();
         let v = e.call_with_values(read, &[], env).expect("read at eof");

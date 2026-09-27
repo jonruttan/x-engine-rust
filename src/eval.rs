@@ -80,10 +80,10 @@ impl Engine {
     /// GENERIC-OPERATOR DISPATCH — `x_type_op_try`, the ops half of the type
     /// system's hot path.
     ///
-    /// Every value carries a type tag, ints included, so "is it typed" is not
+    /// Every value carries a type label, ints included, so "is it typed" is not
     /// the test; CARRYING A HANDLER is. If either operand's type registers a
     /// handler for `op` in its ops alist, that handler is called as
-    /// `(handler a b)` and owns any coercion. This is how the numeric tower
+    /// `(handler a b)` and owns any promotion. This is how the numeric tower
     /// reaches the machine operators without wrapping their names: types
     /// REGISTER ops, nothing wraps ambient `+`.
     ///
@@ -214,7 +214,7 @@ impl Engine {
         // in a Rust local while its caller goes on to evaluate the NEXT thing,
         // and that evaluation can collect. `apply` was caught doing exactly
         // this — holding the callee while it evaluated the argument list — and
-        // every operative that evaluates more than once has the same shape.
+        // every operative that evaluates more than once does the same.
         //
         // Rooting here rather than at each of those sites makes it a property of
         // evaluation instead of a rule to remember. The trampoline drops these
@@ -388,7 +388,8 @@ impl Engine {
             if hook.is_nil() {
                 break Ok(form);
             }
-            // An engine handler is operative-shaped and takes the form raw; a
+            // An engine handler follows the operative calling convention and takes
+            // the form raw; a
             // LIBRARY handler — logo registers one on its block type — is a
             // closure applied to the VALUE with no argument evaluation, the
             // reference's raw-args call. The quoting door would resolve `lit`
@@ -518,7 +519,7 @@ impl Engine {
         } else {
             self.objects.heap.address_of(self.base.addr())
         };
-        // The C prim shape: the spine's head is SELF, the arguments follow —
+        // The C prim layout: the spine's head is SELF, the arguments follow —
         // the emitted prologue skips one cell before its first argument.
         let spine = self.objects.pair(callee, args);
         let args_real = self.objects.heap.address_of(spine.addr());
@@ -765,7 +766,7 @@ impl Engine {
     }
 
     /// Apply a closure to VALUES, with no argument evaluation — the reference's
-    /// `x_callable_call` shape, where args arrive raw. The quote-and-re-evaluate
+    /// `x_callable_call` signature, where args arrive raw. The quote-and-re-evaluate
     /// door (`call_with_values`) cannot serve a handler that redefines what a
     /// SYMBOL means: evaluating its quoted arguments resolves `lit` through the
     /// handler being called, which recurses without end.
@@ -1081,8 +1082,8 @@ mod tests {
     /// the probe must use a NON-tail def: a def in a closure's TAIL runs after
     /// the save is released and binds globally, exactly as the reference's
     /// x_prim_define documents ("the settled tail-def-binds-globally
-    /// semantics"). Asked of x-engine-c: the tail shape answers 2 and updates
-    /// the global; the non-tail shape stays the activation's own.
+    /// semantics"). Asked of x-engine-c: the tail case answers 2 and updates
+    /// the global; the non-tail case stays the activation's own.
     #[test]
     fn a_closure_resolves_names_where_it_was_written() {
         assert_eq!(
@@ -1117,7 +1118,7 @@ mod tests {
     fn a_library_eval_handler_receives_the_environment() {
         let program = format!(
             "{}{}",
-            crate::testkit::CATALOG,
+            crate::testkit::CATALOGUE,
             "(def %tmake (%coord (lit type) (lit make)))
              (def %minst (%coord (lit type) (lit make-instance)))
              (def h (%tmake \"ENV-EVAL\" (pair (pair (lit eval)

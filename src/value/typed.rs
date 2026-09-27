@@ -11,10 +11,10 @@
 use crate::obj::{Flags, Obj, NIL};
 use crate::objects::{Objects, FLAG_ITER};
 
-/// The families a type object carries, grouped as the reference engine groups
-/// them.
+/// The families a type object carries, arranged as the reference engine
+/// arranges them.
 ///
-/// A type is a TYPE, not a flat spine, and mirroring the reference's shape is
+/// A type is a TYPE, not a flat spine, and mirroring the reference's layout is
 /// deliberate. Decision L1 leaves the STEPS to the engine — only the NAMES are
 /// the contract — so a flat layout would have been permitted. It would also have
 /// been a fresh set of decisions about a structure whose real ones are already
@@ -27,7 +27,7 @@ use crate::objects::{Objects, FLAG_ITER};
 /// the head. The library pushes and pops by writing the PARENT of the stack
 /// route, which is why `%reflect-path-parent` exists.
 ///
-/// The groups, in top-level order: name, data, heap, proc, cvt, io, iter, ops.
+/// The fields, in top-level order: name, data, heap, proc, cvt, io, iter, ops.
 use crate::vocabulary::Family;
 
 pub const HEAP_FAMILIES: &[Family] = &[
@@ -51,10 +51,10 @@ pub const ITER_FAMILIES: &[Family] = &[Family::Iter];
 pub const OPS_FAMILIES: &[Family] = &[Family::Ops];
 
 /// How many top-level cells a type spine has before the engine's own handlers.
-const TYPE_GROUPS: usize = 8;
+const TYPE_FIELDS: usize = 8;
 
 impl Objects {
-    /// A group: `n` cells, each holding a STACK that is empty but PRESENT.
+    /// A field: `n` cells, each holding a STACK that is empty but PRESENT.
     ///
     /// A family's stack is born as a one-cell list holding nil, never as nil
     /// itself. The two look the same through `type-X` — the active handler is
@@ -68,7 +68,7 @@ impl Objects {
     /// `(%type-set-from! (%type-by-atom %int) …)` — after which an unrelated
     /// `def-class` failed, several hundred lines away, naming a symbol that had
     /// nothing to do with it.
-    fn group(&mut self, n: usize) -> Obj {
+    fn field(&mut self, n: usize) -> Obj {
         let mut spine = NIL;
         for _ in 0..n {
             let stack = self.spair(NIL, NIL);
@@ -96,14 +96,14 @@ impl Objects {
     /// failure surfaces later and elsewhere, when something tries to install
     /// into a stack that was never there.
     pub fn type_new(&mut self, name: Obj, handlers: Obj) -> Obj {
-        // Each group is a spine with one cell per family; each family's cell
+        // Each field is a spine with one cell per family; each family's cell
         // holds its STACK, and a stack starts empty.
-        let heap = self.group(HEAP_FAMILIES.len());
-        let proc = self.group(PROC_FAMILIES.len());
-        let cvt = self.group(CVT_FAMILIES.len());
-        let io = self.group(IO_FAMILIES.len());
-        let iter = self.group(ITER_FAMILIES.len());
-        let ops = self.group(OPS_FAMILIES.len());
+        let heap = self.field(HEAP_FAMILIES.len());
+        let proc = self.field(PROC_FAMILIES.len());
+        let cvt = self.field(CVT_FAMILIES.len());
+        let io = self.field(IO_FAMILIES.len());
+        let iter = self.field(ITER_FAMILIES.len());
+        let ops = self.field(OPS_FAMILIES.len());
 
         // The name is a STACK too, so that `type-name` — its head — is the name
         // itself. The reference does the same, and reflect.x reads the head.
@@ -113,13 +113,13 @@ impl Objects {
         let data = self.spair(NIL, NIL);
         for slot in [ops, iter, io, cvt, proc, heap, data, name_stack]
             .into_iter()
-            .take(TYPE_GROUPS)
+            .take(TYPE_FIELDS)
         {
             spine = self.spair(slot, spine);
         }
-        // A type TYPE carries the type tag in its own word, which is how the
+        // A type TYPE carries the type label in its own word, which is how the
         // library tells a real type from any other word it might find: it probes
-        // the tag off the first type-alist entry and checks against it before
+        // the label off the first type-alist entry and checks against it before
         // walking.
         let marker = self.spair_marker;
         self.set_type_word(spine, marker);
@@ -127,13 +127,13 @@ impl Objects {
         spine
     }
 
-    /// Where each handler key lives: (group slot from the type, family index).
+    /// Where each handler key lives: (field slot from the type, family index).
     ///
     /// The names are the library's, so they are not this engine's to choose.
     /// `make` and `clone` are absent deliberately — the reference does not let
     /// x-lang set them either.
     fn handler_slot(key: Family) -> Option<(usize, usize)> {
-        // Group slots, in the order type_new builds them.
+        // Field slots, in the order type_new builds them.
         const DATA: usize = 1;
         const HEAP: usize = 2;
         const PROC: usize = 3;
@@ -141,13 +141,13 @@ impl Objects {
         const IO: usize = 5;
         const ITER: usize = 6;
         const OPS: usize = 7;
-        let group = |g: usize, fams: &[Family]| fams.iter().position(|f| *f == key).map(|i| (g, i));
-        group(HEAP, HEAP_FAMILIES)
-            .or_else(|| group(PROC, PROC_FAMILIES))
-            .or_else(|| group(CVT, CVT_FAMILIES))
-            .or_else(|| group(IO, IO_FAMILIES))
-            .or_else(|| group(ITER, ITER_FAMILIES))
-            .or_else(|| group(OPS, OPS_FAMILIES))
+        let field = |g: usize, fams: &[Family]| fams.iter().position(|f| *f == key).map(|i| (g, i));
+        field(HEAP, HEAP_FAMILIES)
+            .or_else(|| field(PROC, PROC_FAMILIES))
+            .or_else(|| field(CVT, CVT_FAMILIES))
+            .or_else(|| field(IO, IO_FAMILIES))
+            .or_else(|| field(ITER, ITER_FAMILIES))
+            .or_else(|| field(OPS, OPS_FAMILIES))
             .or_else(|| {
                 if key == Family::Data {
                     Some((DATA, 0))
@@ -177,13 +177,13 @@ impl Objects {
             let Some(fam) = Family::from_name(&self.str_val(key)) else {
                 continue;
             };
-            let Some((group, family)) = Self::handler_slot(fam) else {
+            let Some((field, family)) = Self::handler_slot(fam) else {
                 continue;
             };
             let handler = self.rest(entry);
-            // The group node, then the family's cell, then its stack.
+            // The field node, then the family's cell, then its stack.
             let mut node = ty;
-            for _ in 0..group {
+            for _ in 0..field {
                 node = self.rest(node);
             }
             let mut fam = self.first(node);
@@ -200,11 +200,11 @@ impl Objects {
     /// Install a handler as a fresh type's stack head — the engine-side twin of
     /// what `install_handlers` does for a `(key . handler)` row.
     pub(crate) fn type_set_handler(&mut self, ty: Obj, key: Family, handler: Obj) {
-        let Some((group, family)) = Self::handler_slot(key) else {
+        let Some((field, family)) = Self::handler_slot(key) else {
             return;
         };
         let mut node = ty;
-        for _ in 0..group {
+        for _ in 0..field {
             node = self.rest(node);
         }
         let mut fam = self.first(node);
@@ -225,11 +225,11 @@ impl Objects {
     /// mechanism, and there was one until the handler alist started being
     /// distributed into the type where it belongs.
     pub fn type_handler(&self, o: Obj, family: Family) -> Obj {
-        let Some((group, index)) = Self::handler_slot(family) else {
+        let Some((field, index)) = Self::handler_slot(family) else {
             return NIL;
         };
         let mut node = o;
-        for _ in 0..group {
+        for _ in 0..field {
             node = self.rest(node);
             if node.is_nil() {
                 return NIL;
@@ -250,7 +250,7 @@ impl Objects {
     ///
     /// `t` may arrive as a HANDLE — which is what x-lang passes, since that is
     /// what `type of` and `make-type` answer — so it is resolved here. The word
-    /// must hold the TYPE: the library dereferences it and checks the type tag
+    /// must hold the TYPE: the library dereferences it and checks the type label
     /// before walking, and a handle there would fail that check.
     pub fn instance(&mut self, t: Obj, n: usize) -> Obj {
         let ty = self.type_for(t);
@@ -301,9 +301,9 @@ impl Objects {
     ///
     /// A handle, not the type. x-lang's `Type of` is documented as returning
     /// "the type's handle atom", the type-alist is keyed by it, and
-    /// `%reflect-satom-tw` is probed off `(type of 0)` to learn what tag a
+    /// `%reflect-satom-tw` is probed off `(type of 0)` to learn what label a
     /// HANDLE carries. Answering the type instead made that probe find the
-    /// TYPE's tag, so handle-tag and type-tag became the same value and this
+    /// TYPE's label, so handle-label and type-label became the same value and this
     /// engine's own base read as a type handle.
     pub fn type_of(&mut self, o: Obj) -> Obj {
         let ty = self.obj_type(o);
@@ -352,7 +352,7 @@ impl Objects {
             return carried;
         }
         // An engine-built spine cell REPORTS as a pair — the reference's
-        // catalog rows answer `pair?` #t — while its marker word keeps it
+        // catalogue rows answer `pair?` #t — while its marker word keeps it
         // self-evaluating (the eval loop reads the raw word, not this).
         if carried == self.spair_marker && !self.base.is_nil() {
             let base = self.base;

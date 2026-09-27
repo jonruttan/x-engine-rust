@@ -27,9 +27,9 @@ pub struct Engine {
     /// THIS engine's own base — the one `%base` answers and the one top-level
     /// forms evaluate in. Other bases made with `base make` are ordinary values.
     pub base: Obj,
-    /// The primitive catalog, shared by every base. The instructions are the
+    /// The primitive catalogue, shared by every base. The instructions are the
     /// same objects whichever base reaches them; only BINDINGS are per-base.
-    pub(crate) catalog: Obj,
+    pub(crate) catalogue: Obj,
     /// Name-to-primitive for every registered instruction, kept so a new base
     /// can be given the instruction set. A fresh base must evaluate `(+ 2 3)`,
     /// so it is born knowing the machine — what it does NOT get is the host's
@@ -152,7 +152,7 @@ impl Engine {
             envs: Envs::new(),
             prims: Vec::new(),
             base: NIL,
-            catalog: NIL,
+            catalogue: NIL,
             prim_bindings: Vec::new(),
 
             files: Vec::new(),
@@ -197,17 +197,17 @@ impl Engine {
                 e.prim_bindings.push((sym, obj));
             }
             if let Some((ns, m)) = def.coord {
-                // Namespace and method names too: the catalog is walked with
+                // Namespace and method names too: the catalogue is walked with
                 // symbols read in whichever base is asking.
                 let _ = e.objects.sym_shared(ns);
                 let _ = e.objects.sym_shared(m);
                 coords.push((ns, m, obj));
             }
         }
-        e.catalog = e.file_catalog(&coords);
+        e.catalogue = e.file_catalogue(&coords);
 
         // The types' own render handler: in the table so it is callable,
-        // deliberately outside the catalog and bound nowhere.
+        // deliberately outside the catalogue and bound nowhere.
         let render_idx = e.prims.len();
         e.prims.push(crate::prims::io::ENGINE_RENDER);
         let _ = render_idx;
@@ -279,7 +279,7 @@ impl Engine {
     ///
     /// Handle and type are the SAME object here, because `type of` answers the
     /// type object itself; the reference keys by a separate sentinel. The alist
-    /// shape is what matters to the library, not which of the two it holds.
+    /// layout is what matters to the library, not which of the two it holds.
     fn register_builtin_types(&mut self) {
         // One representative value per kind, and EVERY kind the library can
         // name — not just the ones it files render handlers for. A missing entry
@@ -389,7 +389,7 @@ impl Engine {
     }
 
     pub(crate) fn file_type_in(&mut self, base: Obj, t: Obj) {
-        // Keyed by the HANDLE, valued by the TYPE — the shape x-lang walks:
+        // Keyed by the HANDLE, valued by the TYPE — the layout x-lang walks:
         // `type by-atom` is handed what `type of` answered and expects the type
         // back.
         let handle = self.objects.handle_of_type(t);
@@ -399,10 +399,10 @@ impl Engine {
         crate::base::set(&mut self.objects, base, crate::base::TYPE_ALIST, cell);
     }
 
-    /// Build the catalog: `((ns . ((method . prim) ...)) ...)`, the shape x-lang
-    /// walks the base to find. Namespace and method symbols are interned, so the
+    /// Build the catalogue: `((ns . ((method . prim) ...)) ...)`, the layout
+    /// x-lang walks the base to find. Namespace and method symbols are interned, so the
     /// lookups the prelude performs are pointer comparisons.
-    fn file_catalog(&mut self, rows: &[(&str, &str, Obj)]) -> Obj {
+    fn file_catalogue(&mut self, rows: &[(&str, &str, Obj)]) -> Obj {
         let mut namespaces: Vec<(&str, Vec<(&str, Obj)>)> = Vec::new();
         for (ns, m, o) in rows {
             match namespaces.iter_mut().find(|(n, _)| n == ns) {
@@ -486,7 +486,7 @@ impl Engine {
             self.envs.bind(&mut self.objects, env, sym, obj);
         }
 
-        let base = crate::base::build(&mut self.objects, self.catalog, env);
+        let base = crate::base::build(&mut self.objects, self.catalogue, env);
         // The root frame serves the spine just built — stamped after, because
         // the spine cannot exist before its env does.
         self.envs.set_base(&mut self.objects, env, base);
@@ -581,14 +581,14 @@ mod tests {
         }
     }
 
-    /// The bare binding and the catalog entry are ONE object, because they come
+    /// The bare binding and the catalogue entry are ONE object, because they come
     /// from one row. Two separately-made primitives would behave alike and fail
     /// this, which is the failure x-lang's suite looks for.
     #[test]
     fn a_bare_name_and_its_coordinate_are_the_same_object() {
         let mut e = Engine::new();
         let env = e.root_env();
-        let catalog = base::catalog_of(&e.objects, e.base);
+        let catalogue = base::catalogue_of(&e.objects, e.base);
         for def in prims::all() {
             let (Some(name), Some((ns, m))) = (def.bare, def.coord) else {
                 continue;
@@ -598,16 +598,16 @@ mod tests {
                 e.envs.lookup(&e.objects, env, sy)
             }
             .expect("bound");
-            let filed = lookup_coord(&mut e, catalog, ns, m).expect("filed");
+            let filed = lookup_coord(&mut e, catalogue, ns, m).expect("filed");
             assert_eq!(bare, filed, "`{}` and ({} {}) differ", name, ns, m);
         }
     }
 
-    fn lookup_coord(e: &mut Engine, catalog: Obj, ns: &str, m: &str) -> Option<Obj> {
+    fn lookup_coord(e: &mut Engine, catalogue: Obj, ns: &str, m: &str) -> Option<Obj> {
         let (nsym, msym) = (e.objects.sym(ns), e.objects.sym(m));
         let methods = e
             .objects
-            .list(catalog)
+            .list(catalogue)
             .find(|&entry| e.objects.first(entry) == nsym)
             .map(|entry| e.objects.rest(entry))?;
         e.objects

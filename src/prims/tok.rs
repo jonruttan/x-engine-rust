@@ -187,7 +187,7 @@ pub(crate) fn handler_list(e: &Engine, slot: Obj) -> Vec<Obj> {
 ///
 /// `x_token_analyse` writes it as
 /// `score >= i_best || (i_best < 1 && score <= i_best)`, with `i_best` starting
-/// at zero. Two things fall out of that shape and both matter: `>=` means a
+/// at zero. Two things fall out of that rule and both matter: `>=` means a
 /// LATER type takes a tie, which is how the library's ordering settles
 /// equal-length claims; and while nothing positive has matched, a MORE negative
 /// score wins — the symbol fallback scores negative so any positive match beats
@@ -362,12 +362,12 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     // construction. That keeps `$"…"` interpolation working (a plain host base
     // claims nothing and reads forms) while a registered language wins wherever
     // its analysers claim.
-    // A token base and an interpreter base differ by CONTENTS, not kind. The
+    // A token base and an interpreter base differ by CONTENTS, not structure. The
     // engine-reader fallback below stands in for the built-in types the
     // reference files on every full base's alist, so it applies exactly where
-    // those types would be: a base with a catalog. A `base make-tok` base has
+    // those types would be: a base with a catalogue. A `base make-tok` base has
     // none, and an input nothing claims yields no tokens there.
-    let falls_back = !crate::base::catalog_of(&e.objects, a[0]).is_nil();
+    let falls_back = !crate::base::catalogue_of(&e.objects, a[0]).is_nil();
     let alist = crate::base::get(&e.objects, a[0], crate::base::TYPE_ALIST);
     let entries: Vec<Obj> = e.objects.list(alist).collect();
     let types: Vec<Obj> = entries.iter().map(|&entry| e.objects.rest(entry)).collect();
@@ -649,8 +649,8 @@ impl AsciiDigitU32 for u32 {
 ///
 /// The reference's `x_prim_make_token_base` allocates an ordinary base with
 /// nothing registered, inheriting only the boolean singletons. A token base
-/// differs from an interpreter base by its CONTENTS — no catalog, no types —
-/// not by its kind: the tokenizer drives whatever type-alist the base it is
+/// differs from an interpreter base by its CONTENTS — no catalogue, no types —
+/// not by its structure: the tokenizer drives whatever type-alist the base it is
 /// handed carries, and `base make-type` files into the same alist either way.
 fn make_tok(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let env = e.envs.push_root(&mut e.objects);

@@ -300,7 +300,7 @@ impl crate::engine::Engine {
     fn root_set(&self) -> Vec<Obj> {
         // The root set. Anything reachable from the base needs no entry here:
         // %token-eof and %sigint-flag are bound in every base's env, the
-        // catalog is base slot 0, and #f is the base's FALSE slot. What is
+        // catalogue is base slot 0, and #f is the base's FALSE slot. What is
         // listed is engine-held state with no path from the base:
         //
         //   spair/satom markers   sentinels the reference keeps as C statics;

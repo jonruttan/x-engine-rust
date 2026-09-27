@@ -115,7 +115,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::row(Some("/"), Some(("int", "/")), 2, u_op_12),
     PrimDef::row(Some("%"), Some(("int", "%")), 2, u_op_13),
     // The char door has no bare spelling in either direction: it is reachable
-    // only through the catalog, which is the reference engine's arrangement.
+    // only through the catalogue, which is the reference engine's arrangement.
     PrimDef::row(Some("char->integer"), Some(("char", "->int")), 1, char_to_int_u),
     PrimDef::row(Some("integer->char"), Some(("int", "->char")), 1, int_to_char_u),
 ];

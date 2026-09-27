@@ -5,7 +5,7 @@
 //! judgement, and this layer does not make those.
 //!
 //! The step function answers `(value . next-state)`, or nil when there is
-//! nothing left. All three doors are built on that one shape and they are NOT
+//! nothing left. All three doors are built on that one protocol and they are NOT
 //! interchangeable: `next` mutates, `empty?` peeks, `step` is functional. An
 //! engine that made `step` a synonym for `next` would pass every single-pass
 //! test and corrupt anything that iterates twice, which is why x-lang's suite

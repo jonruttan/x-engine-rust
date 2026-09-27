@@ -1,11 +1,11 @@
 //! The instruction set, as tables.
 //!
-//! ONE MODULE PER SUBJECT, not per capability group. The capability tags in
-//! `tools/contract/isa.x` cut across subjects — `str append` is tagged `alloc`
-//! and `str byte-len` is tagged `hot` — so a module per tag would split the
-//! string code in half and put two halves of one idea in different files. The
-//! tag is a fact about the contract and lives in the contract; the module is a
-//! fact about the code and follows what the code touches.
+//! ONE MODULE PER SUBJECT, not per capability group. The capability labels in
+//! `tools/contract/isa.x` cut across subjects — `str append` is labelled
+//! `alloc` and `str byte-len` is labelled `hot` — so a module per label would
+//! split the string code in half and put two halves of one idea in different
+//! files. The label is a fact about the contract and lives in the contract; the
+//! module is a fact about the code and follows what the code touches.
 //!
 //! Every module exports a `&[PrimDef]` and its own `#[cfg(test)] mod tests`. A
 //! primitive is a plain function over evaluated arguments, so a test calls it

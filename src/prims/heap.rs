@@ -63,7 +63,7 @@ fn collect(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
 /// `(heap mark)` and `(heap sweep)` — the halves of a collection this engine
 /// does not run.
 ///
-/// x-lang leaves their call shapes undefined and says so; they are here because
+/// x-lang leaves their call signatures undefined and says so; they are here because
 /// the capability is the whole group, and an engine that declared `isa/gc` while
 /// omitting two rows would be claiming a group it does not cover.
 fn mark(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
@@ -112,7 +112,7 @@ fn mark_root(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
 ///
 /// Bound BARE as well as filed, precisely so a harness can arm it before
 /// anything loads. Every runner in x-lang does, including the conformance one:
-/// an engine that filed it only in the catalog would leave every bare harness
+/// an engine that filed it only in the catalogue would leave every bare harness
 /// unable to guard itself.
 ///
 /// It is ENFORCED, not merely recorded: collection is EXPLICIT-ONLY, so

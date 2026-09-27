@@ -40,7 +40,7 @@ use crate::obj::{Addr, Flags, Obj, Word, NIL, WORD};
 use crate::symbols::Symbols;
 use std::collections::HashMap;
 
-// Header shape. These MUST agree with tools/contract/obj-layout.x: x-lang reads
+// Header layout. These MUST agree with tools/contract/obj-layout.x: x-lang reads
 // that file and computes offsets from it, so a disagreement here is not a Rust
 // bug that Rust can catch — it is the engine lying about itself.
 /// The collector's chain link: every object is threaded here at birth.
@@ -103,7 +103,7 @@ pub const FLAG_PAIR: Flags = Flags::new(0x0100);
 /// The distinction is x-lang's, not an implementation detail. The reference
 /// keeps two pair kinds and the library tells them apart by their TYPE WORD — a
 /// list pair points at the pair/list type, a structural one carries the spair
-/// tag. The C's ISA states it outright of `base bind`: it "allocates a
+/// label. The C's ISA states it outright of `base bind`: it "allocates a
 /// STRUCTURAL spair for the env spine, which X pair cannot make."
 ///
 /// What rides on it: `pair?` answers #f for a spine, so the library's list
@@ -111,20 +111,20 @@ pub const FLAG_PAIR: Flags = Flags::new(0x0100);
 /// can tell its member rows from the frames they live in.
 ///
 /// Same layout as a list pair — `first` and `rest` work on both — so this costs
-/// nothing but the tag.
+/// nothing but the label.
 pub const FLAG_SPAIR: Flags = Flags::new(0x0101);
 
 /// A type HANDLE: the atom `type of` answers and the type-alist is keyed by.
 ///
 /// NOT an ordinary symbol, and the difference is one x-lang reads.
-/// `lib/x/boot/reflect.x` says it plainly: "The static-ATOM sentinel tag marks
+/// `lib/x/boot/reflect.x` says it plainly: "The static-ATOM sentinel label marks
 /// type HANDLES (the name atoms `type of` returns) and other raw atoms. It is
-/// NOT what #t/#f carry (nil-typed, tag 0) and NOT what interned symbols carry
+/// NOT what #t/#f carry (nil-typed, label 0) and NOT what interned symbols carry
 /// (the SYMBOL type)."
 ///
-/// So a handle carries the atom tag while a symbol points at the SYMBOL type,
-/// and the library derives both tags by probing a real handle and a real type.
-/// With `type of` answering the TYPE instead, this engine made the two tags
+/// So a handle carries the atom label while a symbol points at the SYMBOL type,
+/// and the library derives both labels by probing a real handle and a real type.
+/// With `type of` answering the TYPE instead, this engine made the two labels
 /// identical — and its own base then read as a type handle.
 pub const FLAG_HANDLE: Flags = Flags::new(0x0102);
 pub const FLAG_SYM: Flags = Flags::new(0x0200);
@@ -271,13 +271,13 @@ pub struct Objects {
     pub(crate) loc_nodes: [Obj; 2],
     /// The INT token reader instruction, installed with the analyser states.
     pub(crate) int_read: Obj,
-    /// The tag every registered type TYPE carries in its own type word.
+    /// The label every registered type TYPE carries in its own type word.
     ///
     /// x-lang derives this rather than being told it — `%reflect-spair-tw` is
     /// the type word of the first type-alist entry's type — and then uses it to
     /// check that a word really points at a type before walking one.
     pub(crate) spair_marker: Obj,
-    /// The tag every type HANDLE carries, distinct from [`Objects::spair_marker`].
+    /// The label every type HANDLE carries, distinct from [`Objects::spair_marker`].
     ///
     /// x-lang probes it off `(type of 0)` and uses it to tell a handle from a
     /// thing that merely has a type. The two must not be equal.
@@ -323,8 +323,8 @@ pub struct Objects {
     pub(crate) callable_call_handler: Obj,
     /// The LIST type's call handler — indexing and slicing.
     pub(crate) list_call_handler: Obj,
-    /// The one "BASE" tag atom every base's type word carries.
-    pub(crate) base_tag_atom: Obj,
+    /// The one "BASE" label atom every base's type word carries.
+    pub(crate) base_label_atom: Obj,
     /// The instruction-table indexes of the four callable ENTRIES —
     /// procedure, operative, wrap, continuation — as the words a
     /// constructor stamps into slot 0. Written once at registration.
@@ -440,7 +440,7 @@ impl Objects {
             eval_handlers: [crate::obj::NIL; 2],
             callable_call_handler: crate::obj::NIL,
             list_call_handler: crate::obj::NIL,
-            base_tag_atom: crate::obj::NIL,
+            base_label_atom: crate::obj::NIL,
             entry_words: [crate::obj::Word(0); 4],
         };
         // TWO data words, not zero. x-lang's boot uses the false singleton's
@@ -448,7 +448,7 @@ impl Objects {
         // (%set-rest! %false-stack …). With no room for it the write ran off the
         // end of the object and made `#f` itself truthy — the boot then took
         // every wrong branch, silently.
-        // The two tags, before anything exists to be tagged. Distinct objects:
+        // The two labels, before anything exists to be labelled. Distinct objects:
         // the library compares against both and behaves differently.
         a.spair_marker = a.alloc(Flags::new(0), 1);
         a.satom_marker = a.alloc(Flags::new(0), 1);

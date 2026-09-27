@@ -12,7 +12,7 @@
 //! on the safe side, because moving ordinary code next to unsafe code does not
 //! make it safer, it only makes the unsafe harder to review.
 //!
-//! # Why this is a different kind of pointer
+//! # Why this is a different pointer representation
 //!
 //! Everywhere else in this engine a "pointer" is a BYTE OFFSET into
 //! the engine's heap, and that is what lets the rest be safe: nothing outside the
@@ -181,7 +181,7 @@ pub fn call_ints(f: Foreign, args: &[u64]) -> u64 {
 
 /// `s0->d` — call a `(const char *, void *) -> double`, answering the bits.
 ///
-/// The shape is `strtod`'s, and `strtod` is what the library calls through it:
+/// The signature is `strtod`'s, and `strtod` is what the library calls through it:
 /// the second argument is the end pointer, and null says the caller does not
 /// want it. A separate spelling rather than a case of [`call_ints`] because the
 /// RETURN is a double, and a double comes back in different registers from an
