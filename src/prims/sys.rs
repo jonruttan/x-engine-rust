@@ -1,6 +1,6 @@
 //! OS facilities.
 //!
-//! Mirrors the reference engine's `x-prim/*` sys family. Small, and every row in
+//! Mirrors the reference engine's `x-prim/*` sys group. Small, and every row in
 //! it runs into the same wall from a different side: an operating system is not
 //! reachable from safe Rust's standard library.
 

@@ -107,7 +107,7 @@ fn type_is(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// `(type make-instance handle data)` — an instance of a registered type.
 ///
 /// The handle is resolved to its TYPE through the base, because the type word
-/// must hold the type: the library dereferences it and checks the type tag
+/// must hold the type: the library dereferences it and checks the type label
 /// before walking.
 /// TWO slots, not one, and the second one matters.
 ///

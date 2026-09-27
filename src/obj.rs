@@ -32,7 +32,7 @@ impl Obj {
 
     /// The address this object begins at.
     ///
-    /// A re-tagging, not a conversion: an object IS its own offset here, which
+    /// A re-labelling, not a conversion: an object IS its own offset here, which
     /// is exactly what makes `obj ->ptr` and `ptr ->obj` round-trip by
     /// construction. It works only because the `core` profile has no foreign
     /// door — no `dlopen`, no `ptr call` — so an offset never escapes to C.

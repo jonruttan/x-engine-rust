@@ -11,7 +11,7 @@
 # x-engine-c has had this check since before the split. This engine did not.
 #
 # It asks the ENGINE, not the source. Parsing Rust means knowing every
-# constructor shape, and the first version of this check missed `int2` and
+# constructor signature, and the first version of this check missed `int2` and
 # reported thirty false differences. The binary cannot misreport what it
 # registered.
 set -e
@@ -22,10 +22,10 @@ ENGINE=${X_BIN:-./target/release/x-engine}
 
 W="${TMPDIR:-/tmp}/isa-check.$$"; mkdir -p "$W"; trap 'rm -rf "$W"' EXIT INT TERM
 
-# The catalog rows `(ns method tag)` and the bare rows `(name tag)`, in the
+# The catalogue rows `(ns method label)` and the bare rows `(name label)`, in the
 # sections isa.x separates them into.
 awk '
-  /%isa-catalog/ { sec="cat"; next }
+  /%isa-catalogue/ { sec="cat"; next }
   /%isa-bare/    { sec="bare"; next }
   /%isa-values/  { sec="val"; next }
   /%isa-keep|%isa-aliases/ { sec="skip"; next }

@@ -20,7 +20,7 @@ impl Objects {
 
     /// A buffer is `(val . (read . write))`, as the reference lays it out:
     /// `first(buffer)` is the val mark and `rest(buffer)` is the object whose
-    /// first word is the read mark — the shape `lib/x/reader/intrinsics.x`
+    /// first word is the read mark — the layout `lib/x/reader/intrinsics.x`
     /// walks with `%cell-int` and writes with `%buffer-unread`.
     ///
     /// Marks are OFFSETS into the text rather than raw pointers, and the text

@@ -65,18 +65,18 @@ impl Objects {
 
     /// Interned symbol. Two spellings of one name are the SAME object, which is
     /// what makes `eq?` on symbols a pointer comparison.
-    /// A type HANDLE: an atom holding a name, carrying the atom tag.
+    /// A type HANDLE: an atom holding a name, carrying the atom label.
     ///
     /// Deliberately NOT interned with the symbols. A handle and a symbol of the
-    /// same spelling are different objects, because they carry different tags
-    /// and the library reads the tag: `%reflect-handle-tw?` asks whether a word
+    /// same spelling are different objects, because they carry different labels
+    /// and the library reads the label: `%reflect-handle-tw?` asks whether a word
     /// marks a HANDLE, and an interned symbol must answer no.
-    /// The engine-wide "BASE" tag, made once.
-    pub(crate) fn base_tag(&mut self) -> Obj {
-        if self.base_tag_atom.is_nil() {
-            self.base_tag_atom = self.handle("BASE");
+    /// The engine-wide "BASE" label, made once.
+    pub(crate) fn base_label(&mut self) -> Obj {
+        if self.base_label_atom.is_nil() {
+            self.base_label_atom = self.handle("BASE");
         }
-        self.base_tag_atom
+        self.base_label_atom
     }
 
     /// A fresh error-scratch atom over its own byte region — the base's

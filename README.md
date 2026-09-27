@@ -140,7 +140,7 @@ Following x-lang's own advice for a second implementation:
 3. Generate `x-engine.xon` with x-lang's generator, run against this directory.
 4. Implement toward `core`, checking against x-lang's conformance suite:
    `make conformance X_BIN=.../x-engine X_ENGINE_DIR=.../x-engine-rust`
-5. Add `gc`, then `posix`, if and when the library tiers that need them matter.
+5. Add `gc`, then `posix`, if and when the library profiles that need them matter.
 
 Two guarantees are claimed and both are now EARNED rather than free.
 `gc/explicit-only` holds because nothing but `(heap collect)` collects — the

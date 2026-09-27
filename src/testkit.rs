@@ -1,6 +1,6 @@
 //! Shared test scaffolding.
 //!
-//! Compiled only under `cfg(test)`. It exists so that the catalog walk — the
+//! Compiled only under `cfg(test)`. It exists so that the catalogue walk — the
 //! handful of lines every test needs to reach a coordinate before a library
 //! exists — is written once instead of pasted into each module. That is the same
 //! duplication this rewrite removed from the primitives themselves, and it grows
@@ -11,7 +11,7 @@ use crate::engine::Engine;
 use crate::obj::Obj;
 
 /// Reaching a coordinate from a bare engine: walk `(%base)` to the prims
-/// catalog and define `%coord`.
+/// catalogue and define `%coord`.
 ///
 /// It WALKS THE DECLARED ROUTE from `base-paths.x`, exactly as
 /// `tests/x/conformance/prelude.x` does.
@@ -19,7 +19,7 @@ use crate::obj::Obj;
 /// A test that reaches primitives by a private back door is not exercising the
 /// route the language uses, and will disagree with the language the moment the
 /// route moves.
-pub const CATALOG: &str = r#"
+pub const CATALOGUE: &str = r#"
 (include "tools/contract/base-paths.x")
 (def %assoc (fn (self k l)
   (match ((eq? l ()) ())
@@ -48,15 +48,15 @@ pub fn coords(bindings: &[(&str, &str, &str)]) -> String {
         .collect()
 }
 
-/// Evaluate source with the catalog walk and the named coordinates in scope.
+/// Evaluate source with the catalogue walk and the named coordinates in scope.
 pub fn with_coords(bindings: &[(&str, &str, &str)], body: &str) -> String {
     format!("{}\n{}", coords(bindings), body)
 }
 
-/// Evaluate source with the catalog walk already in scope.
+/// Evaluate source with the catalogue walk already in scope.
 pub fn eval(src: &str) -> (Engine, Result<Obj, Cond>) {
     let mut e = Engine::new();
-    let full = format!("{}\n{}", CATALOG, src);
+    let full = format!("{}\n{}", CATALOGUE, src);
     let v = e.eval_str(&full);
     (e, v)
 }

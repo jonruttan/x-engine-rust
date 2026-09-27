@@ -2,7 +2,7 @@
 //!
 //! A primitive is a row — where it is reachable from, how many arguments it
 //! takes, and a plain function. It is not an enum variant plus a hand-written
-//! arm in a dispatcher, which is what this file replaces: that shape re-extracted
+//! arm in a dispatcher, which is what this file replaces: that pattern re-extracted
 //! and re-checked its own arguments at every site, so the same four lines
 //! appeared a hundred times and no primitive could be called without going
 //! through the evaluator.
@@ -10,14 +10,14 @@
 //! Two consequences fall out of the row being data:
 //!
 //! * **Arity is checked once**, at the call boundary, instead of not at all.
-//! * **The bare name and the catalog coordinate come from the SAME row**, so an
+//! * **The bare name and the catalogue coordinate come from the SAME row**, so an
 //!   instruction cannot be bound under one and missing under the other. That
 //!   correspondence is what x-lang's conformance suite checks directly ("every
 //!   arithmetic coordinate is filed and agrees with its bare binding"), and it
 //!   now holds by construction rather than by remembering to file both.
 //!
 //! The row also mirrors `tools/contract/isa.x`: a `bare` entry is an `%isa-bare`
-//! row and a `coord` entry is an `%isa-catalog` row. The manifest and the engine
+//! row and a `coord` entry is an `%isa-catalogue` row. The manifest and the engine
 //! say the same thing because they are the same list.
 
 use crate::engine::Engine;
@@ -30,7 +30,7 @@ use crate::obj::{EnvId, Obj};
 /// x-lang's model is operative-by-default at the C level, and the conformance
 /// suite tests the difference with an UNBOUND symbol: an engine that evaluated
 /// an operative's arguments does not merely answer differently, it dies. Making
-/// the two kinds separate variants means a primitive cannot silently be written
+/// the two disciplines separate variants means a primitive cannot silently be written
 /// in the wrong discipline.
 /// The variants are ordered by HOW MUCH CONTEXT the primitive can reach, and
 /// that ordering is the point. A primitive is handed the least it can do its job
@@ -51,11 +51,11 @@ use crate::obj::{EnvId, Obj};
 /// values evaluates them itself, exactly as `x_eargs` does inside every C
 /// primitive.
 ///
-/// The leaf functions behind the rows keep their narrow shapes — an
+/// The leaf functions behind the rows keep their narrow signatures — an
 /// integer operation is still a function of integers, testable with no
 /// engine in existence — and the `uniform_*` macros generate the row
 /// functions that wrap them. Fast paths live INSIDE a uniform row, never
-/// as dispatcher kinds.
+/// as dispatcher cases.
 pub type PrimFn = fn(&mut Engine, Obj, Obj, EnvId) -> EvalResult;
 
 /// Wrap a VALUE leaf — needs only the object model — as a uniform row.
@@ -209,7 +209,7 @@ macro_rules! uniform_int1 {
 pub struct PrimDef {
     /// The bare name, when it has one. `%isa-bare`.
     pub bare: Option<&'static str>,
-    /// The catalog coordinate, when it has one. `%isa-catalog`.
+    /// The catalogue coordinate, when it has one. `%isa-catalogue`.
     /// Some instructions have only this — the char door is reachable no other way.
     pub coord: Option<(&'static str, &'static str)>,
     /// How many operand slots the body indexes, and the most it reads.
@@ -248,10 +248,10 @@ mod tests {
         unreachable!("the row is data here, never called")
     }
 
-    /// Every row is ONE function shape; the names and arity are ISA data
+    /// Every row is ONE function signature; the names and arity are ISA data
     /// beside it, not a second dispatch.
     #[test]
-    fn a_row_is_one_shape() {
+    fn a_row_is_one_signature() {
         let d = PrimDef::row(Some("thing"), None, 2, never_row);
         assert_eq!(d.arity, (2, Some(2)));
         assert_eq!(d.bare, Some("thing"));

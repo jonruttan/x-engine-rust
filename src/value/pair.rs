@@ -18,7 +18,7 @@ impl Objects {
     ///
     /// Used for everything the ENGINE builds and the library walks reflectively
     /// rather than as data — the base, environment frames, types. It is not
-    /// an optimisation and not a private convenience: the library reads the tag
+    /// an optimisation and not a private convenience: the library reads the label
     /// and behaves differently, so building a spine out of list pairs tells it
     /// the interpreter's own structure is a list.
     pub fn spair(&mut self, first: Obj, rest: Obj) -> Obj {
@@ -114,13 +114,13 @@ mod tests {
         assert!(o.is_pair(list), "a list pair is a pair");
         assert!(!o.is_pair(spine), "a SPINE is not");
 
-        // Both are walkable: same layout, different tag.
+        // Both are walkable: same layout, different label.
         assert!(o.is_cell(list) && o.is_cell(spine));
         assert_eq!(o.first(spine), one);
         assert_eq!(o.rest(spine), two);
     }
 
-    /// The tags are distinct objects, not two names for one flag.
+    /// The labels are distinct objects, not two names for one flag.
     #[test]
     fn the_two_kinds_are_told_apart() {
         let mut o = Objects::new();

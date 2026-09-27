@@ -53,7 +53,7 @@ impl Objects {
     /// entry the slot holds, not cases of a dispatcher.
     ///
     /// A closure: entry in slot 0; slot 1 is the STATE SPINE
-    /// `(params body env . bst)` — the reference's `x_procstate` shape, which
+    /// `(params body env . bst)` — the reference's `x_procstate` layout, which
     /// the library reads (`lib/x/tool/cov.x` walks slot 1 for the body). The
     /// bst tail is nil here: this engine's globals live in the frame chain.
     pub fn closure(&mut self, params: Obj, body: Obj, env: EnvId) -> Obj {
@@ -88,7 +88,7 @@ impl Objects {
     }
 
     /// An operative: entry, then the state spine
-    /// `(params envname body . env)` — `x_opstate`'s shape, env in the DOTTED
+    /// `(params envname body . env)` — `x_opstate`'s layout, env in the DOTTED
     /// tail as the reference keeps it.
     pub fn operative(&mut self, params: Obj, envname: Obj, body: Obj, env: EnvId) -> Obj {
         let env_obj = self.env_obj(env);

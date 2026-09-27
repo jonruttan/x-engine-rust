@@ -5,14 +5,14 @@
 //! library reaches into it by walking the routes the engine commits to in
 //! `tools/contract/base-paths.x`.
 //!
-//! # The shape
+//! # The layout
 //!
 //! A flat spine, one cell per route, so that a route ends at the CELL whose
 //! `first` is its value — the convention `base-paths.x` documents and the
 //! conformance prelude relies on:
 //!
 //! ```text
-//!   (prims base)              the primitive catalog
+//!   (prims base)              the primitive catalogue
 //!   (type-alist base r)       registered types, by name
 //!   (error-str base r r)      the last error's text
 //!   (err-line base r r r)
@@ -26,8 +26,8 @@
 //! different object model can arrange its base differently. The NAMES are not:
 //! the library resolves them by name at runtime.
 //!
-//! Flat, rather than the C's nested groups, because there is nothing here to
-//! group yet. It grows a shape when it grows contents.
+//! Flat, rather than the C's nested fields, because there is nothing here to
+//! nest yet. It grows a layout when it grows contents.
 
 use crate::obj::{EnvId, Obj, NIL};
 use crate::objects::Objects;
@@ -184,27 +184,27 @@ fn raw_cell(o: &mut Objects, n: i64) -> Obj {
     cell
 }
 
-pub fn build(o: &mut Objects, catalog: Obj, env: EnvId) -> Obj {
+pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
     let mut spine = NIL;
     for _ in 0..ROUTES.len() {
         spine = o.spair(NIL, spine);
     }
-    // The base's own tag: a NON-navigable atom whose bytes are "BASE" — the
+    // The base's own label: a NON-navigable atom whose bytes are "BASE" — the
     // reference's x_eval_obj sentinel. `type name` answers its bytes, and the
     // printer renders the base as the bounded opaque form instead of walking
     // the whole spine.
-    let tag = o.base_tag();
-    o.set_type_word(spine, tag);
+    let label = o.base_label();
+    o.set_type_word(spine, label);
     // The error-scratch atom: every engine-raised condition writes its
     // message into this base's atom and raises THE ATOM — one identity the
     // printer knows (#54). Its bytes are this base's error-str row.
     let scratch = o.error_atom();
     set_slot(o, spine, ERROR_STR, scratch);
     let env_obj = o.env_obj(env);
-    set_slot(o, spine, PRIMS_SLOT, catalog);
+    set_slot(o, spine, PRIMS_SLOT, catalogue);
     set_slot(o, spine, ENV_SLOT, env_obj);
 
-    // The library's own slots, shaped the way it reads them.
+    // The library's own slots, laid out the way it reads them.
     // A fresh base's line counter reads 1: the first line of the source is
     // line one, and x-lang's own spec says so.
     let line = raw_cell(o, 1);
@@ -282,11 +282,11 @@ pub fn env_of(o: &Objects, base: Obj) -> EnvId {
     o.env_id(slot(o, base, ENV_SLOT))
 }
 
-pub fn catalog_of(o: &Objects, base: Obj) -> Obj {
+pub fn catalogue_of(o: &Objects, base: Obj) -> Obj {
     slot(o, base, PRIMS_SLOT)
 }
 
-/// A fresh line counter for a pushed input source, shaped as the library
+/// A fresh line counter for a pushed input source, laid out as the library
 /// reads it (`%cell-int` on the row's value).
 pub fn fresh_line_cell(o: &mut Objects, n: i64) -> Obj {
     raw_cell(o, n)
@@ -345,7 +345,7 @@ fn tree_node(o: &mut Objects, binding: Obj) -> Obj {
 ///
 /// The node holds the frame's own `(sym . val)` cell, so `set!` through
 /// either view is seen by both. Insertion is keyed by the symbol's word —
-/// any total order gives the walker its shape. A name already mirrored is
+/// any total order gives the walker its layout. A name already mirrored is
 /// left alone: `Envs::bind` rebinds in place, so its cell is already here.
 pub fn global_tree_insert(o: &mut Objects, base: Obj, binding: Obj) {
     let c = cell(o, base, ENV_GLOBAL_TREE);
@@ -411,9 +411,9 @@ mod tests {
     #[test]
     fn the_engine_reads_back_what_it_wrote() {
         let mut o = Objects::new();
-        let catalog = o.sym("catalog-stand-in");
-        let base = build(&mut o, catalog, EnvId::from_word(crate::obj::Word(3)));
-        assert_eq!(catalog_of(&o, base), catalog);
+        let catalogue = o.sym("catalogue-stand-in");
+        let base = build(&mut o, catalogue, EnvId::from_word(crate::obj::Word(3)));
+        assert_eq!(catalogue_of(&o, base), catalogue);
         assert_eq!(env_of(&o, base), EnvId::from_word(crate::obj::Word(3)));
     }
 

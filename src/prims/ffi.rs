@@ -5,8 +5,8 @@
 //! integers a C call wants, and back.
 //!
 //! These are the capabilities a sandboxed or wasm engine drops, which is why
-//! `features.x` splits the ISA's `ffi` tag three ways: the pointer CASTS stay
-//! mandatory because `lib/x/boot` needs them, while this family can be absent.
+//! `features.x` splits the ISA's `ffi` label three ways: the pointer CASTS stay
+//! mandatory because `lib/x/boot` needs them, while this group can be absent.
 
 use crate::dbl;
 use crate::engine::Engine;
@@ -279,7 +279,7 @@ mod tests {
     }
 
     /// The comparisons answer a TRUTH VALUE, not a number, which is a different
-    /// return shape from every other convention.
+    /// return signature from every other convention.
     #[test]
     fn the_comparisons_answer_truth_values() {
         assert!(truthy(&ffi(

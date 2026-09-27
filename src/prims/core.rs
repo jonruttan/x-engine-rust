@@ -153,8 +153,8 @@ fn list_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
 pub(crate) const LIST_CALL: PrimDef =
     PrimDef::row(Some("%list-call"), None, 0, list_call);
 
-/// The handler table, minted at registration: symbol, then list. Operative-shaped
-/// — a handler receives the FORM raw and the environment, which is the engine
+/// The handler table, minted at registration: symbol, then list. Each handler
+/// follows the operative calling convention — a handler receives the FORM raw and the environment, which is the engine
 /// dispatch's own hand-off.
 #[rustfmt::skip]
 pub(crate) const EVAL_HANDLERS: &[PrimDef] = &[
@@ -229,7 +229,7 @@ fn apply(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 }
 
 /// The reflective root. Everything reflective starts here: the prelude walks the
-/// committed base paths from `(%base)` to reach the prims catalog, so an engine
+/// committed base paths from `(%base)` to reach the prims catalogue, so an engine
 /// without it cannot even be asked what it provides.
 fn base(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.base)

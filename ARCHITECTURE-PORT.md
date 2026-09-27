@@ -37,7 +37,7 @@ use-after-free waiting for stress.
    program, and `(b eval …)` needs no bracket, no swap, no compensating root
    stack. The `in_base` bracket and the `base` field are approximations to
    retire.
-2. **Interpreter state lives on the base tree.** Catalog, handlers, roots, the
+2. **Interpreter state lives on the base tree.** Catalogue, handlers, roots, the
    sigint flag, the token-eof sentinel, the type-alist — base fields, reached
    by route. The collector's root set becomes: the base, the root chain, the
    registered roots. Frames follow last (the env model is the largest piece).
@@ -59,7 +59,7 @@ four are on `main`; D landed via PR #5.
   `(val . (read . write))` in `value/tok.rs` + `prims/tok.rs`, judged by
   `lib/buffer.spec.md` plus the tokenizer suite.
 - **B. Engine singletons onto the base.** COMPLETE. token-eof, sigint flag,
-  catalog, interned-symbol tables are base fields (routes in
+  catalogue, interned-symbol tables are base fields (routes in
   `tools/contract/base-paths.x`); the root set shrank accordingly, judged by
   the poison stress mode.
 - **C. `p_base` as an argument.** COMPLETE. Every applicative takes the base —
@@ -89,7 +89,7 @@ author's statement of what this buys, verbatim:
 The uniformity that makes it work is `x_callable_call`: every callable
 stores its entry in SLOT 0 and the dispatch is "read slot 0, call it with
 `(callable . args)`" — self rides in the args, and procedure/operative/
-primitive are which function sits in the slot, not kinds of a dispatcher.
+primitive are which function sits in the slot, not cases of a dispatcher.
 
 This engine's evaluator WAS the inverse: a Rust match over object kinds,
 with an eight-variant `Body` enum behind the primitive arm — every
@@ -115,10 +115,10 @@ increments, ALL THREE COMPLETE (PRs #7-#12):
   per-kind call handlers collapsed into ONE door that reads slot 0 and never
   consults the callee's kind — a foreign address misses the table and
   declines, keeping its invocation with the undeclared jit lane; and
-  `Body` is DELETED — every row is one function shape that evaluates its
+  `Body` is DELETED — every row is one function signature that evaluates its
   own arguments (fast paths survive INSIDE a uniform row, as
   `x_prim_arith_binop` keeps its `use_ops` flag inside one signature —
-  never as dispatcher kinds). The environment convention settled below.
+  never as dispatcher cases). The environment convention settled below.
 
 THE ENVIRONMENT CONVENTION, SETTLED: the current environment is an
 ARGUMENT, as the base is. The reference keeps it on the base's
@@ -179,7 +179,7 @@ byte a token on the line can claim; a claimed token typed across a
 newline still scores short, which files never see. The full-suite gap to the
 reference is 93 of 2549 from clean state, with the pin spec passing
 whole — the chronic pin failures were a lock its own spec stranded
-across runs, healed on the x-lang side. The gap's families: list
+across runs, healed on the x-lang side. The gap spans list
 call, float, proc and the posix tail, apply and improper call forms,
 error-atom printing, BOOL. Tracked in x-lang's suite, not here.
 

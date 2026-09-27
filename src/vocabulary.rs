@@ -123,7 +123,7 @@ pub const CHAR_NAMES: &[(&str, u32)] = &[
 
 /// How x-lang writes a value with no readable form: `#<…>`.
 ///
-/// docs/syntax.md's printed-forms table gives this as the opaque shape --
+/// docs/syntax.md's printed-forms table gives this as opaque --
 /// "fn / op / dict / instance | `#<…>` opaque -- deliberately not pasteable".
 /// It is a FORMAT and the thing inside it is a VALUE, which is why neither is
 /// spelled out case by case: the engine reads the type's own name and wraps it.
@@ -142,8 +142,8 @@ pub fn opaque(name: &str) -> String {
 //
 // The engine reports conditions; the WORDS are here so they can be replaced
 // without reading the code that raises them. x-expr's rule is stronger still --
-// "the embedder supplies messages as data" -- and this is the shape that rule
-// takes in an engine that must still say something when nothing has been
+// "the embedder supplies messages as data" -- and this is what that rule
+// becomes in an engine that must still say something when nothing has been
 // supplied.
 //
 // `{}` is the value the condition carries.

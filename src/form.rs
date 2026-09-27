@@ -7,7 +7,7 @@
 //! through `x_token_read`. So a reader macro the library installs changes every
 //! later read — `include` and the REPL included.
 //!
-//! # The shape
+//! # The order
 //!
 //! At every position where a form may begin, the registered analysers get first
 //! refusal; the built-in syntax is the fallback. That ordering is what makes a
