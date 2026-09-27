@@ -12,19 +12,19 @@
 ;
 ; That is what makes this file a ratchet rather than a plan: a row appears when
 ; the engine earns it, and x-lang's apparatus -- not this file -- decides whether
-; it did.  Tags are the reference engine's for each name, looked up rather than
-; chosen, because a tag picked by the engine being judged would put it in charge
-; of the group it lands in.
+; it did.  Labels are the reference engine's for each name, looked up rather
+; than chosen, because a label picked by the engine being judged would put it in
+; charge of the group it lands in.
 ;
 ; FORMAT (rigid, one entry per line -- x-lang's awk parses the same bytes):
-;   %isa-catalog: (ns method tag)   filed in the prims catalog
-;   %isa-bare:    (name tag)        bound bare, no catalog entry
-;   %isa-values:  (name)            non-prim VALUES bound by the engine
+;   %isa-catalogue: (ns method label)   filed in the prims catalogue
+;   %isa-bare:      (name label)        bound bare, no catalogue entry
+;   %isa-values:    (name)              non-prim VALUES bound by the engine
 ;
-; Tags justify why an entry is native, and x-lang's vocabulary groups by them:
+; Labels justify why an entry is native, and x-lang's vocabulary groups by them:
 ;   spine  alloc  raw-op  raw-mem  tok  io  ffi  sys  gc  types  hot
 
-(def %isa-catalog (lit (
+(def %isa-catalogue (lit (
   ; --- bases: another interpreter context, not another environment ---
   ; A child base is born ROOTLESS, carrying the instruction set and nothing of
   ; the host's.  That is x-lang's isolation story; `bind` is the door a host
@@ -94,8 +94,8 @@
   (obj same? raw-op)
 
   ; --- the heap door ---
-  ; Tagged `ffi` because that is the tag the reference engine gives them, and a
-  ; tag chosen by the engine being judged would decide its own group.  x-lang's
+  ; Labelled `ffi` because that is the label the reference engine gives them, and
+  ; a label chosen by the engine being judged would decide its own group.  x-lang's
   ; vocabulary files them under reflect/ptr-casts, NOT under the foreign-call
   ; group: these are how a reflective language reads its own objects.
   ;
@@ -139,7 +139,7 @@
   (iter make types)
 
   ; --- derived, but kept native for heat ---
-  ; x-lang's own justification for this tag: each of these is expressible through
+  ; x-lang's own justification for this label: each of these is expressible through
   ; reflection, and each sits in an inner loop.  They are native here for the same
   ; reason, not because the engine cannot express them.
   (type of hot)               ; stable per type: (type of 1) and (type of 2) agree

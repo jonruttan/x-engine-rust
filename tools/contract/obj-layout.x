@@ -32,7 +32,7 @@
 ; smallest thing that can boot x-lang therefore allocates and never frees.  So the
 ; link word is absent, every later slot shifts down by one, and the header is two
 ; words rather than three.  The C engine's own descriptor documents this exact
-; shape for its non-X_HEAP build, which is what makes it a legitimate variation
+; layout for its non-X_HEAP build, which is what makes it a legitimate variation
 ; rather than an invention.
 ;
 ; That difference is the point.  If x-lang boots on both, L1 is doing its job; if
@@ -59,7 +59,7 @@
 (def %obj-slot-len 3)
 (def %obj-meta-len 4)     ; header length = the word where data begins
 
-; --- data shapes (words, relative to data start) ---
+; --- data layouts (words, relative to data start) ---
 (def %obj-units-atom 1)   ; atom: the value word (int / str offset / char)
 (def %obj-units-pair 2)   ; pair: first at data 0, rest at data 1
 (def %obj-slot-first 0)
@@ -76,14 +76,6 @@
 (def %obj-flag-2 2)             ; 0x02  COV
 (def %obj-flag-3 4)             ; 0x04
 (def %obj-flag-4 8)             ; 0x08
-(def %obj-flag-simple-type 16)  ; 0x10  marker bit: a simple-type code follows
-(def %obj-flag-prim 16)         ; 0x10
-(def %obj-flag-fn 17)           ; 0x11
-(def %obj-flag-int 18)          ; 0x12
-(def %obj-flag-char 19)         ; 0x13
-(def %obj-flag-str 20)          ; 0x14
-(def %obj-flag-ptr 21)          ; 0x15
-(def %obj-flag-type-mask 240)   ; 0xF0
 (def %obj-flag-own 32)          ; 0x20  object owns its storage
 (def %obj-flag-ro 64)           ; 0x40  read-only
 (def %obj-flag-meta 128)        ; 0x80  extended meta units prepended
