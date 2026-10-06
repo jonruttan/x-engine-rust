@@ -13,6 +13,12 @@ impl Objects {
     /// the WRITE mark sits at the end. This is the tokenizer's case.
     pub fn buf(&mut self, text: Obj, at: u64) -> Obj {
         let end = self.byte_len(text) as u64;
+        self.buf_to(text, at, end)
+    }
+
+    /// A reading buffer over `text` whose write mark is `end`: the input is
+    /// the bytes from `at` to `end`, NULs included.
+    pub fn buf_to(&mut self, text: Obj, at: u64, end: u64) -> Obj {
         let o = self.buf_writable(text, at, end);
         self.set_data(o, 3, Word(1));
         o

@@ -47,16 +47,14 @@ fn read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let text = a_.buf_text(b);
     let at = a_.buf_cursor(b);
     // Bounded by the WRITE mark, not the region: unwritten capacity is not
-    // input. x_buffereof is `read >= write`.
+    // input. x_buffereof is `read >= write`. The write mark is the only end:
+    // a NUL is a byte, read like any other.
     if at >= a_.buf_write(b) {
         return Ok(NIL);
     }
-    let bytes = a_.bytes_of(text);
-    if at as usize >= bytes.len() {
-        return Ok(NIL);
-    }
+    let c = a_.heap.byte(a_.str_bytes(text).plus(at));
     a_.set_buf_cursor(b, at + 1);
-    Ok(a_.char_new(bytes[at as usize] as u32))
+    Ok(a_.char_new(c as u32))
 }
 
 /// `(buf tok b)` — the claimed text.
@@ -67,11 +65,10 @@ fn read(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 /// and hand the reader another.
 fn tok(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
-    let text = a_.buf_text(b);
-    let (from, to) = (a_.buf_retain(b) as usize, a_.buf_cursor(b) as usize);
-    let bytes = a_.bytes_of(text);
-    let slice = &bytes[from.min(bytes.len())..to.min(bytes.len())];
-    Ok(a_.str_from_bytes(slice))
+    // Every byte of the span, NULs included: the string's text ends at the
+    // first NUL, but the bytes past it are in its storage for `byte-ref`.
+    let slice = a_.buf_slice(b, a_.buf_retain(b), a_.buf_cursor(b));
+    Ok(a_.str_from_bytes(&slice))
 }
 
 /// `(buf last-char b)` — the character most recently read.
@@ -79,13 +76,13 @@ fn last_char(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let b = a[0];
     let text = a_.buf_text(b);
     let at = a_.buf_cursor(b);
-    let bytes = a_.bytes_of(text);
-    if at == 0 || at as usize > bytes.len() {
+    if at == 0 || at > a_.buf_write(b) {
         return Ok(NIL);
     }
     // The CODE, not a character — the reference answers "Integer character
     // code", and the spec asserts 105 for #\i.
-    Ok(a_.int(bytes[at as usize - 1] as i64))
+    let c = a_.heap.byte(a_.str_bytes(text).plus(at - 1));
+    Ok(a_.int(c as i64))
 }
 
 /// `(buf retain b)` — the retain mark catches up to the cursor.
@@ -327,13 +324,22 @@ pub(crate) fn analyse(
     Ok(best.map(|n| (winner, n)))
 }
 
-/// `(tok read-str TB text)` — drive every registered type over the text, score
-/// them against each other, and answer the LIST of tokens produced.
+/// `(tok read-str TB text [start len])` — drive every registered type over the
+/// text, score them against each other, and answer the LIST of tokens produced.
+///
+/// Without `start len` the input is the string's text, up to its first NUL.
+/// With them it is the `len` bytes at offset `start`, NULs included — a span of
+/// a binary buffer, as `str byte-sub` addresses one.
 fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let text = a[1];
     let gmark = e.root_mark();
     e.root_push(text);
-    let len = e.objects.bytes_of(text).len() as u64;
+    let (start, end) = if a[3].is_nil() {
+        (0, e.objects.byte_len(text) as u64)
+    } else {
+        let start = e.objects.as_int(a[2]) as u64;
+        (start, start + e.objects.as_int(a[3]) as u64)
+    };
     // THE FIRST ARGUMENT IS A BASE, not a token base. x-lang calls this as
     // `(tok read-str (%base) text)` — lib/x/reader/lit-reader.x's `chunk` does,
     // to re-read an interpolation's literal piece through the ordinary string
@@ -385,11 +391,11 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     // nested tokens recursively — and the drive must continue from wherever the
     // reads left the cursor. A per-token buffer clipped to the claimed span cut
     // logo's `[` reader off from its block's contents.
-    let buf = e.objects.buf(text, 0);
+    let buf = e.objects.buf_to(text, start, end);
     e.root_push(buf);
     loop {
         let at = e.objects.buf_retain(buf);
-        if at >= len {
+        if at >= end {
             break;
         }
         // The same contest the form reader runs. See `analyse`. The contest
@@ -400,7 +406,7 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
             if falls_back {
                 // No registered type claims here: the engine's own reader takes
                 // one form, or the input is done.
-                let scratch = e.objects.buf(text, at);
+                let scratch = e.objects.buf_to(text, at, end);
                 e.root_push(scratch);
                 let form = e.in_base(target, |e| e.read_form_in(scratch))?;
                 let Some(form) = form else { break };
@@ -414,10 +420,10 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
                 // delimiter to finish it: it is TRUNCATED, and read-str's
                 // contract drops it silently, as the reference's analyse
                 // protocol does when end of input arrives mid-token.
-                if pos >= len {
+                if pos >= end {
                     let last = e.objects.buf_text(scratch);
                     let tail = e.objects.heap.byte(e.objects.str_bytes(last).plus(pos - 1));
-                    let delimited = tail.is_ascii_whitespace() || tail == b')' || tail == b';';
+                    let delimited = crate::read::is_blank(tail) || tail == b')' || tail == b';';
                     if !delimited {
                         break;
                     }
@@ -701,7 +707,7 @@ crate::uniform_value!(retain_u, retain, 1);
 crate::uniform_value!(reset_u, reset, 1);
 crate::uniform_value!(append_u, append, 2);
 crate::uniform_value!(read_text_u, read_text, 1);
-crate::uniform_engine!(read_str_u, read_str, 2);
+crate::uniform_engine!(read_str_u, read_str, 4);
 crate::uniform_engine!(read_tok_u, read_tok, 1);
 crate::uniform_engine!(make_tok_u, make_tok, 0);
 crate::uniform_engine!(make_type_u, make_type, 3);
@@ -716,7 +722,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::row(None, Some(("buf", "reset")), 1, reset_u),
     PrimDef::row(None, Some(("buf", "append")), 2, append_u),
     PrimDef::row(None, Some(("buf", "read-text")), 1, read_text_u),
-    PrimDef::row(Some("token-read-string"), Some(("tok", "read-str")), 2, read_str_u),
+    PrimDef::row(Some("token-read-string"), Some(("tok", "read-str")), 4, read_str_u),
     PrimDef::row(None, Some(("tok", "read")), 1, read_tok_u),
     PrimDef::row(None, Some(("base", "make-tok")), 0, make_tok_u),
     PrimDef::row(None, Some(("base", "make-type")), 3, make_type_u),
@@ -794,6 +800,51 @@ mod tests {
         assert!(
             crate::testkit::truthy(&format!("{} (eq? (%rs tb \"42\") ())", p)),
             "an undelimited one is not"
+        );
+    }
+
+    /// A NUL IS A BYTE: the write mark alone ends the input.
+    #[test]
+    fn a_nul_is_read_like_any_other_byte() {
+        let mut a = Objects::new();
+        let text = a.str_from_bytes(&[0, b'A', 0]);
+        let b = a.buf_to(text, 0, 3);
+        let mut got = Vec::new();
+        loop {
+            let c = read(&mut a, &[b]).expect("read");
+            if c.is_nil() {
+                break;
+            }
+            got.push(a.as_char(c));
+        }
+        assert_eq!(
+            got,
+            vec![0, b'A' as u32, 0],
+            "the write mark ends it, not the NUL"
+        );
+        let t = tok(&mut a, &[b]).expect("tok");
+        assert_eq!(
+            a.heap.byte(a.str_bytes(t).plus(1)),
+            b'A',
+            "tok keeps the bytes past a NUL"
+        );
+    }
+
+    /// `read-str`'s span reads past a NUL, and the NUL delimits a symbol.
+    #[test]
+    fn read_str_reads_a_span_past_a_nul() {
+        const P: &str = r#"
+            (def s ((%coord (lit bytes) (lit ->str)) (pair 49 (pair 0 (pair 50 (pair 32 ()))))))
+            (def %rs (%coord (lit tok) (lit read-str)))
+        "#;
+        assert_eq!(
+            crate::testkit::int_of(&format!("{} (first (rest (%rs (%base) s 0 4)))", P)),
+            2,
+            "both numbers are read, the first delimited by the NUL"
+        );
+        assert!(
+            crate::testkit::truthy(&format!("{} (eq? (%rs (%base) s) ())", P)),
+            "without the span the text ends at the NUL, leaving 1 undelimited"
         );
     }
 

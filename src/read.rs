@@ -20,6 +20,12 @@
 use crate::obj::{Obj, NIL};
 use crate::objects::Objects;
 
+/// Whitespace, and the NUL: a symbol is a C string, so a NUL must end one
+/// rather than join it.
+pub(crate) fn is_blank(c: u8) -> bool {
+    c == 0 || c.is_ascii_whitespace()
+}
+
 impl Objects {
     /// The byte at the buffer's read mark, unconsumed.
     pub(crate) fn buf_peek(&mut self, b: Obj) -> Option<u8> {
@@ -116,7 +122,7 @@ impl Objects {
     }
 
     /// The bytes between two marks, copied out for a name or literal.
-    fn buf_slice(&self, b: Obj, start: u64, end: u64) -> Vec<u8> {
+    pub(crate) fn buf_slice(&self, b: Obj, start: u64, end: u64) -> Vec<u8> {
         let text = self.buf_text(b);
         let at = self.str_bytes(text);
         (start..end).map(|i| self.heap.byte(at.plus(i))).collect()
@@ -149,7 +155,7 @@ impl Objects {
     pub(crate) fn buf_skip_blanks(&mut self, b: Obj) {
         loop {
             match self.buf_peek(b) {
-                Some(c) if c.is_ascii_whitespace() => self.buf_bump(b),
+                Some(c) if is_blank(c) => self.buf_bump(b),
                 Some(b';') => {
                     while let Some(c) = self.buf_next_byte(b) {
                         if c == b'\n' {
@@ -297,7 +303,7 @@ impl Objects {
     fn buf_dot_is_a_separator(&mut self, b: Obj) -> bool {
         match self.buf_byte_ahead(b, 1) {
             None => true,
-            Some(c) => c.is_ascii_whitespace() || c == b'(' || c == b')',
+            Some(c) => is_blank(c) || c == b'(' || c == b')',
         }
     }
 
@@ -420,7 +426,7 @@ impl Objects {
     pub(crate) fn buf_read_atom(&mut self, b: Obj) -> Obj {
         let start = self.buf_cursor(b);
         while let Some(c) = self.buf_peek(b) {
-            if c.is_ascii_whitespace() || c == b'(' || c == b')' || c == b';' {
+            if is_blank(c) || c == b'(' || c == b')' || c == b';' {
                 break;
             }
             self.buf_bump(b);
