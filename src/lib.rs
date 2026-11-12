@@ -107,6 +107,7 @@ pub mod prim;
 pub mod prims;
 pub mod read;
 pub mod session;
+pub mod slots;
 pub mod symbols;
 pub mod syntax;
 pub mod value;

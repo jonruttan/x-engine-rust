@@ -192,6 +192,10 @@ impl Objects {
                 // Raw marks: an object with NO object slots. Marked, never
                 // traversed.
                 f if f == FLAG_BUFMARKS => {}
+                // A slot vector: the length object, never the addresses.
+                f if f == crate::objects::FLAG_SLOTS => {
+                    stack.push(self.data(o, 0).as_obj());
+                }
                 // Everything else: either a raw value (int, char, prim index,
                 // foreign address, string byte offset) or an INSTANCE whose words
                 // are x-lang's to use. The raw kinds have no references to miss;
@@ -358,9 +362,21 @@ impl crate::engine::Engine {
 
     /// `(heap collect)` — reclaim what nothing can reach. Answers the count.
     ///
-    /// One mark pass over the roots, then one sweep. Environments are heap
-    /// data, so their holders and chains trace like any other objects.
+    /// The mark phase, then the sweep phase, each called through its slot in
+    /// the base's slot vector, as the reference's collect calls them: a
+    /// language that stores a routine in either slot is called in its place.
     pub fn collect(&mut self) -> usize {
+        self.last_freed = 0;
+        let mut none: [u64; 0] = [];
+        let _ = self.slot_call(crate::slots::HEAP_MARK, &mut none);
+        let _ = self.slot_call(crate::slots::HEAP_SWEEP, &mut none);
+        self.in_gc = false;
+        self.last_freed
+    }
+
+    /// The collector's mark phase: the mark hooks, then everything reachable
+    /// from the roots. The reference's `x_heap_mark_phase`.
+    pub(crate) fn mark_phase(&mut self) {
         // HOOKS FIRST, BEFORE ANY MARKING.
         if !self.in_gc {
             self.in_gc = true;
@@ -405,11 +421,15 @@ impl crate::engine::Engine {
             }
         }
         self.objects.mark(&mut ostack);
+    }
 
-        // Between mark and sweep, as the reference does it.
+    /// The collector's sweep phase: the free hooks, then the sweep. The
+    /// reference's `x_heap_sweep_phase`.
+    pub(crate) fn sweep_phase(&mut self) {
         self.run_gc_hooks(crate::base::FREE_HOOKS);
 
         let freed = self.objects.sweep();
+        self.last_freed += freed;
 
         // A snapshot outlives its continuation OBJECT only as garbage: when
         // the sweep frees the cont, its snapshot goes too — the same
@@ -469,8 +489,6 @@ impl crate::engine::Engine {
             }
         }
 
-        self.in_gc = false;
-        freed
     }
 
     /// Invoke every callable on one of the base's handler lists, with NO

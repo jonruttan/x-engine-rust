@@ -203,6 +203,11 @@ pub const FLAG_CONT: Flags = Flags::new(0x10000);
 /// representation to the engine.
 pub const FLAG_TOKEOF: Flags = Flags::new(0x100000);
 
+/// A base's SLOT VECTOR: its first unit holds the length (an integer
+/// object), and every unit after holds a routine's machine address, raw. The
+/// tracer follows the length and never the addresses. See `crate::slots`.
+pub const FLAG_SLOTS: Flags = Flags::new(0x200000);
+
 pub struct Objects {
     /// The bytes. Public because reaching for raw storage should SAY that it is
     /// reaching past the object model — `ptr ref-word` and the block operations

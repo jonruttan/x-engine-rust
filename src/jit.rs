@@ -15,7 +15,7 @@ use crate::obj::{Obj, Word, NIL};
 
 impl Engine {
     /// The real address an object crosses the door as; 0 for nil.
-    fn jit_real(&self, o: Obj) -> u64 {
+    pub(crate) fn jit_real(&self, o: Obj) -> u64 {
         if o.is_nil() {
             return 0;
         }
@@ -30,7 +30,7 @@ impl Engine {
     /// emitter embeds fvar objects as `(%ptr->int (%obj->ptr val))`, which
     /// this engine's `obj ->ptr` answers in offsets — and anything above is
     /// a REAL address from `jit_real`. The ranges do not overlap.
-    fn jit_obj(&self, real: u64) -> Obj {
+    pub(crate) fn jit_obj(&self, real: u64) -> Obj {
         if real == 0 {
             return NIL;
         }
@@ -106,5 +106,19 @@ impl x_engine_foreign::JitHost for Engine {
     fn jit_buffer_len(&mut self, buffer: u64) -> i64 {
         let b = self.jit_obj(buffer);
         self.objects.buf_cursor(b) as i64 - self.objects.buf_retain(b) as i64
+    }
+
+    /// A slot door entered from foreign code. A raise cannot cross the C
+    /// frames between here and the engine, so it is held on the engine and
+    /// the door answers nil; `slot_call` raises it when the foreign routine
+    /// returns.
+    fn slot_routine(&mut self, slot: usize, _base: u64, run: &mut [u64]) -> u64 {
+        match self.slot_run(slot, run) {
+            Ok(v) => v,
+            Err(c) => {
+                self.slot_error = Some(c);
+                0
+            }
+        }
     }
 }

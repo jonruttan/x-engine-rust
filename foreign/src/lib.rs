@@ -354,6 +354,73 @@ pub trait JitHost {
     fn jit_score_set(&mut self, score: u64, sign: i64, buffer: u64) -> u64;
     fn jit_buffer_unread(&mut self, buffer: u64) -> u64;
     fn jit_buffer_len(&mut self, buffer: u64) -> i64;
+    /// Run the engine's own routine for slot `slot` of the base's slot
+    /// vector over its argument run, one word an argument, as the slot's row
+    /// in tools/contract/base-slots.x gives them. A routine may write a word
+    /// back (token-analyse declares its label in its second word).
+    fn slot_routine(&mut self, slot: usize, base: u64, run: &mut [u64]) -> u64;
+}
+
+/// How many words each slot's argument run holds, by position: the third
+/// element of each row of tools/contract/base-slots.x.
+pub const SLOT_ARITY: [usize; 19] = [1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 3, 3, 2, 1, 2, 1, 0, 0, 3];
+
+/// The slot doors: one C-ABI entry a slot, `(base, run) -> value`, the
+/// engine's one signature. The base's slot vector holds these addresses, so a
+/// language reads a slot, calls it through `ptr call`, stores another routine
+/// over it, and calls the one it replaced from compiled code, as it does on
+/// the reference.
+macro_rules! slot_doors {
+    ($($name:ident = $slot:expr;)*) => {
+        $(
+            #[no_mangle]
+            pub extern "C" fn $name(base: u64, run: *mut u64) -> u64 {
+                let n = SLOT_ARITY[$slot];
+                let words: &mut [u64] = if n == 0 || run.is_null() {
+                    &mut []
+                } else {
+                    // SAFETY: the caller hands a run of at least the slot's
+                    // arity in words, as the contract row says; the run lives
+                    // for the duration of the call.
+                    unsafe { std::slice::from_raw_parts_mut(run, n) }
+                };
+                jit_host().slot_routine($slot, base, words)
+            }
+        )*
+
+        /// Every slot door's address, by position.
+        pub fn slot_doors() -> [usize; 19] {
+            [$($name as extern "C" fn(u64, *mut u64) -> u64 as usize,)*]
+        }
+    };
+}
+
+slot_doors! {
+    x_slot_eval = 0;
+    x_slot_eval_list = 1;
+    x_slot_eval_body = 2;
+    x_slot_eval_body_tco = 3;
+    x_slot_eval_tco_trampoline = 4;
+    x_slot_eval_op_body = 5;
+    x_slot_callable_call = 6;
+    x_slot_callable_apply = 7;
+    x_slot_obj_prim_call = 8;
+    x_slot_env_lookup = 9;
+    x_slot_env_bind = 10;
+    x_slot_env_extend = 11;
+    x_slot_alist_bst_lookup = 12;
+    x_slot_token_read = 13;
+    x_slot_token_analyse = 14;
+    x_slot_token_delimit = 15;
+    x_slot_heap_mark = 16;
+    x_slot_heap_sweep = 17;
+    x_slot_obj_alloc = 18;
+}
+
+/// Call a routine through its address with the engine's one signature:
+/// `(base, run)`, the run a pointer to words the caller owns for the call.
+pub fn call_routine(f: Foreign, base: u64, run: &mut [u64]) -> u64 {
+    call_ints(f, &[base, run.as_mut_ptr() as u64])
 }
 
 struct HostPtr(*mut dyn JitHost);

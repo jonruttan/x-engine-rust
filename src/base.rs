@@ -194,31 +194,35 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
     // printer renders the base as the bounded opaque form instead of walking
     // the whole spine.
     let label = o.base_label();
-    o.set_type_word(spine, label);
+    // The base is two units, as the reference's is: the spine first, the slot
+    // vector second (`crate::slots`). The label rides the base object.
+    let slots = crate::slots::make(o);
+    let base = o.spair(spine, slots);
+    o.set_type_word(base, label);
     // The error-scratch atom: every engine-raised condition writes its
     // message into this base's atom and raises THE ATOM — one identity the
     // printer knows (#54). Its bytes are this base's error-str row.
     let scratch = o.error_atom();
-    set_slot(o, spine, ERROR_STR, scratch);
+    set_slot(o, base, ERROR_STR, scratch);
     let env_obj = o.env_obj(env);
-    set_slot(o, spine, PRIMS_SLOT, catalogue);
-    set_slot(o, spine, ENV_SLOT, env_obj);
-    set_slot(o, spine, ENV_ROOT, env_obj);
+    set_slot(o, base, PRIMS_SLOT, catalogue);
+    set_slot(o, base, ENV_SLOT, env_obj);
+    set_slot(o, base, ENV_ROOT, env_obj);
 
     // The library's own slots, laid out the way it reads them.
     // A fresh base's line counter reads 1: the first line of the source is
     // line one, and x-lang's own spec says so.
     let line = raw_cell(o, 1);
-    set_slot(o, spine, LINE, line);
+    set_slot(o, base, LINE, line);
     // The extended-meta policy cell: how many meta words an allocation
     // prepends. Zero until the boot arms it.
     let mc = raw_cell(o, 0);
-    set_slot(o, spine, OBJ_META_EXTRA, mc);
+    set_slot(o, base, OBJ_META_EXTRA, mc);
     // The raise-site snapshot cells (io error-line / error-file read them).
     let el = raw_cell(o, 0);
-    set_slot(o, spine, ERR_LINE, el);
+    set_slot(o, base, ERR_LINE, el);
     let ef = raw_cell(o, 0);
-    set_slot(o, spine, ERR_FILE, ef);
+    set_slot(o, base, ERR_FILE, ef);
     // stdin, stdout, stderr: the library indexes the second and third, and
     // the engine's own write path reads the second, so the cells carry the
     // real descriptors from birth.
@@ -230,35 +234,36 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
         o.set_data(c, 0, v.word());
         at = o.rest(at);
     }
-    set_slot(o, spine, FILES, files);
+    set_slot(o, base, FILES, files);
     // Counters, read through %cell-int. Nine, which is what lib/x/tool/profile.x
     // names; unused ones simply stay zero.
     let profile = cell_spine(o, 9);
-    set_slot(o, spine, PROFILE, profile);
+    set_slot(o, base, PROFILE, profile);
     // A HOLDER CELL per singleton, as the reference's eval fields are: the
     // route lands on the holder, whose FIRST is the singleton — what the
     // predicates and the base-paths spec read — and whose REST is scratch
     // x-lang writes (module.x hangs the include list there).
     let f = o.false_obj();
     let fh = o.spair(f, NIL);
-    set_slot(o, spine, FALSE, fh);
+    set_slot(o, base, FALSE, fh);
     let t = o.true_obj();
     let th = o.spair(t, NIL);
-    set_slot(o, spine, TRUE, th);
+    set_slot(o, base, TRUE, th);
     // A cell holding the fd, so `(%cell-int (first …))` reads it. 0 is stdin,
     // which is where a bare engine's program arrives.
     let fd = raw_cell(o, 0);
-    set_slot(o, spine, FILEIN, fd);
+    set_slot(o, base, FILEIN, fd);
     // The buffer slot exists and is empty: the library resets what it finds
     // here, and a route that walked off the end would answer nil either way —
     // indistinguishable from a route this engine forgot.
-    set_slot(o, spine, BUFFER, NIL);
-    spine
+    set_slot(o, base, BUFFER, NIL);
+    base
 }
 
 /// The cell at `n` steps of `rest` from the base.
 fn cell(o: &Objects, base: Obj, n: usize) -> Obj {
-    let mut at = base;
+    // The spine is the base's first unit.
+    let mut at = o.first(base);
     for _ in 0..n {
         at = o.rest(at);
     }
@@ -417,7 +422,12 @@ mod tests {
                 if root != "base" {
                     return None;
                 }
+                // The first step is `f`, into the spine; the rest walk it.
                 let steps: Vec<&str> = w.collect();
+                let steps = match steps.split_first() {
+                    Some((&"f", rest)) => rest.to_vec(),
+                    _ => return Some((name.to_string(), usize::MAX, false)),
+                };
                 let rs = steps.iter().take_while(|s| **s == "r").count();
                 let clean = steps[rs..].iter().all(|s| *s == "f");
                 Some((name.to_string(), rs, clean))

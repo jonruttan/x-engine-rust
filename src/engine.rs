@@ -131,6 +131,11 @@ pub struct Engine {
     /// here, between forms. That is soon enough: x-lang's own case reads the
     /// flag in the form AFTER the one that raises.
     pub(crate) sigint_flag: Obj,
+    /// What the last collection freed, summed over its sweep phases.
+    pub(crate) last_freed: usize,
+    /// A raise from an engine routine run through a slot door, held while
+    /// the foreign code that called the door returns to the engine.
+    pub(crate) slot_error: Option<crate::diag::Cond>,
 }
 
 /// The kinds whose types carry an engine call handler, and which. `FLAG_WRAP`
@@ -182,6 +187,8 @@ impl Engine {
 
             token_eof: NIL,
             sigint_flag: NIL,
+            last_freed: 0,
+            slot_error: None,
         };
 
         // One pass over the whole instruction set. Each row contributes its bare
@@ -621,7 +628,7 @@ mod tests {
         let mut e = Engine::new();
         for b in [e.base, e.make_base()] {
             for (n, name) in base::ROUTES.iter().enumerate() {
-                let mut at = b;
+                let mut at = e.objects.first(b);
                 for _ in 0..n {
                     at = e.objects.rest(at);
                 }

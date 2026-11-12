@@ -614,8 +614,32 @@ impl Engine {
         out
     }
 
-    /// Call a combiner with values already computed.
+    /// Call a combiner with values already computed, through the base's
+    /// callable-apply slot: the engine's own routine, or the one a language
+    /// stored there, handed `(callee . values)` as the prim ABI lays it out.
     pub fn call_with_values(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        if self.slot_replaced(crate::slots::CALLABLE_APPLY).is_none() {
+            return self.apply_values_own(callee, vals, env);
+        }
+        let mark = self.root_mark();
+        self.root_push(callee);
+        for v in vals {
+            self.root_push(*v);
+        }
+        let spine = self.value_spine(vals);
+        let call = self.objects.pair(callee, spine);
+        self.root_push(call);
+        let mut run = [self.jit_real(call)];
+        let prev_env = self.jit_env.replace(env);
+        let out = self.slot_call(crate::slots::CALLABLE_APPLY, &mut run);
+        self.jit_env = prev_env;
+        self.root_truncate(mark);
+        Ok(self.jit_obj(out?))
+    }
+
+    /// The engine's own callable-apply: call a combiner with values already
+    /// computed.
+    pub(crate) fn apply_values_own(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
         // ROOTED while the spine is BUILT. `quote_values` allocates a cell per
         // value, so a collection partway through would be free to take the
         // values still waiting in the caller's slice — and callers hand this a
