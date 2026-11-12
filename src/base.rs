@@ -84,6 +84,8 @@ pub const ROUTES: &[&str] = &[
     // bind: `(Env root)` reads it. The `env` row holds the same environment,
     // the one this base evaluates in.
     crate::vocabulary::ROUTE_ENV_ROOT,
+    // The raised-error value: one ERR, (code . subject), filled per raise.
+    crate::vocabulary::ROUTE_ERR,
 ];
 
 /// Slots the heap instructions reach for by name.
@@ -128,6 +130,7 @@ pub const SIGINT: usize = 22;
 pub const ERROR_HANDLER: usize = 23;
 pub const TRUE: usize = 24;
 pub const ENV_ROOT: usize = 25;
+pub const ERR: usize = 26;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;

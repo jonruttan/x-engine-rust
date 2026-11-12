@@ -180,6 +180,8 @@ pub const SIGINT_FLAG: &str = "%sigint-flag";
 /// The evaluator-state routes on the base spine.
 pub const ROUTE_TRUE: &str = "true";
 pub const ROUTE_ENV_ROOT: &str = "env-root";
+/// The base's one ERR, the value every engine raise fills in place.
+pub const ROUTE_ERR: &str = "err";
 pub const ROUTE_SAVE_STACK: &str = "save-stack";
 pub const ROUTE_TCO_EXPR: &str = "tco-expr";
 pub const ROUTE_TCO_ENV: &str = "tco-env";

@@ -66,21 +66,50 @@ impl Cond {
         }
     }
 
+    /// The two facts an engine raise carries, as the reference's
+    /// `x_eval_error(base, message, obj)` receives them: the raise site's
+    /// message, and the name of what it was about, empty when it named
+    /// nothing. The diagnostic is the code, then the subject in single quotes.
+    pub fn code_subject(&self, a: &Objects) -> (String, String) {
+        match self {
+            Cond::Unbound(sym) => ("Unbound SYMBOL".to_string(), a.sym_name(*sym)),
+            other => {
+                let text = other.message(a);
+                if text.ends_with('\'') {
+                    if let Some(at) = text[..text.len() - 1].rfind(" '") {
+                        return (text[..at].to_string(), text[at + 2..text.len() - 1].to_string());
+                    }
+                }
+                (text, String::new())
+            }
+        }
+    }
+
     /// The value `guard` binds to its handler's name.
     ///
-    /// A deliberate raise hands back exactly what the program raised.
-    /// Everything else becomes a string, and only at this moment — a condition
-    /// that is caught and ignored never allocates a message at all.
+    /// A deliberate raise hands back exactly what the program raised. An
+    /// engine raise fills the current base's ERR in place — its code and
+    /// subject atoms rewritten, nothing allocated — and delivers it, as
+    /// x-engine-c#25 does. A base with no ERR delivers its error atom with the
+    /// whole message written into it.
     pub fn value(&self, a: &mut Objects) -> Obj {
         match self {
             Cond::Raised(v) => *v,
             other => {
-                // An engine-raised condition delivers the CURRENT BASE's
-                // error atom with the message written into its region — one
-                // identity the printer knows (#54). `(error "msg")` delivers
-                // a real string and never comes through here.
-                let text = other.message(a);
                 let base = a.base;
+                let err = if base.is_nil() {
+                    crate::obj::NIL
+                } else {
+                    crate::base::get(a, base, crate::base::ERR)
+                };
+                if !err.is_nil() {
+                    let (code, subject) = other.code_subject(a);
+                    let (c, s) = (a.data(err, 0).as_obj(), a.data(err, 1).as_obj());
+                    a.error_atom_set(c, &code);
+                    a.error_atom_set(s, &subject);
+                    return err;
+                }
+                let text = other.message(a);
                 let atom = if base.is_nil() {
                     crate::obj::NIL
                 } else {

@@ -85,6 +85,9 @@
   (true          base f r r r r r r r r r r r r r r r r r r r r r r r r f)
   ; The root environment, (bindings . ()), whose bindings are a tree.
   (env-root base f r r r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; The raised-error value: one ERR, (code . subject), each a string atom a
+  ; raise repoints.  x-lang reaches its type through it.
+  (err base f r r r r r r r r r r r r r r r r r r r r r r r r r r f)
 
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
   ; These steps are the REFERENCE ENGINE'S, chosen

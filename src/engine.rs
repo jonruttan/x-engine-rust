@@ -345,6 +345,7 @@ impl Engine {
             }
             at = self.objects.chain_next(at);
         }
+        self.install_err(base);
     }
 
     /// FRESH builtin types for a new base, as `x_type_*_register(child, child)`
@@ -357,6 +358,26 @@ impl Engine {
         for (flags, _) in crate::objects::STAMPED_KINDS.iter().rev() {
             self.objects.builtin_type_in(base, *flags);
         }
+        self.install_err(base);
+    }
+
+    /// The ERR type and the base's one instance of it, as `x_type_err_register`
+    /// makes them. An ERR is two units, (code . subject), each a string atom
+    /// an engine raise rewrites in place, so a raise allocates nothing. Its IO
+    /// stacks boot empty: the wording is the language's (x-lang's err-io.x).
+    fn install_err(&mut self, base: Obj) {
+        if !crate::base::get(&self.objects, base, crate::base::ERR).is_nil() {
+            return;
+        }
+        let name = self.objects.handle("ERR");
+        let t = self.objects.type_new(name, NIL);
+        self.file_type_in(base, t);
+        let err = self.objects.instance(t, 2);
+        let code = self.objects.error_atom();
+        let subject = self.objects.error_atom();
+        self.objects.set_data(err, 0, code.word());
+        self.objects.set_data(err, 1, subject.word());
+        crate::base::set(&mut self.objects, base, crate::base::ERR, err);
     }
 
     /// Arm the extended-meta policy at two units — source line and file id —
