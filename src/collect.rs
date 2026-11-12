@@ -37,8 +37,8 @@
 
 use crate::obj::{EnvId, Flags, Obj, Word};
 use crate::objects::{
-    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_ENV, FLAG_ENVH, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP,
-    FLAG_PAIR, FLAG_SPAIR, FLAG_WRAP,
+    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR,
+    FLAG_SPAIR, FLAG_WRAP,
 };
 
 /// The mark, kept in a spare bit of the flags word.
@@ -169,16 +169,6 @@ impl Objects {
                 // the spine, traced like everything else on it.
                 f if f == FLAG_FN || f == FLAG_OP || f == FLAG_WRAP => {
                     stack.push(self.data(o, 1).as_obj());
-                }
-                // An environment OBJECT names a holder and nothing else.
-                f if f == FLAG_ENV => {
-                    stack.push(self.env_id(o).obj());
-                }
-                // An ENV HOLDER: chain head, parent holder, base — all objects.
-                f if f == FLAG_ENVH => {
-                    stack.push(self.data(o, 0).as_obj());
-                    stack.push(self.data(o, 1).as_obj());
-                    stack.push(self.data(o, 2).as_obj());
                 }
                 // THE FALSE SINGLETON IS SCRATCH SPACE. It looks like a value
                 // with nothing in it, and x-lang hangs the include list off its
@@ -439,7 +429,6 @@ impl crate::engine::Engine {
         // freed chunk's flags word, so the test is one read per map key —
         // never a walk of the free list, whose size is unbounded.
         let o = &self.objects;
-        self.envs.index.retain(|h, _| !o.is_freed(*h));
         self.base_syms.retain(|b, _| !o.is_freed(*b));
 
         // DEBUG (X_DBG_FREECHECK): nothing REACHABLE may sit on the free

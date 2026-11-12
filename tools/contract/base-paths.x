@@ -37,10 +37,6 @@
   (file-registry base r r r r r)
   (obj-meta-extra base r r r r r r)
   (env base r r r r r r r)    ; this base's environment, as a first-class value
-  ; DERIVED, not a spine cell: through the env object (f) into its holder (f),
-  ; whose first is the frame chain -- the alist of (sym . val) cells, as the
-  ; reference's env-alist is.  Expressible only because frames are heap data.
-  (env-alist base r r r r r r r f f)
 
   ; --- the heap's registration lists, and the allocation ceiling ---
   ; LISTS the engine prepends to, not collector internals: a registered callable
@@ -83,8 +79,8 @@
   (error-handler base r r r r r r r r r r r r r r r r r r r r r r r f)
   ; The true SINGLETON, a row that lands on the value as false's is.
   (true          base r r r r r r r r r r r r r r r r r r r r r r r r f)
-  ; The global-binding tree: a BST view of the root frame, (binding . (left . right)).
-  (env-global-tree base r r r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; The root environment, (bindings . ()), whose bindings are a tree.
+  (env-root base r r r r r r r r r r r r r r r r r r r r r r r r r f)
 
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
   ; These steps are the REFERENCE ENGINE'S, chosen

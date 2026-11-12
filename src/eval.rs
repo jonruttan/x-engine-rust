@@ -1092,19 +1092,16 @@ mod tests {
         );
     }
 
-    /// A def that is (part of) a closure's parked tail binds GLOBALLY: the
-    /// save covers the body's non-tail forms only. include/import and the
-    /// doc-wrapping machinery rely on it.
+    /// A def binds in the environment it is evaluated in, tail or not: a
+    /// closure body's def is the call's own, and a parameterless body has an
+    /// environment of its own (the reference's tests/bare/specs/env.spec.md).
     #[test]
-    fn a_tail_def_binds_globally() {
-        assert_eq!(
-            int_of("(def n 1) (def get (fn (self) n)) (def call (fn (self) (%seq (def n 2) (get)))) (call)"),
-            2
-        );
+    fn a_def_in_a_body_binds_in_the_call() {
         assert_eq!(
             int_of("(def n 1) (def call (fn (self) (%seq (def n 2) ()))) (call) n"),
-            2
+            1
         );
+        assert_eq!(int_of("((fn (_) (def a 1) ((fn () (def a 2))) a))"), 1);
     }
 
     /// The settled environment convention, observable: a library eval handler
@@ -1125,7 +1122,7 @@ mod tests {
                (fn (self v env) (eval (lit target) env))) ())))
              (def i (%minst h 7))
              (def target 55)
-             (eval i ())"
+             (eval i)"
         );
         assert_eq!(
             crate::testkit::int_of(&program),

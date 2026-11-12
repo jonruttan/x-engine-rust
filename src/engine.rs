@@ -487,9 +487,6 @@ impl Engine {
         }
 
         let base = crate::base::build(&mut self.objects, self.catalogue, env);
-        // The root frame serves the spine just built — stamped after, because
-        // the spine cannot exist before its env does.
-        self.envs.set_base(&mut self.objects, env, base);
         // The sigint row holds the SAME object %sigint-flag is bound to.
         crate::base::set(&mut self.objects, base, crate::base::SIGINT, f);
         // Fresh builtin types, except for the engine's own base: registration

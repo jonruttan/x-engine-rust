@@ -145,6 +145,19 @@ impl Objects {
         self.str_val(o)
     }
 
+    /// The running base's own symbol spelled as `o` is, without interning:
+    /// the reference's `x_env_own_symbol`, which lets a name read in one base
+    /// stand for the same name in another. `None` when this base has none.
+    pub fn own_symbol(&self, o: Obj) -> Option<Obj> {
+        if !self.is_sym(o) {
+            return None;
+        }
+        let name = self.sym_name(o);
+        self.shared_symbols
+            .get(&name)
+            .or_else(|| self.symbols.get(&name))
+    }
+
     pub fn is_sym(&self, o: Obj) -> bool {
         self.is(o, FLAG_SYM)
     }

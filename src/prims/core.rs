@@ -180,13 +180,11 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
         return Ok(e.park_tail(expr, env));
     }
     let target_obj = e.eval(e.objects.first(env_cell), env)?;
-    let target = if e.objects.is_env(target_obj) {
-        e.objects.env_id(target_obj)
-    } else {
-        env
-    };
-    // With-env SAVES, as x_prim_eval pushes its compound save: a `def` inside
-    // binds into the given environment, not globally.
+    // Unchecked, as the reference reads it: the value IS the environment, and
+    // one that is not resolves nothing.
+    let target = e.objects.env_id(target_obj);
+    // With-env SAVES, as x_prim_eval pushes its compound save: the caller's
+    // environment rides the save stack while the given one is current.
     e.save_push(target);
     let depth = e.active_evals;
     e.control.push(crate::eval::ControlRec::Pass { depth });
@@ -284,11 +282,6 @@ fn atomic(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 /// final tail-eval "must run in the op's own tail so it defines the symbol in
 /// the caller's env".
 fn tail_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
-    // An env operand that is not an env is a caller error, not a licence to
-    // pick one.
-    if !e.objects.is_env(a[1]) {
-        return Err(Cond::NotAnEnvironment(a[1]));
-    }
     let target = e.objects.env_id(a[1]);
     Ok(e.park_tail(a[0], target))
 }

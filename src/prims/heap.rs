@@ -141,8 +141,6 @@ fn heap_check(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
         let check_slots: &[u64] =
             if f == crate::objects::FLAG_PAIR || f == crate::objects::FLAG_SPAIR {
                 &[0, 1]
-            } else if f == crate::objects::FLAG_ENVH {
-                &[0, 1, 2]
             } else {
                 &[]
             };

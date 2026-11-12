@@ -80,10 +80,10 @@ pub const ROUTES: &[&str] = &[
     crate::vocabulary::ROUTE_ERROR_HANDLER,
     // The true SINGLETON, walked by name as `false` is.
     crate::vocabulary::ROUTE_TRUE,
-    // The global-binding TREE the isa spec walks: a BST view of the root
-    // frame, `(binding . (left . right))` per node, sharing the frame's own
-    // `(sym . val)` cells so redefinition is visible through both.
-    crate::vocabulary::ROUTE_ENV_GLOBAL_TREE,
+    // The ROOT environment, where top-level forms, `eval!` and the loader
+    // bind: `(Env root)` reads it. The `env` row holds the same environment,
+    // the one this base evaluates in.
+    crate::vocabulary::ROUTE_ENV_ROOT,
 ];
 
 /// Slots the heap instructions reach for by name.
@@ -127,7 +127,7 @@ pub const TCO_ENV: usize = 21;
 pub const SIGINT: usize = 22;
 pub const ERROR_HANDLER: usize = 23;
 pub const TRUE: usize = 24;
-pub const ENV_GLOBAL_TREE: usize = 25;
+pub const ENV_ROOT: usize = 25;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -203,6 +203,7 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
     let env_obj = o.env_obj(env);
     set_slot(o, spine, PRIMS_SLOT, catalogue);
     set_slot(o, spine, ENV_SLOT, env_obj);
+    set_slot(o, spine, ENV_ROOT, env_obj);
 
     // The library's own slots, laid out the way it reads them.
     // A fresh base's line counter reads 1: the first line of the source is
@@ -335,45 +336,6 @@ pub fn push(o: &mut Objects, base: Obj, n: usize, v: Obj) -> Obj {
     cell
 }
 
-/// A global-tree node: the binding, then a kids cell (left . right).
-fn tree_node(o: &mut Objects, binding: Obj) -> Obj {
-    let kids = o.spair(NIL, NIL);
-    o.spair(binding, kids)
-}
-
-/// Mirror one root-frame binding into the base's global tree.
-///
-/// The node holds the frame's own `(sym . val)` cell, so `set!` through
-/// either view is seen by both. Insertion is keyed by the symbol's word —
-/// any total order gives the walker its layout. A name already mirrored is
-/// left alone: `Envs::bind` rebinds in place, so its cell is already here.
-pub fn global_tree_insert(o: &mut Objects, base: Obj, binding: Obj) {
-    let c = cell(o, base, ENV_GLOBAL_TREE);
-    let root = o.first(c);
-    if root.is_nil() {
-        let n = tree_node(o, binding);
-        o.set_data(c, 0, n.word());
-        return;
-    }
-    let key = o.first(binding);
-    let mut at = root;
-    loop {
-        let b = o.first(at);
-        if o.first(b) == key {
-            return;
-        }
-        let kids = o.rest(at);
-        let left = key.word().raw() < o.first(b).word().raw();
-        let child = if left { o.first(kids) } else { o.rest(kids) };
-        if child.is_nil() {
-            let n = tree_node(o, binding);
-            o.set_data(kids, if left { 0 } else { 1 }, n.word());
-            return;
-        }
-        at = child;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,40 +435,5 @@ mod tests {
             assert!(row.2, "route {route}: steps are not r-run then f-run");
             assert_eq!(row.1, i, "route {route}: r-count disagrees with its slot");
         }
-    }
-
-    /// The derived env-alist route lands on the frame chain: seven rests to the
-    /// env cell, first into the env object, first into its holder — whose first
-    /// is the alist of `(sym . val)` cells. Walked with the same raw first/rest
-    /// the library's registry uses, on a REAL engine, so a change to either the
-    /// spine or the env representation fails here rather than in a spec.
-    #[test]
-    fn the_env_alist_route_reaches_the_bindings() {
-        let mut e = crate::engine::Engine::new();
-        e.eval_str("(def env-alist-probe 77)").unwrap();
-        let mut at = e.base;
-        for _ in 0..ENV_SLOT {
-            at = e.objects.rest(at);
-        }
-        let holder = {
-            let env_obj = e.objects.first(at);
-            e.objects.first(env_obj)
-        };
-        let mut chain = e.objects.first(holder);
-        let name = e.objects.sym("env-alist-probe");
-        let mut found = false;
-        while !chain.is_nil() {
-            let pair = e.objects.first(chain);
-            if e.objects.first(pair) == name {
-                assert_eq!(e.objects.as_int(e.objects.rest(pair)), 77);
-                found = true;
-                break;
-            }
-            chain = e.objects.rest(chain);
-        }
-        assert!(
-            found,
-            "the bound name is not on the chain the route reaches"
-        );
     }
 }

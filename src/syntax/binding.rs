@@ -11,33 +11,15 @@ use crate::eval::EvalResult;
 use crate::obj::{EnvId, Obj};
 use crate::prim::PrimDef;
 
-/// `(def name value)` — GLOBAL in tail position, local otherwise.
+/// `(def name value)` — binds in the CURRENT environment, the reference's
+/// `x_prim_define` over `x_env_bind`: rebinding in place, never touching a
+/// parent, and answering the value.
 ///
-/// The split is x-lang's, not an implementation detail, and the reference draws
-/// it by asking whether its save stack is empty. Nothing pending means the form
-/// is in tail position from the top level, and its definition is meant to
-/// persist; something pending means it is a step inside a larger evaluation, and
-/// the definition is that evaluation's own.
-///
-/// It is load-bearing. `lib/x/doc/doc.x` wraps most of the library's definitions
-/// and hands the reconstructed `(def …)` to `tail-eval` — its comment says the
-/// call "must run in the op's own tail so it defines the symbol in the caller's
-/// env". Binding into the env operand instead put `or`, `and` and every other
-/// documented definition into an operative frame that died on return. Nothing
-/// raised; the names were simply Unbound later.
-///
-/// Asked of x-engine-c rather than assumed:
-///
-/// ```text
-/// (def myif (op (t th . el) e
-///   (match ((eval t e) (tail-eval th e)) (#t (tail-eval (first el) e)))))
-/// (def outer (op (x) e (myif #f 1 (def zz 7))))
-/// (outer 0)
-/// zz          =>  7
-/// ```
-///
-/// The env handed down was `myif`'s caller frame, and the definition still
-/// reached the top level.
+/// The current environment is whichever the form is evaluated in: the root
+/// at the top level and while a file loads, a call's own frame inside a
+/// closure body, an operative's frame inside its body, and the environment
+/// `eval` or `tail-eval` was handed. So an operative defines for its caller
+/// with `(tail-eval (list 'def n v) e)` or `(eval (list 'def n v) e)`.
 fn def(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let name = e.nth(args, 0);
     let form = e.nth(args, 1);
@@ -51,13 +33,8 @@ fn def(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let r = e.eval(form, env);
     e.control.pop();
     let v = r?;
-    let target = if e.nothing_pending() {
-        e.root_env()
-    } else {
-        env
-    };
-    e.envs.bind(&mut e.objects, target, name, v);
-    Ok(name)
+    e.envs.bind(&mut e.objects, env, name, v);
+    Ok(v)
 }
 
 /// `(set! name value)` — rebinds where the name ALREADY lives, and refuses an
@@ -118,22 +95,21 @@ mod tests {
         assert_eq!(int_of("(def x 7) x"), 7);
     }
 
-    /// And one reached through a chain of TAIL-EVALS is global too, even though
-    /// the env handed along was an inner operative's frame.
-    ///
-    /// Asked of x-engine-c rather than assumed — it answers 7. The library is
-    /// built on it: `lib/x/doc/doc.x` wraps most definitions and re-evaluates
-    /// the rebuilt `(def …)` through `tail-eval`, so binding into the env
-    /// operand instead left `or`, `and` and the rest Unbound with nothing
-    /// raised at the point of loss.
+    /// An operative's def, evaluated in the caller's environment, binds in
+    /// the caller's frame, and nowhere else (the reference's
+    /// tests/bare/specs/env.spec.md).
     #[test]
-    fn a_def_reached_through_tail_evals_is_global() {
-        let src = "(def myif (op (t th . el) e
-                     (match ((eval t e) (tail-eval th e)) (#t (tail-eval (first el) e)))))
-                   (def outer (op (x) e (myif #f 1 (def zz 7))))
-                   (outer 0)
-                   zz";
-        assert_eq!(int_of(src), 7);
+    fn an_operative_defines_in_the_callers_frame() {
+        let src = "(def wrap (op (f) e (eval f e)))
+                   ((fn (_) (wrap (def b 2)) b))";
+        assert_eq!(int_of(src), 2);
+        assert!(raises(
+            "(def wrap (op (f) e (eval f e))) ((fn (_) (wrap (def b 2)) ())) b"
+        ));
+        let tail = "(def myif (op (t th . el) e
+                      (match ((eval t e) (tail-eval th e)) (#t (tail-eval (first el) e)))))
+                    ((fn (_) (myif #f 1 (def zz 7)) zz))";
+        assert_eq!(int_of(tail), 7);
     }
 
     /// `set!` refuses an unbound name: letting it bind would make a misspelling

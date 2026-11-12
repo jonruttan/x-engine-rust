@@ -139,12 +139,6 @@ pub const FLAG_FALSE: Flags = Flags::new(0x0400);
 /// is handed the caller's environment.
 pub const FLAG_OP: Flags = Flags::new(0x0800);
 
-/// A first-class environment. `(op (x) e ...)` binds one to `e`.
-pub const FLAG_ENV: Flags = Flags::new(0x1000);
-/// An ENV HOLDER — chain head, parent holder, base. Its slots are all objects,
-/// traced like any other; the FRAME cells on its chain are ordinary spairs.
-pub const FLAG_ENVH: Flags = Flags::new(0x1001);
-
 /// A TYPE object: a name and its handler list.
 pub const FLAG_TYPE: Flags = Flags::new(0x2000);
 
@@ -359,7 +353,6 @@ pub const STAMPED_KINDS: &[(Flags, &str)] = &[
     (FLAG_FN, "PROCEDURE"),
     (FLAG_OP, "OPERATIVE"),
     (FLAG_WRAP, "PROCEDURE"),
-    (FLAG_ENV, "ENVIRONMENT"),
     (FLAG_TYPE, "TYPE"),
     (FLAG_ITER, "ITER"),
     (FLAG_BUF, "BUFFER"),

@@ -179,7 +179,7 @@ pub const TOKEN_EOF: &str = "%token-eof";
 pub const SIGINT_FLAG: &str = "%sigint-flag";
 /// The evaluator-state routes on the base spine.
 pub const ROUTE_TRUE: &str = "true";
-pub const ROUTE_ENV_GLOBAL_TREE: &str = "env-global-tree";
+pub const ROUTE_ENV_ROOT: &str = "env-root";
 pub const ROUTE_SAVE_STACK: &str = "save-stack";
 pub const ROUTE_TCO_EXPR: &str = "tco-expr";
 pub const ROUTE_TCO_ENV: &str = "tco-env";
