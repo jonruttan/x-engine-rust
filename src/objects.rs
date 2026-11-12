@@ -214,6 +214,11 @@ pub struct Objects {
     /// genuinely work at that level, and hiding it behind delegating wrappers
     /// would be the object model pretending to own operations it does not.
     pub heap: Heap,
+    /// One bit per heap word, set where an object begins. The collector traces
+    /// a word as a reference only when it lands on one: a word inside a string's
+    /// bytes can carry the magic bit as easily as a header does, and marking
+    /// through it writes the mark into the text.
+    pub(crate) starts: Vec<u64>,
     /// Name to object. Symbol identity is pointer identity in x-lang, so this is
     /// a contract requirement rather than an optimisation.
     ///
@@ -414,6 +419,7 @@ impl Objects {
     pub fn new() -> Self {
         let mut a = Objects {
             heap: Heap::new(),
+            starts: Vec::new(),
             symbols: Symbols::new(),
             shared_symbols: Symbols::new(),
             false_obj: NIL,
@@ -520,8 +526,26 @@ impl Objects {
             self.heap.push(NIL.word());
         }
         let o = at.as_obj();
+        self.note_start(o);
         self.heap_chain = o;
         o
+    }
+
+    fn note_start(&mut self, o: Obj) {
+        let i = (o.addr().raw() / WORD as u64) as usize;
+        if self.starts.len() <= i / 64 {
+            self.starts.resize(i / 64 + 1, 0);
+        }
+        self.starts[i / 64] |= 1 << (i % 64);
+    }
+
+    /// Whether `w` is the address of an object's start.
+    pub(crate) fn is_start(&self, w: u64) -> bool {
+        if w % WORD as u64 != 0 {
+            return false;
+        }
+        let i = (w / WORD as u64) as usize;
+        self.starts.get(i / 64).is_some_and(|b| b & (1 << (i % 64)) != 0)
     }
 
     /// Whether this object's allocation prepended meta words — the raw

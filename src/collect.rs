@@ -109,13 +109,13 @@ impl Objects {
 
     /// Could this word be an object in this heap?
     ///
-    /// Used only for the conservative cases. It is allowed to say yes to a
-    /// non-object; it must never say no to a real one.
+    /// Yes only for the start of an allocation: a word that merely carries
+    /// the magic bit may sit inside a string's bytes, and the mark written
+    /// through it lands in the text.
     fn plausible(&self, w: u64) -> bool {
-        // Word-aligned, inside the heap, and with room for a header.
         w != 0
-            && w % 8 == 0
             && (w / 8) as usize + crate::objects::META_LEN as usize <= self.heap.words_len()
+            && self.is_start(w)
     }
 
     /// Does an object's claimed data extent fit inside the heap? True for
