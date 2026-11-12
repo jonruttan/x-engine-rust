@@ -92,24 +92,19 @@ fn read_char(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     }
 }
 
-/// `(io read)` — one FORM, unevaluated. NIL at end of input.
+/// `(io read)` — one FORM, unevaluated. `%token-eof` at end of input.
 ///
-/// Folding end-of-input to nil loses the difference between reading the value
-/// `()` and running out, and that is deliberate: a caller of `read` has no use
-/// for the distinction, and the reference folds it the same way.
+/// A top-level `()` reads as nil, so end of input is a value of its own: a
+/// loop that stopped at nil would stop at the first `()` in its input. A caller
+/// that wants nil at the end reads through x-lang's `(Io read)`.
 fn read_form(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
-    Ok(e.read_form()?.unwrap_or(NIL))
+    Ok(e.read_form()?.unwrap_or(e.token_eof))
 }
 
-/// `(io repl-read)` — the same act, but end of input arrives as `%token-eof`.
+/// `(io repl-read)` — the same read, as the REPL calls it.
 ///
-/// THE ONE DIFFERENCE between this and `read`, and it is not prompting or echo —
-/// those really do belong to the library. It is that a REPL needs THREE
-/// outcomes where a reader needs two: a value (nil included, since `()` reads as
-/// nil and simply evaluates), a clean end of input, and a truncated form, which
-/// arrives as a raise. Folding the sentinel here would merge the first two, and
-/// a REPL that cannot tell `()` from ctrl-d either exits on a valid form or
-/// never exits at all.
+/// A REPL needs three outcomes: a value (nil included), a clean end of input,
+/// and a truncated form, which arrives as a raise.
 fn repl_read(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(e.read_form()?.unwrap_or(e.token_eof))
 }
@@ -275,10 +270,10 @@ mod tests {
         );
     }
 
-    /// And `read` folds it, which is why both instructions exist. Same exhausted
-    /// stream, different answer.
+    /// And `read` answers it too, as x-engine-c#57 makes it: a loop that
+    /// stopped at nil would stop at the first `()` in its input.
     #[test]
-    fn read_folds_the_end_of_input_where_repl_read_does_not() {
+    fn read_answers_the_sentinel_at_end_of_input() {
         let mut e = Engine::new();
         e.set_input("");
         let read = e
@@ -286,11 +281,7 @@ mod tests {
             .expect("read");
         let env = e.root_env();
         let v = e.call_with_values(read, &[], env).expect("read at eof");
-        assert!(v.is_nil(), "read folds end of input to nil");
-        assert!(
-            !e.objects.is_token_eof(v),
-            "and does NOT answer the sentinel"
-        );
+        assert!(e.objects.is_token_eof(v), "read answers the sentinel");
     }
 
     /// Compared by IDENTITY, so it must not be `eq?`-confusable with a number
