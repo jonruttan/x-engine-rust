@@ -29,6 +29,10 @@ pub enum Cond {
     /// carried, not its text, because `guard` binds it and a handler that only
     /// ever saw a string could not tell an error from the spelling of one.
     Raised(Obj),
+    /// `(error x text)` — as `Raised`, with the text an uncaught raise
+    /// reports when the value is not a string (x-lang#211): the guard still
+    /// receives the value.
+    RaisedReport(Obj, Obj),
     /// An ENGINE-raised diagnostic with a formatted message. Carries the
     /// text, not a string object: `value` delivers the base's error atom
     /// (the reference's identity, #54) and writes the message into its
@@ -57,6 +61,13 @@ impl Cond {
     pub fn message(&self, a: &Objects) -> String {
         match self {
             Cond::Raised(v) => value_text(a, *v),
+            Cond::RaisedReport(v, text) => {
+                if !a.is_str(*v) && a.is_str(*text) {
+                    a.str_val(*text)
+                } else {
+                    value_text(a, *v)
+                }
+            }
             Cond::EngineMsg(text) => text.clone(),
             Cond::Unbound(sym) => format!("Unbound SYMBOL '{}'", a.sym_name(*sym)),
             Cond::CannotInclude(path) => crate::vocabulary::MSG_CANNOT_INCLUDE.replace("{}", path),
@@ -94,7 +105,7 @@ impl Cond {
     /// whole message written into it.
     pub fn value(&self, a: &mut Objects) -> Obj {
         match self {
-            Cond::Raised(v) => *v,
+            Cond::Raised(v) | Cond::RaisedReport(v, _) => *v,
             other => {
                 let base = a.base;
                 let err = if base.is_nil() {
