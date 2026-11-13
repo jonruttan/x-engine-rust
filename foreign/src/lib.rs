@@ -51,6 +51,8 @@ extern "C" {
     fn open_file(path: *const c_char, flags: c_int, ...) -> c_int;
     fn close(fd: c_int) -> c_int;
     fn exit(status: c_int) -> !;
+    fn malloc(n: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
     /// VARIADIC, and declared that way deliberately. On aarch64 a variadic
     /// argument goes on the STACK where a fixed one goes in a register, so a
     /// non-variadic declaration would compile, run, and hand the kernel
@@ -680,4 +682,16 @@ pub fn read_char(fd: i32) -> i64 {
 pub fn exit_with(status: i32) -> ! {
     // SAFETY: exit(3) does not return.
     unsafe { exit(status) }
+}
+
+/// malloc(3): `n` bytes the caller owns, or 0.
+pub fn alloc_c(n: usize) -> u64 {
+    // SAFETY: malloc(3) answers a fresh region or NULL.
+    unsafe { malloc(n) as u64 }
+}
+
+/// free(3) of a region `alloc_c` (or C) handed out.
+pub fn free_c(at: u64) {
+    // SAFETY: the caller hands back what malloc answered, or NULL.
+    unsafe { free(at as *mut c_void) }
 }
