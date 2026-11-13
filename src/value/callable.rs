@@ -8,9 +8,12 @@ use crate::obj::{EnvId, Obj, Word};
 use crate::objects::{Objects, FLAG_CONT, FLAG_FN, FLAG_FOREIGN, FLAG_OP, FLAG_PRIM, FLAG_WRAP};
 
 impl Objects {
-    /// A primitive: the data word holds an index into the engine's prim table.
+    /// A primitive: data word 0 holds an index into the engine's prim table,
+    /// data word 1 its state, nil. Two words, as every function object is on
+    /// the reference: x-lang installs a compiled version into a function by
+    /// writing its type and both words (lib/x/tool/compiled.x).
     pub fn prim(&mut self, idx: usize) -> Obj {
-        let o = self.alloc(FLAG_PRIM, 1);
+        let o = self.alloc(FLAG_PRIM, 2);
         self.set_data(o, 0, Word::from_usize(idx));
         o
     }
@@ -31,7 +34,7 @@ impl Objects {
     /// because a primitive's data word is an INDEX into the instruction table,
     /// and an address would alias a real instruction.
     pub fn foreign(&mut self, addr: u64) -> Obj {
-        let o = self.alloc(FLAG_FOREIGN, 1);
+        let o = self.alloc(FLAG_FOREIGN, 2);
         self.set_data(o, 0, Word(addr));
         o
     }

@@ -511,7 +511,7 @@ impl Engine {
 
     /// Apply an emitted function: hand it the base and the raw argument
     /// spine as real addresses, take an object back the same way.
-    fn apply_foreign(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    pub(crate) fn apply_foreign(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
         let addr = self.objects.foreign_addr(callee);
         let f = x_engine_foreign::Foreign(addr);
         let base_real = if self.base.is_nil() {

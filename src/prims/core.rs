@@ -49,10 +49,12 @@ fn callable_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResu
     let idx = e.objects.data(callee, 0).as_usize();
     match e.prims.get(idx).copied() {
         Some(def) => (def.f)(e, callee, args, env),
-        // A word that misses the table — a foreign address, whose invocation
-        // ABI belongs to the undeclared jit lane — is not callable. The form
-        // is data; `combine`'s caller keeps that contract, so the answer here
-        // is the callee, as `eval_call` answers a non-combiner.
+        // A word that misses the table is the address of machine code, as a
+        // primitive's word is on the reference: x-lang installs a compiled
+        // version into a function object by writing the made callable's
+        // words over it (lib/x/tool/compiled.x). Nil is no routine at all,
+        // and the form is data.
+        None if idx != 0 => e.apply_foreign(callee, args, env),
         None => Ok(callee),
     }
 }
