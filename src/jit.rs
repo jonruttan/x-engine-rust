@@ -59,14 +59,23 @@ impl x_engine_foreign::JitHost for Engine {
     }
 
     /// Evaluate, as the reference's `x_eval_arg` does for a compiled
-    /// analyser's re-entry. A condition cannot cross machine code, so an
-    /// erroring argument answers nil.
+    /// function's argument. A raise cannot cross the machine code between
+    /// here and the engine, so it is held on the engine and the argument
+    /// answers nil; the door that entered the code raises it when the code
+    /// returns, as the reference's longjmp would have. Once one is held,
+    /// nothing more is evaluated: the reference's code would not have run on.
     fn jit_eval_arg(&mut self, expr: u64) -> u64 {
+        if self.slot_error.is_some() {
+            return 0;
+        }
         let form = self.jit_obj(expr);
         let env = self.jit_env.unwrap_or_else(|| self.root_env());
         match self.eval(form, env) {
             Ok(v) => self.jit_real(v),
-            Err(_) => 0,
+            Err(c) => {
+                self.slot_error = Some(c);
+                0
+            }
         }
     }
 

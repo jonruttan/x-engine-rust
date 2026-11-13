@@ -524,9 +524,14 @@ impl Engine {
         // reads the base's live environment, and a closure passing its
         // locals to an emitted function is the ordinary case.
         let prev_env = self.jit_env.replace(env);
+        let prev_error = self.slot_error.take();
         let out = x_engine_foreign::call_ints(f, &[base_real, args_real]);
         self.jit_env = prev_env;
-        Ok(self.jit_obj(out))
+        // A raise held while the code ran (jit_eval_arg) is raised here.
+        match std::mem::replace(&mut self.slot_error, prev_error) {
+            Some(c) => Err(c),
+            None => Ok(self.jit_obj(out)),
+        }
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the
