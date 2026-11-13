@@ -95,6 +95,10 @@ pub const FLAG_MAGIC_BIT: u64 = 1 << 62;
 /// own, ro, meta, shared, mark, trace), and x-lang reads them off the raw
 /// word; a kind code stored there reads as attributes, as `FLAG_FN`'s low
 /// bit read as WRAP. Bits 32..53 lie below the meta count, the magic bit and
+/// The contract's OWN attribute (obj-layout.x `%obj-flag-own`): the object
+/// owns the storage its data word points at, as a string made with its own
+/// bytes does and a view over bytes already there does not.
+pub const ATTR_OWN: u64 = 0x20;
 /// the mark bit, and the contract assigns them nothing.
 pub const KIND_SHIFT: u64 = 32;
 /// The kind field's width: every kind code fits in 22 bits.
@@ -772,6 +776,17 @@ impl Objects {
                 .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
                 .raw(),
         )
+    }
+
+    /// Set contract attribute bits in an object's stored flags word, beside
+    /// its kind.
+    pub(crate) fn set_attr(&mut self, o: Obj, bits: u64) {
+        if o.is_nil() {
+            return;
+        }
+        let at = o.addr().plus(SLOT_FLAGS * WORD as u64);
+        let w = self.heap.word(at).raw();
+        self.heap.set_word(at, Word(w | bits));
     }
 
     pub fn is(&self, o: Obj, flags: Flags) -> bool {
