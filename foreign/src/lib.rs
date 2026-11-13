@@ -348,6 +348,11 @@ pub trait JitHost {
     fn jit_score_set(&mut self, score: u64, sign: i64, buffer: u64) -> u64;
     fn jit_buffer_unread(&mut self, buffer: u64) -> u64;
     fn jit_buffer_len(&mut self, buffer: u64) -> i64;
+    fn jit_buffer_last_char(&mut self, buffer: u64) -> i64;
+    fn jit_score_label(&mut self, score: u64, label: i64) -> u64;
+    /// Call the callee at the head of `args`, `(callee arg0 arg1 ...)`,
+    /// a primitive chosen at run time.
+    fn jit_call_value(&mut self, args: u64) -> u64;
     /// Run the engine's own routine for slot `slot` of the base's slot
     /// vector over its argument run, one word an argument, as the slot's row
     /// in tools/contract/base-slots.x gives them. A routine may write a word
@@ -491,9 +496,24 @@ pub extern "C" fn jit_buffer_len(buffer: u64) -> i64 {
     jit_host().jit_buffer_len(buffer)
 }
 
-/// The nine exported addresses, for the binary to anchor so the linker keeps
+#[no_mangle]
+pub extern "C" fn jit_buffer_last_char(buffer: u64) -> i64 {
+    jit_host().jit_buffer_last_char(buffer)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_score_label(score: u64, label: i64) -> u64 {
+    jit_host().jit_score_label(score, label)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_call_value(_base: u64, args: u64) -> u64 {
+    jit_host().jit_call_value(args)
+}
+
+/// The twelve exported addresses, for the binary to anchor so the linker keeps
 /// them reachable by `dlsym`.
-pub fn jit_exports() -> [usize; 9] {
+pub fn jit_exports() -> [usize; 12] {
     [
         jit_mkint as extern "C" fn(u64, i64) -> u64 as usize,
         jit_mkpair as extern "C" fn(u64, u64, u64) -> u64 as usize,
@@ -504,6 +524,9 @@ pub fn jit_exports() -> [usize; 9] {
         jit_score_set as extern "C" fn(u64, i64, u64) -> u64 as usize,
         jit_buffer_unread as extern "C" fn(u64) -> u64 as usize,
         jit_buffer_len as extern "C" fn(u64) -> i64 as usize,
+        jit_buffer_last_char as extern "C" fn(u64) -> i64 as usize,
+        jit_score_label as extern "C" fn(u64, i64) -> u64 as usize,
+        jit_call_value as extern "C" fn(u64, u64) -> u64 as usize,
     ]
 }
 

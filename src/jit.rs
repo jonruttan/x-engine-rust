@@ -101,6 +101,63 @@ impl x_engine_foreign::JitHost for Engine {
         self.objects.buf_cursor(b) as i64 - self.objects.buf_retain(b) as i64
     }
 
+    /// The byte the buffer read last, as the reference's
+    /// `x_bufferlastchar` reads it: the byte before the read mark.
+    fn jit_buffer_last_char(&mut self, buffer: u64) -> i64 {
+        let b = self.jit_obj(buffer);
+        let at = self.objects.buf_cursor(b);
+        if at == 0 {
+            return 0;
+        }
+        let text = self.objects.buf_text(b);
+        let bytes = self.objects.str_bytes(text);
+        self.objects.heap.byte(bytes.plus(at - 1)) as i64
+    }
+
+    /// The label an analyser accepted, written into the label cell the
+    /// score's rest holds, as `jit.c` words it.
+    fn jit_score_label(&mut self, score: u64, label: i64) -> u64 {
+        let s = self.jit_obj(score);
+        let cell = self.objects.rest(s);
+        self.objects.set_data(cell, 0, Word(label as u64));
+        score
+    }
+
+    /// Call a primitive the compiled code chose at run time: `args` is
+    /// `(callee arg0 ...)`, the prim layout. A callee that is not a
+    /// primitive raises, as the reference refuses to branch to it; a raise
+    /// is held for the door that entered the code, as jit_eval_arg's is.
+    fn jit_call_value(&mut self, args: u64) -> u64 {
+        if self.slot_error.is_some() {
+            return 0;
+        }
+        let call = self.jit_obj(args);
+        let callee = self.objects.first(call);
+        let base = self.objects.base;
+        let prim_t = self
+            .objects
+            .builtin_type_in(base, crate::objects::FLAG_PRIM);
+        if callee.is_nil() || self.objects.obj_type(callee) != prim_t {
+            self.slot_error = Some(crate::diag::Cond::EngineMsg(
+                "asm-compile: call through a value that is not a callable prim".to_string(),
+            ));
+            return 0;
+        }
+        let rest = self.objects.rest(call);
+        let env = self.jit_env.unwrap_or_else(|| self.root_env());
+        let out = match self.combine(callee, rest, env) {
+            Some(r) => self.settle(r, env),
+            None => Ok(callee),
+        };
+        match out {
+            Ok(v) => self.jit_real(v),
+            Err(c) => {
+                self.slot_error = Some(c);
+                0
+            }
+        }
+    }
+
     /// A slot door entered from foreign code. A raise cannot cross the C
     /// frames between here and the engine, so it is held on the engine and
     /// the door answers nil; `slot_call` raises it when the foreign routine
