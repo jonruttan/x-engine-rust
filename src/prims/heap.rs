@@ -134,9 +134,7 @@ fn heap_check(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let mut bad = 0i64;
     let mut at = e.objects.heap_chain;
     while !at.is_nil() {
-        let f = crate::obj::Flags::from_word(crate::obj::Word(
-            e.objects.flags_word(at) & !(1u64 << 63),
-        ));
+        let f = crate::objects::kind_load(e.objects.flags_word(at));
         let n = e.objects.data_len(at);
         let check_slots: &[u64] =
             if f == crate::objects::FLAG_PAIR || f == crate::objects::FLAG_SPAIR {

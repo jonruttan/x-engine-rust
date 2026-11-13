@@ -35,7 +35,7 @@
 //! knowing, which is instances; everywhere else the layout is known and
 //! precision is both cheaper and correct.
 
-use crate::obj::{EnvId, Flags, Obj, Word};
+use crate::obj::{EnvId, Obj, Word};
 use crate::objects::{
     Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR,
     FLAG_SPAIR, FLAG_WRAP,
@@ -146,13 +146,9 @@ impl Objects {
                 stack.push(ty);
             }
 
-            // The KIND bits only: the mark bit, the meta bit and the meta
-            // count all ride the same word, and a flags value they contaminate
-            // matches no kind — an armed PAIR would traverse as opaque and its
-            // children would be swept alive.
-            let flags = Flags::from_word(Word(
-                self.flags_word(o) & !crate::objects::FLAG_META_BIT & 0x00ff_ffff_ffff_ffff,
-            ));
+            // The kind field only: the mark bit, the meta bit, the meta count
+            // and x-lang's attribute bits ride the same word.
+            let flags = crate::objects::kind_load(self.flags_word(o));
             let n = self.data_len(o);
             match flags {
                 // Both words are references.

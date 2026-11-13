@@ -90,6 +90,26 @@ pub const FLAG_META_SHIFT: u64 = 56;
 /// live-data corruption, surfacing as garbage digests mid-collect.
 pub const FLAG_MAGIC_BIT: u64 = 1 << 62;
 
+/// Where the KIND code rides in the stored flags word. The low sixteen bits
+/// belong to the contract's attributes (obj-layout.x: WRAP 0x01, COV 0x02,
+/// own, ro, meta, shared, mark, trace), and x-lang reads them off the raw
+/// word; a kind code stored there reads as attributes, as `FLAG_FN`'s low
+/// bit read as WRAP. Bits 32..53 lie below the meta count, the magic bit and
+/// the mark bit, and the contract assigns them nothing.
+pub const KIND_SHIFT: u64 = 32;
+/// The kind field's width: every kind code fits in 22 bits.
+pub const KIND_MASK: u64 = 0x3f_ffff;
+
+/// A kind code as it is stored in the flags word.
+pub const fn kind_store(f: Flags) -> u64 {
+    (f.raw() & KIND_MASK) << KIND_SHIFT
+}
+
+/// The kind code a stored flags word holds.
+pub const fn kind_load(w: u64) -> Flags {
+    Flags::new((w >> KIND_SHIFT) & KIND_MASK)
+}
+
 /// Not simple-type codes: these have their own marker bits, because the low
 /// nibble is reserved for per-type attributes.
 pub const FLAG_PAIR: Flags = Flags::new(0x0100);
@@ -509,7 +529,7 @@ impl Objects {
         // sweeping means walking this link from the newest allocation back.
         self.heap.push(self.heap_chain.word());
         self.heap.push(ty.word());
-        let stored = flags.raw()
+        let stored = kind_store(flags)
             | FLAG_MAGIC_BIT
             | if meta > 0 {
                 FLAG_META_BIT | ((meta as u64) << FLAG_META_SHIFT)
@@ -713,7 +733,7 @@ impl Objects {
             .set_word(a.plus(SLOT_HEAP * w), self.heap_chain.word());
         self.heap.set_word(a.plus(SLOT_TYPE * w), ty.word());
         self.heap
-            .set_word(a.plus(SLOT_FLAGS * w), Word(flags.raw()));
+            .set_word(a.plus(SLOT_FLAGS * w), Word(kind_store(flags)));
         self.heap.set_word(a.plus(SLOT_LEN * w), Word(n as u64));
     }
 
@@ -734,7 +754,7 @@ impl Objects {
                 .map(|(f, a, b)| {
                     format!(
                         "{} first={} rest={}",
-                        kind_name(Flags::from_word(Word(*f))),
+                        kind_name(kind_load(*f)),
                         self.describe_word(*a),
                         self.describe_word(*b)
                     )
@@ -747,13 +767,11 @@ impl Objects {
                 self.holders_of(o)
             );
         }
-        Flags::from_word(Word(
+        kind_load(
             self.heap
                 .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
-                .raw()
-                & !FLAG_META_BIT
-                & 0x00ff_ffff_ffff_ffff,
-        ))
+                .raw(),
+        )
     }
 
     pub fn is(&self, o: Obj, flags: Flags) -> bool {
@@ -945,7 +963,7 @@ impl Objects {
         if f == crate::collect::POISON {
             return "<freed>".to_string();
         }
-        let flags = Flags::from_word(Word(f));
+        let flags = kind_load(f);
         if flags == FLAG_SYM || flags == FLAG_STR || flags == FLAG_HANDLE {
             format!("{}:{}", kind_name(flags), self.str_val(o))
         } else if flags == FLAG_INT {
