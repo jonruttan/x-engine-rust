@@ -10,7 +10,7 @@
 //! reference's NULL does.
 
 use crate::engine::Engine;
-use crate::obj::{Obj, Word, NIL};
+use crate::obj::{Obj, Word};
 
 impl Engine {
     /// The address an object crosses the door as; 0 for nil.
@@ -18,13 +18,12 @@ impl Engine {
         o.word().raw()
     }
 
-    /// The object a crossed value names; nil for 0 or an address outside
-    /// the arena.
+    /// The object a crossed value names: the word itself, as the reference
+    /// passes it. A word outside the arena is a value too — a routine's
+    /// address read out of a slot vector crosses this way — and every read
+    /// through it answers 0, as the heap's reads do past the arena.
     pub(crate) fn jit_obj(&self, real: u64) -> Obj {
-        match self.objects.heap.from_real(real) {
-            Some(at) => at.as_obj(),
-            None => NIL,
-        }
+        Word(real).as_obj()
     }
 }
 
