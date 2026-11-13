@@ -585,10 +585,15 @@ impl Engine {
         for v in vals {
             self.root_push(*v);
         }
-        let spine = if self.objects.is_foreign(callee) {
-            self.value_spine(vals)
-        } else {
+        // A procedure binds the values: quoted, its operand evaluation hands
+        // them back as they are. Anything else gets the values themselves, as
+        // `x_prim_apply` hands them to `x_callable_apply`: an operative binds
+        // them unevaluated, and a primitive evaluates them, so the library
+        // quotes what a primitive is to see as itself.
+        let spine = if self.objects.is(callee, crate::objects::FLAG_FN) {
             self.quote_values(vals)
+        } else {
+            self.value_spine(vals)
         };
         self.root_push(spine);
         let out = match self.combine(callee, spine, env) {
