@@ -566,6 +566,18 @@ impl Engine {
         }
     }
 
+    /// Whether a callee is a procedure by its TYPE, as `x_obj_type_isprocedure`
+    /// asks: a closure compiled in place (lib/x/tool/compiled.x) keeps its
+    /// kind but takes the primitive type, and is applied as a primitive.
+    fn is_procedure(&mut self, callee: Obj) -> bool {
+        if callee.is_nil() {
+            return false;
+        }
+        let base = self.objects.base;
+        let proc_t = self.objects.builtin_type_in(base, crate::objects::FLAG_FN);
+        self.objects.obj_type(callee) == proc_t
+    }
+
     /// Call a combiner with values already computed, IN TAIL POSITION.
     ///
     /// The difference from [`Engine::call_with_values`] is the whole of tail-call
@@ -580,6 +592,14 @@ impl Engine {
     /// made every `let` in a tail position grow the Rust stack. 50,000 frames of
     /// `(let ((m (- n 1))) (self m))` overflowed it.
     pub fn call_with_values_tail(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        // Anything but a procedure goes through the callable-apply slot, as
+        // x_prim_apply calls x_callable_apply through it: a language that
+        // stored its own routine there (x/tool/fn-compile.x hands a compiled
+        // function its values that way) is asked first.
+        if !self.is_procedure(callee) && self.slot_replaced(crate::slots::CALLABLE_APPLY).is_some()
+        {
+            return self.call_with_values(callee, vals, env);
+        }
         let mark = self.root_mark();
         self.root_push(callee);
         for v in vals {
@@ -590,7 +610,7 @@ impl Engine {
         // `x_prim_apply` hands them to `x_callable_apply`: an operative binds
         // them unevaluated, and a primitive evaluates them, so the library
         // quotes what a primitive is to see as itself.
-        let spine = if self.objects.is(callee, crate::objects::FLAG_FN) {
+        let spine = if self.is_procedure(callee) {
             self.quote_values(vals)
         } else {
             self.value_spine(vals)
