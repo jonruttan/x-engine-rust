@@ -48,6 +48,13 @@ pub(crate) fn list_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
 fn callable_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
     let idx = e.objects.data(callee, 0).as_usize();
     match e.prims.get(idx).copied() {
+        // A type's own handler has no self: its subject is the first
+        // argument, as x_callable_apply hands a satom its call.
+        Some(def) if def.subject => {
+            let subject = e.objects.first(args);
+            let rest = e.objects.rest(args);
+            (def.f)(e, subject, rest, env)
+        }
         Some(def) => (def.f)(e, callee, args, env),
         // A word that misses the table is the address of machine code, as a
         // primitive's word is on the reference: x-lang installs a compiled
@@ -153,7 +160,7 @@ fn list_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
 
 #[rustfmt::skip]
 pub(crate) const LIST_CALL: PrimDef =
-    PrimDef::row(Some("%list-call"), None, 0, list_call);
+    PrimDef::handler(Some("%list-call"), list_call);
 
 /// The handler table, minted at registration: symbol, then list. Each handler
 /// follows the operative calling convention — a handler receives the FORM raw and the environment, which is the engine
