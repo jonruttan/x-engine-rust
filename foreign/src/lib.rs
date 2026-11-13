@@ -59,6 +59,11 @@ extern "C" {
     fn clock() -> c_long;
     fn signal(sig: c_int, handler: usize) -> usize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
+    fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+    #[link_name = "open"]
+    fn open_file(path: *const c_char, flags: c_int, ...) -> c_int;
+    fn close(fd: c_int) -> c_int;
+    fn exit(status: c_int) -> !;
     /// VARIADIC, and declared that way deliberately. On aarch64 a variadic
     /// argument goes on the STACK where a fixed one goes in a register, so a
     /// non-variadic declaration would compile, run, and hand the kernel
@@ -645,4 +650,47 @@ mod tests {
         assert!(acc > 0);
         assert!(cpu_micros() >= t0);
     }
+}
+
+/// open(2) on a path's bytes with raw flags, mode 0666 for a create:
+/// the reference's `x_sys_open`. A negative answer is a refusal.
+pub fn open_path(path: &[u8], flags: i32) -> i64 {
+    let mut z = path.to_vec();
+    z.push(0);
+    // SAFETY: the path is NUL-terminated and lives across the call; open(2)
+    // reports refusal as -1 rather than by faulting.
+    unsafe { open_file(z.as_ptr().cast::<c_char>(), flags as c_int, 0o666 as c_int) as i64 }
+}
+
+/// close(2).
+pub fn close_fd(fd: i32) -> i64 {
+    // SAFETY: close(2) validates the descriptor.
+    unsafe { close(fd) as i64 }
+}
+
+/// read(2) of up to `n` bytes into process memory at the real address `at`.
+/// The caller owns the region, as the reference's `(sys read fd p n)` does.
+pub fn read_into(fd: i32, at: u64, n: usize) -> i64 {
+    // SAFETY: the caller hands a writable region of n bytes.
+    unsafe { read(fd, at as *mut c_void, n) as i64 }
+}
+
+/// write(2) of `n` bytes from process memory at the real address `at`.
+pub fn write_from(fd: i32, at: u64, n: usize) -> i64 {
+    // SAFETY: the caller hands a readable region of n bytes.
+    unsafe { write(fd, at as *const c_void, n) as i64 }
+}
+
+/// One byte from a descriptor, or -1 at end of input or on a refusal.
+pub fn read_char(fd: i32) -> i64 {
+    let mut b = 0u8;
+    // SAFETY: one byte into a live local.
+    let n = unsafe { read(fd, (&mut b as *mut u8).cast::<c_void>(), 1) };
+    if n == 1 { b as i64 } else { -1 }
+}
+
+/// End the process with `status`.
+pub fn exit_with(status: i32) -> ! {
+    // SAFETY: exit(3) does not return.
+    unsafe { exit(status) }
 }

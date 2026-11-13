@@ -41,6 +41,64 @@ fn sigint_restore(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
+/// A pointer operand as a REAL address: an arena offset (what `obj ->ptr`
+/// answers) is translated, a real address passes through.
+fn real_of(e: &Engine, p: Obj) -> u64 {
+    let at = e.objects.as_ptr(p).raw();
+    if (at as usize) < e.objects.heap.words_len() * crate::obj::WORD {
+        e.objects.heap.address_of(crate::obj::Addr::new(at))
+    } else {
+        at
+    }
+}
+
+/// `(sys open path flags)` — the descriptor, or a negative refusal.
+fn sys_open(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let path = e.objects.bytes_of(a[0]);
+    let flags = e.objects.as_int(a[1]) as i32;
+    Ok(e.objects.int(crate::foreign::open_path(&path, flags)))
+}
+
+/// `(sys close fd)`
+fn sys_close(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let fd = e.objects.as_int(a[0]) as i32;
+    Ok(e.objects.int(crate::foreign::close_fd(fd)))
+}
+
+/// `(sys read fd p n)` — up to n bytes into the memory at p.
+fn sys_read(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let fd = e.objects.as_int(a[0]) as i32;
+    let at = real_of(e, a[1]);
+    let n = e.objects.as_int(a[2]).max(0) as usize;
+    Ok(e.objects.int(crate::foreign::read_into(fd, at, n)))
+}
+
+/// `(sys write fd p n)` — n bytes from the memory at p, NULs and all.
+fn sys_write(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let fd = e.objects.as_int(a[0]) as i32;
+    let at = real_of(e, a[1]);
+    let n = e.objects.as_int(a[2]).max(0) as usize;
+    Ok(e.objects.int(crate::foreign::write_from(fd, at, n)))
+}
+
+/// `(sys read-char fd)` — one byte, or -1.
+fn sys_read_char(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let fd = e.objects.as_int(a[0]) as i32;
+    Ok(e.objects.int(crate::foreign::read_char(fd)))
+}
+
+/// `(sys exit status)` — ends the process.
+fn sys_exit(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let status = e.objects.as_int(a[0]) as i32;
+    crate::foreign::exit_with(status)
+}
+
+crate::uniform_engine!(sys_open_u, sys_open, 2);
+crate::uniform_engine!(sys_close_u, sys_close, 1);
+crate::uniform_engine!(sys_read_u, sys_read, 3);
+crate::uniform_engine!(sys_write_u, sys_write, 3);
+crate::uniform_engine!(sys_read_char_u, sys_read_char, 1);
+crate::uniform_engine!(sys_exit_u, sys_exit, 1);
 crate::uniform_engine!(clock_u, clock, 0);
 crate::uniform_engine!(sigint_install_u, sigint_install, 0);
 crate::uniform_engine!(sigint_restore_u, sigint_restore, 0);
@@ -48,6 +106,12 @@ crate::uniform_engine!(sigint_restore_u, sigint_restore, 0);
 #[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
     PrimDef::row(None, Some(("sys", "clock")), 0, clock_u),
+    PrimDef::row(None, Some(("sys", "read")), 3, sys_read_u),
+    PrimDef::row(None, Some(("sys", "write")), 3, sys_write_u),
+    PrimDef::row(None, Some(("sys", "open")), 2, sys_open_u),
+    PrimDef::row(None, Some(("sys", "close")), 1, sys_close_u),
+    PrimDef::row(None, Some(("sys", "read-char")), 1, sys_read_char_u),
+    PrimDef::row(None, Some(("sys", "exit")), 1, sys_exit_u),
     PrimDef::row(Some("sigint-install"), None, 0, sigint_install_u),
     PrimDef::row(Some("sigint-restore"), None, 0, sigint_restore_u),
 ];
