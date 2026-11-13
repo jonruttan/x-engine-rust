@@ -169,8 +169,11 @@ pub const CHAR_UNKNOWN: &str = "?";
 /// The truth answer of every predicate, and the name that evaluates to it.
 /// What an interrupt raises, so a guard can recognise it.
 pub const MSG_STOP: &str = "STOP";
-/// The applicative arg walk's refusal of a dotted spine (#69).
-pub const MSG_IMPROPER_ARGS: &str = "improper argument list";
+/// The refusal of a dotted spine, an applicative's arguments (#69) or a
+/// body (#487), in x-engine-c's words.
+pub const MSG_IMPROPER_ARGS: &str = "call: improper argument list (dotted tail)";
+/// jit_call_value's refusal of a callee that is not a primitive.
+pub const MSG_CALL_VALUE: &str = "asm-compile: call through a value that is not a callable prim";
 
 pub const TRUE: &str = "#t";
 pub const FALSE: &str = "#f";

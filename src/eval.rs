@@ -952,7 +952,26 @@ impl Engine {
     ///
     /// The last form of a body is in tail position, so evaluating it here would
     /// be the recursion this whole mechanism exists to avoid.
+    /// Whether a body's spine ends in an atom rather than nil. The forms
+    /// before the dot run, then the walk raises, as x-engine-c's
+    /// `x_eval_spine_guard` makes every body walk do (#487).
+    fn body_dotted(&self, body: Obj) -> bool {
+        let mut at = body;
+        while self.objects.is_cell(at) {
+            at = self.objects.rest(at);
+        }
+        !at.is_nil()
+    }
+
+    fn dotted_body() -> Cond {
+        Cond::EngineMsg(crate::vocabulary::MSG_IMPROPER_ARGS.to_string())
+    }
+
     pub fn eval_body_tail(&mut self, body: Obj, env: EnvId) -> EvalResult {
+        if self.body_dotted(body) {
+            self.eval_body(body, env)?;
+            return Err(Self::dotted_body());
+        }
         let forms: Vec<Obj> = self.objects.list(body).collect();
         let Some((last, rest)) = forms.split_last() else {
             return Ok(NIL);
