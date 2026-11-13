@@ -545,7 +545,9 @@ impl Objects {
         let Some(i) = self.heap.word_number(crate::obj::Addr::new(w)) else {
             return false;
         };
-        self.starts.get(i / 64).is_some_and(|b| b & (1 << (i % 64)) != 0)
+        self.starts
+            .get(i / 64)
+            .is_some_and(|b| b & (1 << (i % 64)) != 0)
     }
 
     /// Whether this object's allocation prepended meta words — the raw

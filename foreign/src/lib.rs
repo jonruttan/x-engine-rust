@@ -368,7 +368,9 @@ macro_rules! slot_doors {
     ($($name:ident = $slot:expr;)*) => {
         $(
             #[no_mangle]
-            pub extern "C" fn $name(base: u64, run: *mut u64) -> u64 {
+            /// # Safety
+            /// `run` is null or holds at least the slot's arity in words.
+            pub unsafe extern "C" fn $name(base: u64, run: *mut u64) -> u64 {
                 let n = SLOT_ARITY[$slot];
                 let words: &mut [u64] = if n == 0 || run.is_null() {
                     &mut []
@@ -384,7 +386,7 @@ macro_rules! slot_doors {
 
         /// Every slot door's address, by position.
         pub fn slot_doors() -> [usize; 19] {
-            [$($name as extern "C" fn(u64, *mut u64) -> u64 as usize,)*]
+            [$($name as unsafe extern "C" fn(u64, *mut u64) -> u64 as usize,)*]
         }
     };
 }
@@ -675,7 +677,11 @@ pub fn read_char(fd: i32) -> i64 {
     let mut b = 0u8;
     // SAFETY: one byte into a live local.
     let n = unsafe { read(fd, (&mut b as *mut u8).cast::<c_void>(), 1) };
-    if n == 1 { b as i64 } else { -1 }
+    if n == 1 {
+        b as i64
+    } else {
+        -1
+    }
 }
 
 /// End the process with `status`.

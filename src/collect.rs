@@ -485,7 +485,6 @@ impl crate::engine::Engine {
                 );
             }
         }
-
     }
 
     /// Invoke every callable on one of the base's handler lists, with NO

@@ -108,7 +108,8 @@ impl Engine {
             Some(addr) => {
                 let base = self.jit_real(self.base);
                 let prev = self.slot_error.take();
-                let out = x_engine_foreign::call_routine(x_engine_foreign::Foreign(addr), base, words);
+                let out =
+                    x_engine_foreign::call_routine(x_engine_foreign::Foreign(addr), base, words);
                 match std::mem::replace(&mut self.slot_error, prev) {
                     Some(c) => Err(c),
                     None => Ok(out),
@@ -208,7 +209,12 @@ impl Engine {
     /// The reference's `x_env_extend`: a child of `parent` binding each
     /// parameter to its value in order, a missing value nil, and a symbol in
     /// place of the rest of the list binding the rest of the values.
-    pub(crate) fn env_extend(&mut self, parent: crate::obj::EnvId, params: Obj, vals: Obj) -> crate::obj::EnvId {
+    pub(crate) fn env_extend(
+        &mut self,
+        parent: crate::obj::EnvId,
+        params: Obj,
+        vals: Obj,
+    ) -> crate::obj::EnvId {
         let env = self.envs.push(&mut self.objects, parent);
         let (mut p, mut v) = (params, vals);
         while !p.is_nil() {
@@ -216,11 +222,19 @@ impl Engine {
                 self.envs.bind(&mut self.objects, env, p, v);
                 return env;
             }
-            let val = if v.is_nil() { NIL } else { self.objects.first(v) };
+            let val = if v.is_nil() {
+                NIL
+            } else {
+                self.objects.first(v)
+            };
             let name = self.objects.first(p);
             self.envs.bind(&mut self.objects, env, name, val);
             p = self.objects.rest(p);
-            v = if v.is_nil() { NIL } else { self.objects.rest(v) };
+            v = if v.is_nil() {
+                NIL
+            } else {
+                self.objects.rest(v)
+            };
         }
         env
     }

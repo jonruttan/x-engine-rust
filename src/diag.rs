@@ -88,7 +88,10 @@ impl Cond {
                 let text = other.message(a);
                 if text.ends_with('\'') {
                     if let Some(at) = text[..text.len() - 1].rfind(" '") {
-                        return (text[..at].to_string(), text[at + 2..text.len() - 1].to_string());
+                        return (
+                            text[..at].to_string(),
+                            text[at + 2..text.len() - 1].to_string(),
+                        );
                     }
                 }
                 (text, String::new())

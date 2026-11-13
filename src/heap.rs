@@ -142,7 +142,6 @@ impl Heap {
         self.allocations += 1;
     }
 
-
     pub fn words_len(&self) -> usize {
         self.words.len()
     }
