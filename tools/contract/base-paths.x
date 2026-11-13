@@ -74,13 +74,13 @@
   ; Rows that land on the value, as the reference's do for these names.  save-stack is nil at the top level and non-nil over a closure
   ; body's non-tail forms; the tco pair holds the deferred tail expression and
   ; its environment; sigint is the CELL holding the object %sigint-flag names
-; (first reaches the flag, as on the reference); error-handler is
-  ; the active guard chain.
+  ; (first reaches the flag, as on the reference); error-handler is the CELL
+  ; whose first is the active guard chain, as the reference's handler cell is.
   (save-stack    base f r r r r r r r r r r r r r r r r r r r f)
   (tco-expr      base f r r r r r r r r r r r r r r r r r r r r f)
   (tco-env       base f r r r r r r r r r r r r r r r r r r r r r f)
   (sigint        base f r r r r r r r r r r r r r r r r r r r r r r)
-  (error-handler base f r r r r r r r r r r r r r r r r r r r r r r r f)
+  (error-handler base f r r r r r r r r r r r r r r r r r r r r r r r)
   ; The true SINGLETON, a row that lands on the value as false's is.
   (true          base f r r r r r r r r r r r r r r r r r r r r r r r r f)
   ; The root environment, (bindings . ()), whose bindings are a tree.

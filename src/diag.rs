@@ -111,7 +111,7 @@ impl Cond {
                 let err = if base.is_nil() {
                     crate::obj::NIL
                 } else {
-                    crate::base::get(a, base, crate::base::ERR)
+                    crate::base::err(a, base)
                 };
                 if !err.is_nil() {
                     let (code, subject) = other.code_subject(a);

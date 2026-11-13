@@ -366,7 +366,7 @@ impl Engine {
     /// an engine raise rewrites in place, so a raise allocates nothing. Its IO
     /// stacks boot empty: the wording is the language's (x-lang's err-io.x).
     fn install_err(&mut self, base: Obj) {
-        if !crate::base::get(&self.objects, base, crate::base::ERR).is_nil() {
+        if !crate::base::err(&self.objects, base).is_nil() {
             return;
         }
         let name = self.objects.handle("ERR");
@@ -377,7 +377,7 @@ impl Engine {
         let subject = self.objects.error_atom();
         self.objects.set_data(err, 0, code.word());
         self.objects.set_data(err, 1, subject.word());
-        crate::base::set(&mut self.objects, base, crate::base::ERR, err);
+        crate::base::set_err(&mut self.objects, base, err);
     }
 
     /// Arm the extended-meta policy at two units — source line and file id —

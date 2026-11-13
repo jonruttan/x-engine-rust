@@ -332,6 +332,21 @@ pub fn set(o: &mut Objects, base: Obj, n: usize, v: Obj) {
     set_slot(o, base, n, v)
 }
 
+/// The base's ERR, or nil before one is installed. The row is a CELL field,
+/// as x-engine-c's is: the slot holds a cell whose first is the ERR.
+pub fn err(o: &Objects, base: Obj) -> Obj {
+    let c = slot(o, base, ERR);
+    if c.is_nil() {
+        return NIL;
+    }
+    o.first(c)
+}
+
+pub fn set_err(o: &mut Objects, base: Obj, err: Obj) {
+    let c = o.spair(err, NIL);
+    set_slot(o, base, ERR, c);
+}
+
 /// Prepend to one of the list slots, answering the new head.
 ///
 /// PREPEND, because that is what the contract says: "mark-hook! prepends the
