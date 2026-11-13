@@ -30,12 +30,37 @@
 "filein"	base route, checked against base-paths.x
 "buffer"	base route, checked against base-paths.x
 #
+# --- the base's slot names ----------------------------------------------------
+# x-lang names, kept in src/slots.rs beside the index constants as the route
+# names are kept beside theirs; slots::tests compares the list against
+# tools/contract/base-slots.x, in order.
+"eval"	slot name, checked against base-slots.x
+"eval-list"	slot name, checked against base-slots.x
+"eval-body"	slot name, checked against base-slots.x
+"eval-body-tco"	slot name, checked against base-slots.x
+"eval-tco-trampoline"	slot name, checked against base-slots.x
+"eval-op-body"	slot name, checked against base-slots.x
+"callable-call"	slot name, checked against base-slots.x
+"callable-apply"	slot name, checked against base-slots.x
+"obj-prim-call"	slot name, checked against base-slots.x
+"env-lookup"	slot name, checked against base-slots.x
+"env-bind"	slot name, checked against base-slots.x
+"env-extend"	slot name, checked against base-slots.x
+"alist-bst-lookup"	slot name, checked against base-slots.x
+"token-read"	slot name, checked against base-slots.x
+"token-analyse"	slot name, checked against base-slots.x
+"token-delimit"	slot name, checked against base-slots.x
+"heap-mark"	slot name, checked against base-slots.x
+"heap-sweep"	slot name, checked against base-slots.x
+"obj-alloc"	slot name, checked against base-slots.x
+
 # --- not x-lang at all --------------------------------------------------------
 "operatives return early"	a Rust unreachable! message; never reaches x-lang
 "tools/contract/base-paths.x"	a PATH this engine ships, not a name
 "collect: freed {} objects, {} live; {} of {} frames free"	engine telemetry on stderr under X_HEAP_STATS; x-lang never sees it
 "heap words={} ({} MB)  objects={}  frames={}"	same -- a measurement hook, not language output
 "expected a string from: {}"	test-assertion message in testkit; never reaches x-lang
+"slot {}: this engine has no routine for it"	engine diagnostic for a slot it lacks; a message, not a name
 "expected an integer from: {}"	test-assertion message in testkit; never reaches x-lang
 "object"	fallback in the poison trap's description of an unreadable heap word
 "raw:{}"	same -- a word that is not a plausible object, rendered for the trap

@@ -239,3 +239,32 @@ impl Engine {
         env
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The names are written here, beside the index constants, and the
+    /// contract lists them too; this compares the two, in order, so a slot
+    /// renamed or moved on one side alone fails here rather than at boot.
+    #[test]
+    fn the_slot_names_are_exactly_what_base_slots_declares() {
+        let rows = std::fs::read_to_string("tools/contract/base-slots.x")
+            .expect("the engine's own committed slots");
+        let declared: Vec<(usize, String)> = rows
+            .lines()
+            .filter_map(|l| {
+                let body = l.trim().strip_prefix('(')?;
+                let mut w = body.split_whitespace();
+                let at = w.next()?.parse::<usize>().ok()?;
+                Some((at, w.next()?.to_string()))
+            })
+            .collect();
+        let ours: Vec<(usize, String)> = NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (i, n.to_string()))
+            .collect();
+        assert_eq!(declared, ours);
+    }
+}
