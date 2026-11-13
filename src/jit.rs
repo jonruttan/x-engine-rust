@@ -139,7 +139,7 @@ impl x_engine_foreign::JitHost for Engine {
             .builtin_type_in(base, crate::objects::FLAG_PRIM);
         if callee.is_nil() || self.objects.obj_type(callee) != prim_t {
             self.slot_error = Some(crate::diag::Cond::EngineMsg(
-                "asm-compile: call through a value that is not a callable prim".to_string(),
+                crate::vocabulary::MSG_CALL_VALUE.to_string(),
             ));
             return 0;
         }
