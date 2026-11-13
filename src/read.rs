@@ -48,12 +48,14 @@ impl Objects {
         }
     }
 
-    /// One byte from the engine's input stream, appended at the write mark —
-    /// the extension path of the reference's `x_type_buffer_read`, with its
-    /// EOF latch: end of input flips the filein head to the fd's bitwise
-    /// complement, and every later read fails the latch check without
-    /// another syscall. The complement, not a flat -1, so the fd stays
-    /// recoverable. Answers whether a byte arrived.
+    /// One byte from the stream on top of `filein`, appended at the write
+    /// mark — the extension path of the reference's `x_type_buffer_read`,
+    /// with its EOF latch: end of input flips the filein head to the fd's
+    /// bitwise complement, and every later read fails the latch check
+    /// without another syscall. The complement, not a flat -1, so the fd
+    /// stays recoverable. Fd 0 is the engine's own input stream, which
+    /// tests inject; any other fd is read from the descriptor, as an
+    /// include in x-lang pushes it. Answers whether a byte arrived.
     fn buf_refill(&mut self, b: Obj) -> bool {
         if self.buf_ro(b) {
             return false;
@@ -70,19 +72,29 @@ impl Objects {
         if fd_obj.is_nil() || self.as_int(fd_obj) < 0 {
             return false;
         }
-        let Some(input) = self.input.as_mut() else {
-            return false;
+        let fd = self.as_int(fd_obj);
+        let byte = if fd == 0 {
+            let Some(input) = self.input.as_mut() else {
+                return false;
+            };
+            let mut one = [0u8; 1];
+            match input.read(&mut one) {
+                Ok(1) => Some(one[0]),
+                _ => None,
+            }
+        } else {
+            match x_engine_foreign::read_char(fd as i32) {
+                c if c < 0 => None,
+                c => Some(c as u8),
+            }
         };
-        let mut byte = [0u8; 1];
-        let got = matches!(input.read(&mut byte), Ok(1));
-        if !got {
+        let Some(byte) = byte else {
             // EOF, or a read error the stream cannot continue past: latch.
-            let fd = self.as_int(fd_obj);
             self.set_data(fd_obj, 0, crate::obj::Word((!fd) as u64));
             return false;
-        }
+        };
         let mut w = self.buf_write(b);
-        if w >= self.input_cap {
+        if fd == 0 && w >= self.input_cap {
             // The region is full: compact the unread remainder to the front,
             // as `buf retain` does, and give up only when a single span
             // fills the whole region.
@@ -103,7 +115,7 @@ impl Objects {
             self.set_buf_write(b, w);
         }
         let text = self.buf_text(b);
-        self.heap.set_byte(self.str_bytes(text).plus(w), byte[0]);
+        self.heap.set_byte(self.str_bytes(text).plus(w), byte);
         self.set_buf_write(b, w + 1);
         true
     }
