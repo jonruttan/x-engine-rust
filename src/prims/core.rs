@@ -196,15 +196,25 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     out
 }
 
-/// `(eval! expr)` — in the CURRENT environment. The REPL's door, and what lets a
-/// name held in a variable be resolved.
+/// `(eval! expr)` — a top-level form, as x-engine-c's `x_toplevel_enter`
+/// brackets it: the root environment is current and the save stack is
+/// hidden, so a `def` binds for the base however deep the call stands. The
+/// REPL loop that calls this is itself under the entry's frames, as the spec
+/// runner's is under its own operative.
 fn eval_here(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let form = e.nth(args, 0);
     let expr = e.eval(form, env)?;
+    let top = e.root_env();
+    let outer = e.hide_pending();
+    let mark = e.root_mark();
+    e.root_push(outer);
+    e.root_push(expr);
     let depth = e.active_evals;
     e.control.push(crate::eval::ControlRec::Pass { depth });
-    let out = e.eval(expr, env);
+    let out = e.eval(expr, top);
     e.control.pop();
+    e.restore_pending(outer);
+    e.root_truncate(mark);
     out
 }
 
