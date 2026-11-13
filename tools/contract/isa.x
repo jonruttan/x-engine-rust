@@ -88,6 +88,7 @@
   (int < raw-op)
   (int = raw-op)
   (int ->char raw-op)         ; the char door has no bare spelling either way
+  (int abs raw-op)
   (char ->int raw-op)
   (obj eq? raw-op)
   (obj same? raw-op)
@@ -115,6 +116,15 @@
   (ptr set! raw-mem)          ; (p off value width)
   (ptr ref-word raw-mem)      ; byte offset, and it may be NEGATIVE
   (ptr set-word! raw-mem)
+  (ptr alloc raw-mem)         ; the C allocator; the caller owns what it returns
+  (ptr free! raw-mem)         ; releases what (ptr alloc) or (ptr strndup) returned
+  (ptr copy! raw-mem)         ; memcpy, answering the destination
+  (ptr fill! raw-mem)         ; memset, answering the pointer
+  (ptr strlen raw-mem)        ; the C string doors, on RAW memory rather than x-lang
+  (ptr strcmp raw-mem)        ;   strings, which is why they are filed here and not
+  (ptr strncmp raw-mem)       ;   under `str`
+  (ptr strchr raw-mem)
+  (ptr strndup raw-mem)       ; the caller owns the result
   (mem cmp raw-mem)
   (mem copy raw-mem)
   (mem set raw-mem)
@@ -135,6 +145,7 @@
 
   ; --- the type registry ---
   (type make types)
+  (type set-unit-labels! types) ; the units slot's pair form, (count . mask)
   (iter make types)
 
   ; --- derived, but kept native for heat ---
@@ -174,6 +185,12 @@
   (ptr call ffi)              ; VARIADIC; integer and pointer arguments
 
   ; --- the OS ---
+  (sys read sys)              ; over a POINTER and a length
+  (sys write sys)
+  (sys open sys)
+  (sys close sys)
+  (sys read-char sys)
+  (sys exit sys)
   (sys clock sys)             ; process CPU time in microseconds, and MONOTONIC
 )))
 

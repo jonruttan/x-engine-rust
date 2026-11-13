@@ -7,8 +7,8 @@
 ; binary at install time, not properties of this source tree.
 (engine-name "x-engine-rust")
 (binary "x-engine")
-(isa "sha256:feb4a014f6a5d34b720aa0681efb173a6e0c067470aee4a2dc7b9a0b91fa6d23")
-(layout "sha256:2a833825808af32c71d59e43dbc190d3b0590ddf2ba2c42eb65c21f3955bdca7")
+(isa "sha256:c982e6a40f9919c7f860e535f2d71119bce884bdd16a250e2522a3a0d002e04a")
+(layout "sha256:9fed9c4656cf91da8d816fab23a1d5cc517ab626fddeb8a135b2ea2962128441")
 (profile core)
 (profile gc)
 (profile posix)
