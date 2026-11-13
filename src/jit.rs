@@ -5,38 +5,22 @@
 //! and their one unsafe dereference live in the foreign crate; this file is
 //! the SAFE half — [`x_engine_foreign::JitHost`] implemented on the engine.
 //!
-//! Object references cross the door as REAL machine addresses, which the
-//! PINNED arena makes stable (law 7): a real address maps back to an arena
-//! offset with `from_real`, and an offset forward with `address_of`. Nil
-//! crosses as 0 in both directions, as the reference's NULL does.
+//! Object references cross the door as they are: an object is its real
+//! address in the pinned arena (law 7), and nil crosses as 0, as the
+//! reference's NULL does.
 
 use crate::engine::Engine;
 use crate::obj::{Obj, Word, NIL};
 
 impl Engine {
-    /// The real address an object crosses the door as; 0 for nil.
+    /// The address an object crosses the door as; 0 for nil.
     pub(crate) fn jit_real(&self, o: Obj) -> u64 {
-        if o.is_nil() {
-            return 0;
-        }
-        self.objects.heap.address_of(o.addr())
+        o.word().raw()
     }
 
     /// The object a crossed value names; nil for 0 or an address outside
     /// the arena.
-    ///
-    /// EITHER CURRENCY, the same discrimination `prims/ptr.rs` applies: a
-    /// value under the arena's byte length is an OFFSET — the x-lang#583
-    /// emitter embeds fvar objects as `(%ptr->int (%obj->ptr val))`, which
-    /// this engine's `obj ->ptr` answers in offsets — and anything above is
-    /// a REAL address from `jit_real`. The ranges do not overlap.
     pub(crate) fn jit_obj(&self, real: u64) -> Obj {
-        if real == 0 {
-            return NIL;
-        }
-        if (real as usize) < self.objects.heap.words_len() * crate::obj::WORD {
-            return crate::obj::Addr::new(real).as_obj();
-        }
         match self.objects.heap.from_real(real) {
             Some(at) => at.as_obj(),
             None => NIL,

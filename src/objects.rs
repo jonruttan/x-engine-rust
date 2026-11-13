@@ -1,15 +1,11 @@
 //! The object objects.
 //!
-//! Every object lives in one flat `Vec<u64>`, and an object reference is a BYTE
-//! OFFSET into it. That is what lets this engine be written in safe Rust while
-//! still meeting decision L1's word-addressable model: x-lang computes byte
-//! offsets itself, from the descriptors in `tools/contract/obj-layout.x`, and
-//! every offset it computes lands back inside this vector.
-//!
-//! Nothing outside the engine ever dereferences one of these "pointers", because
-//! the `core` profile has no foreign door — no `dlopen`, no `ptr call`. Take that
-//! away and this design stops working; it is a consequence of the profile, not a
-//! trick.
+//! Every object lives in one flat, pinned `Vec<u64>`, and an object reference
+//! is the REAL machine address of its first word, as x-engine-c's is. A word
+//! stored in one object naming another is what compiled x code follows, so it
+//! has to be an address. The engine itself still reaches the words through the
+//! Vec: `Heap` turns an address into an index, and an address outside the arena
+//! reads as zero rather than faulting.
 //!
 //! Layout, and it is NOT x-engine-c's (see obj-layout.x for why):
 //!
@@ -532,7 +528,9 @@ impl Objects {
     }
 
     fn note_start(&mut self, o: Obj) {
-        let i = (o.addr().raw() / WORD as u64) as usize;
+        let Some(i) = self.heap.word_number(o.addr()) else {
+            return;
+        };
         if self.starts.len() <= i / 64 {
             self.starts.resize(i / 64 + 1, 0);
         }
@@ -544,7 +542,9 @@ impl Objects {
         if w % WORD as u64 != 0 {
             return false;
         }
-        let i = (w / WORD as u64) as usize;
+        let Some(i) = self.heap.word_number(crate::obj::Addr::new(w)) else {
+            return false;
+        };
         self.starts.get(i / 64).is_some_and(|b| b & (1 << (i % 64)) != 0)
     }
 
@@ -933,7 +933,7 @@ impl Objects {
         if o.is_nil() {
             return "()".to_string();
         }
-        if w % 8 != 0 || (w / 8) as usize + META_LEN as usize > self.heap.words_len() {
+        if !self.heap.fits(w, META_LEN) {
             return format!("raw:{}", w);
         }
         let f = self

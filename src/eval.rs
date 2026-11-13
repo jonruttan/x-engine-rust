@@ -514,15 +514,11 @@ impl Engine {
     pub(crate) fn apply_foreign(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
         let addr = self.objects.foreign_addr(callee);
         let f = x_engine_foreign::Foreign(addr);
-        let base_real = if self.base.is_nil() {
-            0
-        } else {
-            self.objects.heap.address_of(self.base.addr())
-        };
+        let base_real = self.jit_real(self.base);
         // The C prim layout: the spine's head is SELF, the arguments follow —
         // the emitted prologue skips one cell before its first argument.
         let spine = self.objects.pair(callee, args);
-        let args_real = self.objects.heap.address_of(spine.addr());
+        let args_real = self.jit_real(spine);
         // The code evaluates its arguments through jit_eval_arg, which must
         // resolve them where the CALL stands — the reference's x_eval_arg
         // reads the base's live environment, and a closure passing its
@@ -530,18 +526,7 @@ impl Engine {
         let prev_env = self.jit_env.replace(env);
         let out = x_engine_foreign::call_ints(f, &[base_real, args_real]);
         self.jit_env = prev_env;
-        if out == 0 {
-            return Ok(NIL);
-        }
-        // Either currency, as jit_obj discriminates: an emitted analyser
-        // returning an fvar object returns the OFFSET its imm64 carried.
-        if (out as usize) < self.objects.heap.words_len() * crate::obj::WORD {
-            return Ok(crate::obj::Addr::new(out).as_obj());
-        }
-        match self.objects.heap.from_real(out) {
-            Some(at) => Ok(at.as_obj()),
-            None => Ok(NIL),
-        }
+        Ok(self.jit_obj(out))
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the

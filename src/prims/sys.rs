@@ -41,15 +41,9 @@ fn sigint_restore(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
-/// A pointer operand as a REAL address: an arena offset (what `obj ->ptr`
-/// answers) is translated, a real address passes through.
+/// A pointer operand as the address a system call receives.
 fn real_of(e: &Engine, p: Obj) -> u64 {
-    let at = e.objects.as_ptr(p).raw();
-    if (at as usize) < e.objects.heap.words_len() * crate::obj::WORD {
-        e.objects.heap.address_of(crate::obj::Addr::new(at))
-    } else {
-        at
-    }
+    e.objects.as_ptr(p).raw()
 }
 
 /// `(sys open path flags)` — the descriptor, or a negative refusal.

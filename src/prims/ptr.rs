@@ -1,11 +1,8 @@
 //! The objects door: pointer casts and unchecked memory.
 //!
-//! A "pointer" here is a BYTE OFFSET into the objects, never a machine address.
-//! Nothing outside this engine dereferences one — the `core` profile has no
-//! foreign door, no `dlopen` and no `ptr call` — so every offset x-lang computes
-//! from `obj-layout.x` lands back inside the objects by construction. That is what
-//! lets the whole engine be safe Rust, and it stops being true the day a foreign
-//! door is added.
+//! A pointer is a real machine address. One inside the arena is read and
+//! written through the heap's Vec; one outside it goes through the foreign
+//! crate, which holds the engine's only `unsafe`.
 //!
 //! Nearly everything here reaches through `objects.heap`, and the spelling is
 //! deliberate: these instructions work BELOW the object model, on bytes and
@@ -40,14 +37,8 @@ fn int_to_ptr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 fn str_to_ptr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    // The REAL address of the bytes — what leaves for a C call, and what an
-    // argv array a C call reads must hold. The pinned heap is what makes the
-    // address stable enough to hand out. `obj ->ptr` stays the arena-offset
-    // reflection door; this is the FFI one.
-    let s = a[0];
-    let at = a_.str_bytes(s);
-    let real = a_.heap.address_of(at);
-    Ok(a_.ptr(Addr::new(real)))
+    let at = a_.str_bytes(a[0]);
+    Ok(a_.ptr(at))
 }
 
 /// A COPY of the NUL-bounded bytes at the pointer, as the reference's
@@ -68,16 +59,13 @@ fn ptr_to_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.str_from_bytes(&bytes))
 }
 
-/// An accessor operand is either an ARENA OFFSET (what `obj ->ptr` answers,
-/// for reflection) or a REAL ADDRESS (what `str ->ptr` and C calls answer).
-/// The two ranges do not overlap — an offset is bounded by the heap, real
-/// mappings sit far above it — so the value discriminates itself, the same
-/// way the marshal door discriminates on the way out.
+/// Whether an accessor's address is inside the arena, where the heap's Vec
+/// reaches it; anything else is process memory.
 fn in_arena(a_: &Objects, at: u64) -> bool {
-    (at as usize) < a_.heap.words_len() * crate::obj::WORD
+    a_.heap.from_real(at).is_some()
 }
 
-/// One byte at an offset-or-real operand address.
+/// One byte at an operand address.
 fn rd_byte(a_: &Objects, at: u64) -> u8 {
     if in_arena(a_, at) {
         a_.heap.byte(Addr::new(at))
@@ -200,12 +188,9 @@ fn mem_set(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 fn mem_alloc(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    // Answers the REAL address, like `str ->ptr`: an allocated region exists
-    // to be filled and handed across the door.
     let n = a_.as_int(a[0]).max(0) as usize;
     let at = a_.heap.alloc_bytes(n);
-    let real = a_.heap.address_of(at);
-    Ok(a_.ptr(Addr::new(real)))
+    Ok(a_.ptr(at))
 }
 
 /// A NO-OP, and honestly so: the objects never reuses a region, so releasing one

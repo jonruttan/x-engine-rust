@@ -152,9 +152,7 @@ fn heap_check(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
             if w == 0 {
                 continue;
             }
-            if w % 8 != 0
-                || (w / 8) as usize + crate::objects::META_LEN as usize > e.objects.heap.words_len()
-            {
+            if !e.objects.heap.fits(w, crate::objects::META_LEN) {
                 eprintln!(
                     "HEAP-CHECK bad: {} slot {} holds {:#x}",
                     e.objects.describe_word(at.word().raw()),

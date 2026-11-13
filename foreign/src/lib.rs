@@ -12,32 +12,19 @@
 //! on the safe side, because moving ordinary code next to unsafe code does not
 //! make it safer, it only makes the unsafe harder to review.
 //!
-//! # Why this is a different pointer representation
-//!
-//! Everywhere else in this engine a "pointer" is a BYTE OFFSET into
-//! the engine's heap, and that is what lets the rest be safe: nothing outside the
-//! engine ever dereferences one, so an offset can never be a wild address.
-//! `dlsym` answers a real machine address and breaks that premise, so foreign
-//! addresses are kept in their own type — confusing the two is exactly the class
-//! of bug the newtypes exist to prevent, and here it would be a segfault rather
-//! than a wrong answer.
-//!
 //! # Handing C a pointer into the heap
 //!
-//! A string's bytes live in the heap's `Vec<u64>`, NUL-terminated, so a real
-//! pointer to them can be handed to C for the duration of one call. That is
-//! sound only because the call cannot allocate into this heap — nothing
-//! re-enters the engine — so the Vec cannot reallocate under the callee and no
-//! foreign code retains the address afterwards. Both conditions are the caller's
-//! to keep, which is why marshalling lives here and not at the call sites.
+//! The engine's heap is a pinned `Vec<u64>` whose addresses are real and never
+//! move, so an object or a string's NUL-terminated bytes cross to C as they
+//! are. A `Foreign` is an address the engine did not allocate: a library
+//! handle, a symbol, memory C owns.
 
 use std::ffi::{c_char, c_int, c_long, c_void};
 
 /// A real machine address, as answered by `dlopen`/`dlsym`.
 ///
-/// Deliberately NOT the engine's `Addr`, which is an offset into its own heap. The two are both machine words and mean entirely different things;
-/// one of them is safe to dereference and the other is not this engine's to
-/// vouch for.
+/// Not the engine's `Addr`: an `Addr` the engine reaches through its own
+/// heap, and a `Foreign` is not the engine's to vouch for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Foreign(pub u64);
 

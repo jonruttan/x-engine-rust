@@ -113,19 +113,16 @@ impl Objects {
     /// the magic bit may sit inside a string's bytes, and the mark written
     /// through it lands in the text.
     fn plausible(&self, w: u64) -> bool {
-        w != 0
-            && (w / 8) as usize + crate::objects::META_LEN as usize <= self.heap.words_len()
-            && self.is_start(w)
+        self.heap.fits(w, crate::objects::META_LEN) && self.is_start(w)
     }
 
     /// Does an object's claimed data extent fit inside the heap? True for
     /// every real object; a conservative hit on a word run that is not one
     /// fails it and is marked without traversal.
     fn extent_ok(&self, o: Obj, n: u64) -> bool {
-        (o.word().raw() / 8)
-            .checked_add(crate::objects::META_LEN + n)
-            .map(|end| end as usize <= self.heap.words_len())
-            .unwrap_or(false)
+        crate::objects::META_LEN
+            .checked_add(n)
+            .is_some_and(|words| self.heap.fits(o.word().raw(), words))
     }
 
     /// Mark everything reachable from `stack`. One walk: an environment is
