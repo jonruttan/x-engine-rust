@@ -5,8 +5,9 @@
 //! the separate [`foreign`] crate rather than a module here.
 //!
 //! [x-lang](https://github.com/jonruttan/x-lang) is a language, not an
-//! implementation. `x-engine-c` is one engine; this is another, written to the
-//! published contract rather than by reading the C and copying it.
+//! implementation. `x-engine-c` is the reference engine; this is another,
+//! structured as the reference is (see `ARCHITECTURE-PORT.md`) and held to
+//! the same published contract.
 //!
 //! # Embedding
 //!

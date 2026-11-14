@@ -1,192 +1,199 @@
-# The architecture port
+# The architecture
 
-The reference is structured around DATA: one self-describing object tree that
-behaviour emerges from by walking. The design's author, verbatim:
+This engine follows the structure of the reference engine,
+[x-engine-c](https://github.com/jonruttan/x-engine-c). The reference is
+structured around data: one self-describing object tree, and behaviour that
+comes from walking it. x-lang's library walks those structures itself, so an
+engine that presents the same surface over different structures stops working
+where the library reaches past the surface. Each section below names the
+reference structure this engine carries, and the last lists where it differs.
 
-> The C version is structured around data. Your version is structured around
-> code.
+## The rules
 
-> You've hardcoded too many assumptions at the architectural level, and have
-> built structures that deviate too heavily from the working solution built in
-> C. It took me years to derive that architecture. You're not going to
-> "discover" it in a few hours.
+1. **The base is an argument.** Every primitive receives the base it is
+   called in. `(b eval …)` is a call with a different base.
+2. **Interpreter state lives on the base.** The catalogue, the types, the
+   handlers, the input in flight and the evaluator's saved state are rows of
+   the base, reached by route.
+3. **Runtime structures are object trees x-lang can walk.** If the library
+   can name a structure, it is made of pairs.
+4. **Behaviour is data walked by thin code.** What evaluation, application
+   and reading mean is held in handlers on types and in slots on the base,
+   and each can be replaced from x-lang.
 
-So this document is a TRANSCRIPTION plan, not a design — and the plan is
-EXECUTED: all four increments are on `main`. The design exists, in
-`ext/x-engine-c` (via the x-lang checkout) and it is already paid for. Every
-increment below names the C structure it copies, landed it whole for one
-subsystem, and was judged by the ratchets — 122 conformance checks that pass on
-both engines, the spec suite, and this repo's unit tests. No increment merged
-red, and no increment "improves" on the reference: deviations are recorded in
-the commit that makes them, or not made.
+## Objects
 
-## Why transcription, not derivation
+Every object lives in one pinned arena of machine words (`src/heap.rs`), and
+an object reference is the machine address of its first word. The header is
+four words, as `tools/contract/obj-layout.x` gives them:
 
-The reference has STRUCTURES x-lang itself can walk; a Rust record with prims
-in front presents the same surface until the library reaches where the record
-didn't anticipate — `intrinsics.x` poking buffer cells, logo pruning a
-type-alist, `reflect.x` replacing prims. The collector's root set states the
-same point numerically: the reference enumerates THREE roots because the
-interpreter state IS the base tree, and every root a hand-kept list omits is a
-use-after-free waiting for stress.
+| word | holds |
+|---|---|
+| 0 | the heap link: every object is threaded here when allocated |
+| 1 | the type object, or nil |
+| 2 | the flags |
+| 3 | the count of data words |
+| 4… | data |
 
-## Target invariants (all from the C; none invented here)
+A pair is two data words, `first` and `rest`. The arena is shared by every
+base, so an object can be handed from one base to another.
 
-1. **The current base is an argument.** `p_base` threads through every call in
-   the reference, so "which base is running" is data flowing through the
-   program, and `(b eval …)` needs no bracket, no swap, no compensating root
-   stack. The `in_base` bracket and the `base` field are approximations to
-   retire.
-2. **Interpreter state lives on the base tree.** Catalogue, handlers, roots, the
-   sigint flag, the token-eof sentinel, the type-alist — base fields, reached
-   by route. The collector's root set becomes: the base, the root chain, the
-   registered roots. Frames follow last (the env model is the largest piece).
-3. **Runtime structures are object trees x-lang can walk.** A buffer IS
-   `(val . (read . write))` — cells, so `%cell-int`/`%buffer-unread` in
-   `lib/x/reader/intrinsics.x` work by construction rather than by the
-   accident of slot order. A token base IS a base. A type IS a spine of pairs
-   the library walks. If the library can name it, it is made of pairs.
-4. **Behaviour is data walked by thin code.** The analyse slots, the ops
-   alists, the from-relations already moved; the remaining Rust dispatch
-   special cases shrink to walkers as the structures above land.
+## The base
 
-## Increments, in leverage order — ALL FOUR COMPLETE
+A base is the execution context. It is an object of two units: a spine and
+a slot vector.
 
-Each was one branch, one commit narrative, gates green before and after. All
-four are on `main`; D landed via PR #5.
+**The spine** is a list with one cell per row, and a row's route ends at the
+cell whose `first` is its value. `tools/contract/base-paths.x` names the
+routes, and the library resolves them by name. The rows:
 
-- **A. Buffer as pair cells.** COMPLETE. A buffer is the reference's
-  `(val . (read . write))` in `value/tok.rs` + `prims/tok.rs`, judged by
-  `lib/buffer.spec.md` plus the tokenizer suite.
-- **B. Engine singletons onto the base.** COMPLETE. token-eof, sigint flag,
-  catalogue, interned-symbol tables are base fields (routes in
-  `tools/contract/base-paths.x`); the root set shrank accordingly, judged by
-  the poison stress mode.
-- **C. `p_base` as an argument.** COMPLETE. Every applicative takes the base —
-  DYNAMIC, flowing through the call, never derived from the environment's
-  frame. `(b eval …)` is a call with a different argument, as in the C.
-- **D. Frames into the tree.** COMPLETE. An environment is a holder object —
-  chain head, parent holder, base — whose chain is a spine of ordinary spair
-  cells; `EnvId` is a newtype over the holder. The frame vector, the
-  collector's fixpoint machinery, frame sweeping, and the dead-frame traps
-  are deleted: one plain mark traces holders and cells like any other
-  objects. Landing it surfaced a rule the plan now records below.
+- the primitive catalogue (`prims`) and the registered types (`type-alist`);
+- the last error (`error-str`, `err-line`, `err-file`, `err`) and the active
+  guard chain (`error-handler`);
+- this base's environment (`env`, `env-root`);
+- the input in flight (`filein`, `buffer`, `line`, `files`,
+  `file-registry`);
+- the evaluator's saved state (`save-stack`, `tco-expr`, `tco-env`,
+  `sigint`);
+- the collector's hooks and roots (`heap-mark-hooks`, `heap-free-hooks`,
+  `heap-mark-roots`) and the allocation ceiling (`alloc-limit`,
+  `alloc-count`);
+- `true` and `false`.
 
-## E. Evaluation is a type handler — ALL FOUR ABOVE WERE PRELUDE
+A type is a spine of pairs too. Its routes are in the same file: a handler
+family, among them `name`, `mark`, `make`, `free`, `units`, `length`,
+`call`, `eval`, `from`, `to`, `analyse`, `delimit`, `read`, `write`,
+`display` and `iter`, is a stack whose head is the handler in force.
 
-The reference's machine is `x_eval`: nil answers nil, an untyped value
-answers itself, and EVERYTHING ELSE is one line — call the value's type's
-EVAL handler with the argument frame. Symbol lookup is the SYMBOL
-type's registered eval (`x_type_symbol_eval`); application is the LIST
-type's, which evaluates the head and dispatches through the OPERATOR'S
-type's CALL handler; a callable is any value whose type registers call. The
-author's statement of what this buys, verbatim:
+**The slot vector** (`src/slots.rs`) holds the engine's routines, each at a
+fixed position, and the engine calls a routine through its position.
+`tools/contract/base-slots.x` gives the nineteen positions:
 
-> The design of the C engine allows for the interpreter to change to
-> interpret any syntax. Using x-lang the engine can be altered to be a
-> Javascript interpreter, or a C compiler, or even a CPU.
+| slots | routines |
+|---|---|
+| 0–5 | `eval`, `eval-list`, `eval-body`, `eval-body-tco`, `eval-tco-trampoline`, `eval-op-body` |
+| 6–8 | `callable-call`, `callable-apply`, `obj-prim-call` |
+| 9–12 | `env-lookup`, `env-bind`, `env-extend`, `alist-bst-lookup` |
+| 13–15 | `token-read`, `token-analyse`, `token-delimit` |
+| 16–18 | `heap-mark`, `heap-sweep`, `obj-alloc` |
 
-The uniformity that makes it work is `x_callable_call`: every callable
-stores its entry in SLOT 0 and the dispatch is "read slot 0, call it with
-`(callable . args)`" — self rides in the args, and procedure/operative/
-primitive are which function sits in the slot, not cases of a dispatcher.
+A slot is a word holding the address of a routine with the engine's one
+signature, `(base, run) -> value`. A language reads a slot and calls it
+through `ptr call`, stores another routine over it with `obj set!`, and the
+routine it stored can call the one it replaced. Every base is made with the
+foreign crate's slot doors in its slots: C-ABI entries that run this
+engine's own routines.
 
-This engine's evaluator WAS the inverse: a Rust match over object kinds,
-with an eight-variant `Body` enum behind the primitive arm — every
-semantic it hardcoded was a semantic no base could replace. The
-increments, ALL THREE COMPLETE (PRs #7-#12):
+## Environments
 
-- **E1. Eval dispatches through the type.** COMPLETE. The eval core is the
-  reference's: read the type word; a type with an eval handler decides, a
-  value without one is itself. The current symbol and pair arms become
-  ENGINE EVAL HANDLERS registered on every base's SYMBOL and PAIR types —
-  replaceable per base from x-lang, like every other handler now is.
-- **E2. Application dispatches through the type.** COMPLETE. The list
-  handler resolves
-  its operator and applies through the operator's type's CALL handler;
-  PROCEDURE, OPERATIVE and PRIMITIVE types register theirs, and the
-  evaluator's kind-match dissolves. Class value-call joins natively.
-- **E3. One calling convention.** COMPLETE, spec-first: every
-  callable carries its ENTRY in slot 0 (a table index — the engine's
-  spelling of the reference's function pointer) and its state in slot 1;
-  a closure's state is the reference's `(params body env . bst)` spine,
-  which `lib/x/tool/cov.x` reads and
-  `tests/x/conformance/core/handlers.spec.md` now states as law; the four
-  per-kind call handlers collapsed into ONE door that reads slot 0 and never
-  consults the callee's kind — a foreign address misses the table and
-  declines, keeping its invocation with the undeclared jit lane; and
-  `Body` is DELETED — every row is one function signature that evaluates its
-  own arguments (fast paths survive INSIDE a uniform row, as
-  `x_prim_arith_binop` keeps its `use_ops` flag inside one signature —
-  never as dispatcher cases). The environment convention settled below.
+An environment is one pair, `(bindings . parent)` (`src/env.rs`). The root's
+bindings are a tree whose nodes are `(entry . (left . right))`, ordered by
+the name's spelling, and its parent is nil. Every other environment the
+engine makes holds an alist of `(name . value)` entries, and its parent is
+the environment it was made in.
 
-THE ENVIRONMENT CONVENTION, SETTLED: the current environment is an
-ARGUMENT, as the base is. The reference keeps it on the base's
-`env-alist` field because C threads one context pointer — and its whole
-compound-save/restore machinery exists to repair that mutation; passing
-the environment beside the base gives the same dynamic value without the
-dance, and is the same philosophy as invariant 1. The library-visible
-door follows: where the reference's handlers read the current environment
-off the base's routes, this engine's library eval handlers RECEIVE it — the
-value first, the environment second, and a one-parameter handler never sees
-the extra argument. The doors differ per engine as base routes do under
-decision L1; the LAW (handlers govern, and can resolve names in the scope
-they run in) is the same.
+The value is the pair: an operative receives it, `eval` takes it as its
+second argument, and the library walks it with `first` and `rest`. A name is
+found by identity.
 
-PER-BASE STAMPING, COMPLETE: allocation resolves the kind's type
-through the current base's type-alist — found by the kind's handle, or
-built, filed there, and answered, as `x_type_struct_get` does — so a
-child base's values carry the child's types and the host's carry the
-host's. The walk runs per typed allocation, the reference's own cost
-model. Builtin types carry NO write/display handler (the reference's
-constructors leave those stacks nil-headed and the library's printer
-falls back by name); the engine-render-on-every-type deviation is gone
-with the singleton stamp table.
+## Evaluation
 
-## The off-heap rule (paid for landing D)
+The evaluator (`src/eval.rs`) is the reference's `x_eval`. A value whose
+type word is nil, or one of the two raw markers, is itself. Any other value
+is decided by its type's `eval` handler, and a value whose type registers
+none is itself.
 
-A Rust-side map keyed by a heap ADDRESS outlives what it describes: the
-address outlives its object, and a recycled chunk inherits the dead object's
-entry. The collector purges such maps (`Envs::index`, `base_syms`) at every
-sweep, and any new address-keyed map must join that purge. The diagnostic
-signature when one is missed: the fault is reuse-dependent, poison mode hides
-it without a single read-trap, and a freed-but-reachable check stays clean —
-because the stale reference is in a map no mark walks. Grep `HashMap<Obj`.
+- **A symbol** evaluates by the SYMBOL type's handler, which looks the name
+  up.
+- **A list** evaluates by the list type's handler, which evaluates the head
+  and applies it through the `call` handler of the operator's type.
+- **A callable** is any value whose type registers `call`. Its entry is in
+  its slot 0, and one door reads that entry and calls it; procedures,
+  operatives and primitives differ in which routine the entry names, not in
+  a case of a dispatcher.
 
-## What remains
+Primitives are operatives: a primitive receives its arguments unevaluated
+and evaluates the ones it wants. A primitive is a row of data
+(`src/prim.rs`): where it is reachable from, its arity, and a function. The
+bare name and the catalogue coordinate come from the same row, and the rows
+mirror `tools/contract/isa.x`.
 
-Invariant 4's tail: the remaining Rust dispatch special cases shrink to
-walkers as their structures move. (The token base open recorded here
-earlier closed with the tokenizer arc — it is a base with a type-alist
-now.) EVAL STATE ON THE BASE, COMPLETE for the tail, the saves, and
-the guard: `save-stack`, `tco-expr`, `tco-env`, `sigint`, and
-`error-handler` are base rows the evaluator reads and writes — the
-save stack is the `def` question, the tco pair is the parked tail, the
-handler row is the active guard chain, and the current base's row
-nodes are cached across the `in_base` bracket. THE READER TOO: it has
-no state of its own — reading walks the buffer at the head of the
-base's `buffer` row, `include` pushes and pops the `filein`, `buffer`,
-and `line` rows as the reference's include does, and a reader macro's
-nested read continues on the same stream because there is only one.
-The Engine struct now holds Rust-side resources (open files, roots,
-the instruction table), not evaluator state. STDIN REFILLS: the
-program's own input arrives one byte at a time through the interactive
-source buffer — the reference's read channel, with its EOF latch (end
-of input flips the filein head to the fd's bitwise complement, sticky
-and recoverable). An interactive source prefetches to a line boundary
-before each form, so the analyser contest's bounded view holds every
-byte a token on the line can claim; a claimed token typed across a
-newline still scores short, which files never see. The full-suite gap to the
-reference is 93 of 2549 from clean state, with the pin spec passing
-whole — the chronic pin failures were a lock its own spec stranded
-across runs, healed on the x-lang side. The gap spans list
-call, float, proc and the posix tail, apply and improper call forms,
-error-atom printing, BOOL. Tracked in x-lang's suite, not here.
+A handler on a type may be the engine's or the library's. An engine handler
+takes the form unevaluated. A library handler is a closure applied to the
+value, with the current environment as a second argument.
 
-## What is NOT ported
+Because the handlers are data on the base, a library can change what
+evaluation means for a type, in one base, without touching the engine.
 
-The reference's known faults, recorded in x-lang's own notes, stay out: the
-free-hook allocate-and-escape hazard (its fix — hooks before marking — is
-already this engine's behaviour and is now a conformance law), and the
-documented-broken free-hook observability. Where the reference and the laws
-disagree, the laws win, because both engines pass them.
+## Types in a base
+
+Allocation resolves a value's type through the running base's `type-alist`:
+the type is found there by its handle, or made, filed there and answered
+(`src/engine.rs`). A child base's values carry the child's types, and the
+host's carry the host's.
+
+## Reading
+
+The reader has no state of its own (`src/read.rs`). It walks a buffer,
+`(val . (read . write))` over a text string, and the buffer it walks is the
+head of the base's `buffer` row. Reading advances the buffer's read mark, so
+`io read-char` and a reader macro see what is left after the current form.
+`include` keeps its file on the base's `filein` row while it reads.
+
+Where a form may begin, the analysers registered on the base's types are
+asked first, and the built-in syntax is the fallback (`src/form.rs`). A
+reader macro the library installs therefore changes every later read,
+`include` and the session's own loop among them.
+
+## The collector
+
+`heap collect` marks and sweeps (`src/collect.rs`), and nothing else
+collects. Sweeping walks the chain through each object's heap link. A freed
+object's words go on a free list for an allocation of the same size, and
+nothing moves.
+
+The roots are the base, the list the library registers with
+`heap mark-root!`, and the values the evaluator is holding in Rust locals,
+which it pushes and pops as it goes. Everything else the interpreter holds is
+reachable from the base.
+
+The mark hooks run before the mark, and the free hooks before the sweep.
+
+A map on the Rust side keyed by a heap address outlives what it describes:
+the address outlives its object, and a chunk handed out again inherits the
+dead object's entry. Every such map is purged at each sweep (`base_syms`,
+the continuation snapshots), and a new one must join that purge.
+
+## Continuations
+
+`call/cc` makes an escape continuation and snapshots the control records in
+flight: a body mid-walk, an argument list mid-evaluation, a binding waiting
+on its value. Invoked while its frame is live, the continuation unwinds to
+it. Invoked after the frame has returned, it replays the snapshot, inner to
+outer. A capture that crosses a frame with no record is refused when it is
+invoked, and the refusal can be caught.
+
+## Where it differs from the reference
+
+- **The current environment is an argument.** The reference keeps it on the
+  base and saves and restores it around a call; here it is passed beside the
+  base. A library `eval` handler therefore receives the environment as its
+  second argument where the reference's reads it from the base.
+- **The built-in syntax is in Rust.** The reference puts it in handlers on
+  the built-in types, so a library can replace it. Here a library can put a
+  macro ahead of the built-in reader and cannot replace it.
+- **Instances are traced conservatively.** An object made with `obj make`
+  holds words the library writes as it likes. The collector follows a word
+  of one only when it is in the arena and aligned as an object is. Kinds
+  whose layout is known are traced exactly.
+- **Continuations replay.** The reference re-enters a continuation by
+  copying its C stack back.
+- **The declaration is narrower.** `x-engine.xon` has no `full` profile, and
+  lacks `instr/cov`, `instr/profile`, `tok/label`, `err/typed-raise` and
+  `str/nul-terminated`.
+
+## Measurement
+
+x-lang's conformance suite and spec suite are the judges, and both live in
+x-lang. The spec suite has not been run to a whole result on this engine
+since the port of x-engine-c's surface through v0.2.31.
