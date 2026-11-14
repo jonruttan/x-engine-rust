@@ -666,7 +666,6 @@ fn make_tok(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let fo = e.objects.false_obj();
     e.envs.bind(&mut e.objects, env, f, fo);
     let base = crate::base::build(&mut e.objects, NIL, env);
-    e.envs.set_base(&mut e.objects, env, base);
     e.base_syms.insert(base, crate::symbols::Symbols::new());
     Ok(base)
 }

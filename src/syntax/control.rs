@@ -25,6 +25,13 @@ fn seq(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 fn error(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let form = e.nth(args, 0);
     let v = e.eval(form, env)?;
+    // An optional second argument is the text an uncaught raise reports.
+    let rest = e.objects.rest(args);
+    if e.objects.is_cell(rest) {
+        let text_form = e.objects.first(rest);
+        let text = e.eval(text_form, env)?;
+        return Err(Cond::RaisedReport(v, text));
+    }
     Err(Cond::Raised(v))
 }
 

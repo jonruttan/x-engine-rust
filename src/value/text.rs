@@ -19,9 +19,17 @@ impl Objects {
         o
     }
 
+    /// A string over bytes it was made with: it owns them, and says so in
+    /// its flags word as the reference's owned strings do.
+    fn str_owned(&mut self, at: Addr) -> Obj {
+        let o = self.str_at(at);
+        self.set_attr(o, crate::objects::ATTR_OWN);
+        o
+    }
+
     pub fn str_new(&mut self, s: &str) -> Obj {
         let at = self.heap.store_bytes(s.as_bytes());
-        self.str_at(at)
+        self.str_owned(at)
     }
 
     /// `str make n`: a fresh n-byte region, space-filled and NUL-terminated so a
@@ -30,7 +38,7 @@ impl Objects {
         let at = self.heap.alloc_bytes(n + 1);
         self.heap.fill_bytes(at, b' ', n as u64);
         self.heap.set_byte(at.plus(n as u64), 0);
-        self.str_at(at)
+        self.str_owned(at)
     }
 
     /// Where a string's bytes live — what `str ->ptr` answers.
@@ -51,7 +59,7 @@ impl Objects {
     /// Heap a run of bytes as a fresh NUL-terminated string.
     pub fn str_from_bytes(&mut self, bytes: &[u8]) -> Obj {
         let at = self.heap.store_bytes(bytes);
-        self.str_at(at)
+        self.str_owned(at)
     }
 
     /// Read a NUL-terminated byte run back out.
@@ -143,6 +151,19 @@ impl Objects {
 
     pub fn sym_name(&self, o: Obj) -> String {
         self.str_val(o)
+    }
+
+    /// The running base's own symbol spelled as `o` is, without interning:
+    /// the reference's `x_env_own_symbol`, which lets a name read in one base
+    /// stand for the same name in another. `None` when this base has none.
+    pub fn own_symbol(&self, o: Obj) -> Option<Obj> {
+        if !self.is_sym(o) {
+            return None;
+        }
+        let name = self.sym_name(o);
+        self.shared_symbols
+            .get(&name)
+            .or_else(|| self.symbols.get(&name))
     }
 
     pub fn is_sym(&self, o: Obj) -> bool {

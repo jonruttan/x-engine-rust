@@ -3,7 +3,7 @@
 use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::eval::EvalResult;
-use crate::obj::Obj;
+use crate::obj::{Obj, NIL};
 use crate::objects::Objects;
 use crate::prim::PrimDef;
 /// `eq?` compares the OPERAND WORD, not the type: `a == b || (both non-nil &&
@@ -150,6 +150,20 @@ fn make_callable(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.foreign(at.raw()))
 }
 
+/// `(type set-unit-labels! type count mask)` — the units field's pair form,
+/// as x-engine-c installs it: `count` keeps the bare form's meanings (fixed,
+/// or negative for dynamic-size), and `mask` labels each unit. A structural
+/// pair, because the readers tell the two forms apart by it.
+fn type_set_unit_labels(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let ty = a[0];
+    if ty.is_nil() {
+        return Ok(NIL);
+    }
+    let labels = a_.spair(a[1], a[2]);
+    a_.type_set_handler(ty, crate::vocabulary::Family::Units, labels);
+    Ok(ty)
+}
+
 crate::uniform_value!(eq_u, eq, 2);
 crate::uniform_value!(same_u, same, 2);
 crate::uniform_value!(first_u, first, 1);
@@ -161,6 +175,7 @@ crate::uniform_value!(type_is_u, type_is, 2);
 crate::uniform_engine!(make_instance_u, make_instance, 2);
 crate::uniform_engine!(obj_make_u, obj_make, 2);
 crate::uniform_value!(make_callable_u, make_callable, 1);
+crate::uniform_value!(type_set_unit_labels_u, type_set_unit_labels, 3);
 
 #[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
@@ -173,6 +188,7 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::row(Some("type-of"), Some(("type", "of")), 1, type_of_u),
     PrimDef::row(Some("type?"), Some(("type", "?")), 2, type_is_u),
     PrimDef::row(Some("make-instance"), Some(("type", "make-instance")), 2, make_instance_u),
+    PrimDef::row(None, Some(("type", "set-unit-labels!")), 3, type_set_unit_labels_u),
     PrimDef::row(None, Some(("obj", "make")), 2, obj_make_u),
     PrimDef::row(None, Some(("obj", "make-callable")), 1, make_callable_u),
 ];

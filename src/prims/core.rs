@@ -48,11 +48,20 @@ pub(crate) fn list_eval(e: &mut Engine, form: Obj, env: EnvId) -> EvalResult {
 fn callable_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
     let idx = e.objects.data(callee, 0).as_usize();
     match e.prims.get(idx).copied() {
+        // A type's own handler has no self: its subject is the first
+        // argument, as x_callable_apply hands a satom its call.
+        Some(def) if def.subject => {
+            let subject = e.objects.first(args);
+            let rest = e.objects.rest(args);
+            (def.f)(e, subject, rest, env)
+        }
         Some(def) => (def.f)(e, callee, args, env),
-        // A word that misses the table — a foreign address, whose invocation
-        // ABI belongs to the undeclared jit lane — is not callable. The form
-        // is data; `combine`'s caller keeps that contract, so the answer here
-        // is the callee, as `eval_call` answers a non-combiner.
+        // A word that misses the table is the address of machine code, as a
+        // primitive's word is on the reference: x-lang installs a compiled
+        // version into a function object by writing the made callable's
+        // words over it (lib/x/tool/compiled.x). Nil is no routine at all,
+        // and the form is data.
+        None if idx != 0 => e.apply_foreign(callee, args, env),
         None => Ok(callee),
     }
 }
@@ -151,7 +160,7 @@ fn list_call(e: &mut Engine, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
 
 #[rustfmt::skip]
 pub(crate) const LIST_CALL: PrimDef =
-    PrimDef::row(Some("%list-call"), None, 0, list_call);
+    PrimDef::handler(Some("%list-call"), list_call);
 
 /// The handler table, minted at registration: symbol, then list. Each handler
 /// follows the operative calling convention — a handler receives the FORM raw and the environment, which is the engine
@@ -180,13 +189,11 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
         return Ok(e.park_tail(expr, env));
     }
     let target_obj = e.eval(e.objects.first(env_cell), env)?;
-    let target = if e.objects.is_env(target_obj) {
-        e.objects.env_id(target_obj)
-    } else {
-        env
-    };
-    // With-env SAVES, as x_prim_eval pushes its compound save: a `def` inside
-    // binds into the given environment, not globally.
+    // Unchecked, as the reference reads it: the value IS the environment, and
+    // one that is not resolves nothing.
+    let target = e.objects.env_id(target_obj);
+    // With-env SAVES, as x_prim_eval pushes its compound save: the caller's
+    // environment rides the save stack while the given one is current.
     e.save_push(target);
     let depth = e.active_evals;
     e.control.push(crate::eval::ControlRec::Pass { depth });
@@ -196,15 +203,25 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     out
 }
 
-/// `(eval! expr)` — in the CURRENT environment. The REPL's door, and what lets a
-/// name held in a variable be resolved.
+/// `(eval! expr)` — a top-level form, as x-engine-c's `x_toplevel_enter`
+/// brackets it: the root environment is current and the save stack is
+/// hidden, so a `def` binds for the base however deep the call stands. The
+/// REPL loop that calls this is itself under the entry's frames, as the spec
+/// runner's is under its own operative.
 fn eval_here(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let form = e.nth(args, 0);
     let expr = e.eval(form, env)?;
+    let top = e.root_env();
+    let outer = e.hide_pending();
+    let mark = e.root_mark();
+    e.root_push(outer);
+    e.root_push(expr);
     let depth = e.active_evals;
     e.control.push(crate::eval::ControlRec::Pass { depth });
-    let out = e.eval(expr, env);
+    let out = e.eval(expr, top);
     e.control.pop();
+    e.restore_pending(outer);
+    e.root_truncate(mark);
     out
 }
 
@@ -284,11 +301,6 @@ fn atomic(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
 /// final tail-eval "must run in the op's own tail so it defines the symbol in
 /// the caller's env".
 fn tail_eval(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
-    // An env operand that is not an env is a caller error, not a licence to
-    // pick one.
-    if !e.objects.is_env(a[1]) {
-        return Err(Cond::NotAnEnvironment(a[1]));
-    }
     let target = e.objects.env_id(a[1]);
     Ok(e.park_tail(a[0], target))
 }

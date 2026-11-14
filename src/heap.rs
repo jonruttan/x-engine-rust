@@ -15,7 +15,8 @@
 //! no types, no pairs. That is the whole point of it being its own file: every
 //! operation here is checkable against a picture of memory and nothing else.
 //!
-//! Index 0 is reserved and never allocated, so offset 0 can mean nil.
+//! Addresses are real machine addresses into the pinned arena, so 0 is never
+//! one and can mean nil.
 //!
 //! LITTLE-ENDIAN falls out rather than being decided: byte i of a word is its
 //! i-th lowest, so a widening read assembles from the low end. On a big-endian
@@ -29,6 +30,10 @@ const PINNED_WORDS: usize = 1 << 30;
 
 pub struct Heap {
     words: Vec<u64>,
+    /// The real address of word 0. An `Addr` is a real machine address, as
+    /// the reference's are: a word stored in one object naming another is
+    /// what native code follows, so it must be an address and not an index.
+    base: u64,
     /// How many objects have been allocated.
     ///
     /// Allocations EVER, not live objects: this is `heap count`, which x-lang
@@ -48,10 +53,32 @@ impl Heap {
         // process memory and its addresses are stable, and now so are these.
         let mut words = Vec::with_capacity(PINNED_WORDS);
         words.push(0);
+        let base = words.as_ptr() as u64;
         Heap {
             words,
+            base,
             allocations: 0,
         }
+    }
+
+    /// The index of the word holding address `at`, when it is inside the arena.
+    fn index(&self, at: Addr) -> Option<usize> {
+        let i = (at.raw().checked_sub(self.base)? / WORD as u64) as usize;
+        (i < self.words.len()).then_some(i)
+    }
+
+    /// Whether `w` is word-aligned and `words` words from it lie inside the
+    /// arena: the shape test for a word that may name an object.
+    pub fn fits(&self, w: u64, words: u64) -> bool {
+        w % WORD as u64 == 0
+            && w.checked_sub(self.base)
+                .and_then(|d| (d / WORD as u64).checked_add(words))
+                .is_some_and(|end| end as usize <= self.words.len())
+    }
+
+    /// The word index of an arena address, for tables kept beside the arena.
+    pub fn word_number(&self, at: Addr) -> Option<usize> {
+        self.index(at)
     }
 
     /// Growth that would move the base is refused: past the reservation the
@@ -63,20 +90,15 @@ impl Heap {
         }
     }
 
-    /// The arena offset for a REAL address inside the pinned region, if it is.
+    /// The address, when it is inside the arena.
     pub fn from_real(&self, real: u64) -> Option<Addr> {
-        let base = self.words.as_ptr() as u64;
-        let end = base + (self.words.len() * WORD) as u64;
-        if real >= base && real < end {
-            Some(Addr::new(real - base))
-        } else {
-            None
-        }
+        let at = Addr::new(real);
+        self.index(at).map(|_| at)
     }
 
     /// The address the next allocation will begin at.
     pub fn frontier(&self) -> Addr {
-        Addr::new((self.words.len() * WORD) as u64)
+        Addr::new(self.base + (self.words.len() * WORD) as u64)
     }
 
     /// An out-of-range read answers zero rather than panicking. x-lang computes
@@ -84,13 +106,12 @@ impl Heap {
     /// that aborted would report nothing at all — the one failure a conformance
     /// suite cannot diagnose.
     pub fn word(&self, at: Addr) -> Word {
-        Word(self.words.get(at.word_index()).copied().unwrap_or(0))
+        Word(self.index(at).map_or(0, |i| self.words[i]))
     }
 
     /// An out-of-range write is dropped, for the same reason.
     pub fn set_word(&mut self, at: Addr, v: Word) {
-        let i = at.word_index();
-        if i < self.words.len() {
+        if let Some(i) = self.index(at) {
             self.words[i] = v.raw();
         }
     }
@@ -119,19 +140,6 @@ impl Heap {
 
     pub fn note_allocation(&mut self) {
         self.allocations += 1;
-    }
-
-    /// The REAL machine address of a heap offset.
-    ///
-    /// Safe to compute and NOT safe to dereference, which is why it lives behind
-    /// a name: `crate::foreign` hands one to C for the duration of a call, and
-    /// that is sound only because nothing re-enters the engine during it, so this
-    /// Vec cannot reallocate under the callee.
-    ///
-    /// Nothing else has business calling this. An offset is what the object model
-    /// uses; an address is what leaves.
-    pub fn address_of(&self, at: Addr) -> u64 {
-        self.words.as_ptr() as u64 + at.raw()
     }
 
     pub fn words_len(&self) -> usize {

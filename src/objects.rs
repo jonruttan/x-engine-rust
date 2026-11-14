@@ -1,15 +1,11 @@
 //! The object objects.
 //!
-//! Every object lives in one flat `Vec<u64>`, and an object reference is a BYTE
-//! OFFSET into it. That is what lets this engine be written in safe Rust while
-//! still meeting decision L1's word-addressable model: x-lang computes byte
-//! offsets itself, from the descriptors in `tools/contract/obj-layout.x`, and
-//! every offset it computes lands back inside this vector.
-//!
-//! Nothing outside the engine ever dereferences one of these "pointers", because
-//! the `core` profile has no foreign door — no `dlopen`, no `ptr call`. Take that
-//! away and this design stops working; it is a consequence of the profile, not a
-//! trick.
+//! Every object lives in one flat, pinned `Vec<u64>`, and an object reference
+//! is the REAL machine address of its first word, as x-engine-c's is. A word
+//! stored in one object naming another is what compiled x code follows, so it
+//! has to be an address. The engine itself still reaches the words through the
+//! Vec: `Heap` turns an address into an index, and an address outside the arena
+//! reads as zero rather than faulting.
 //!
 //! Layout, and it is NOT x-engine-c's (see obj-layout.x for why):
 //!
@@ -94,6 +90,30 @@ pub const FLAG_META_SHIFT: u64 = 56;
 /// live-data corruption, surfacing as garbage digests mid-collect.
 pub const FLAG_MAGIC_BIT: u64 = 1 << 62;
 
+/// Where the KIND code rides in the stored flags word. The low sixteen bits
+/// belong to the contract's attributes (obj-layout.x: WRAP 0x01, COV 0x02,
+/// own, ro, meta, shared, mark, trace), and x-lang reads them off the raw
+/// word; a kind code stored there reads as attributes, as `FLAG_FN`'s low
+/// bit read as WRAP. Bits 32..53 lie below the meta count, the magic bit and
+/// The contract's OWN attribute (obj-layout.x `%obj-flag-own`): the object
+/// owns the storage its data word points at, as a string made with its own
+/// bytes does and a view over bytes already there does not.
+pub const ATTR_OWN: u64 = 0x20;
+/// the mark bit, and the contract assigns them nothing.
+pub const KIND_SHIFT: u64 = 32;
+/// The kind field's width: every kind code fits in 22 bits.
+pub const KIND_MASK: u64 = 0x3f_ffff;
+
+/// A kind code as it is stored in the flags word.
+pub const fn kind_store(f: Flags) -> u64 {
+    (f.raw() & KIND_MASK) << KIND_SHIFT
+}
+
+/// The kind code a stored flags word holds.
+pub const fn kind_load(w: u64) -> Flags {
+    Flags::new((w >> KIND_SHIFT) & KIND_MASK)
+}
+
 /// Not simple-type codes: these have their own marker bits, because the low
 /// nibble is reserved for per-type attributes.
 pub const FLAG_PAIR: Flags = Flags::new(0x0100);
@@ -138,12 +158,6 @@ pub const FLAG_FALSE: Flags = Flags::new(0x0400);
 /// of one kind of callable: an operative receives its arguments unevaluated and
 /// is handed the caller's environment.
 pub const FLAG_OP: Flags = Flags::new(0x0800);
-
-/// A first-class environment. `(op (x) e ...)` binds one to `e`.
-pub const FLAG_ENV: Flags = Flags::new(0x1000);
-/// An ENV HOLDER — chain head, parent holder, base. Its slots are all objects,
-/// traced like any other; the FRAME cells on its chain are ordinary spairs.
-pub const FLAG_ENVH: Flags = Flags::new(0x1001);
 
 /// A TYPE object: a name and its handler list.
 pub const FLAG_TYPE: Flags = Flags::new(0x2000);
@@ -209,12 +223,22 @@ pub const FLAG_CONT: Flags = Flags::new(0x10000);
 /// representation to the engine.
 pub const FLAG_TOKEOF: Flags = Flags::new(0x100000);
 
+/// A base's SLOT VECTOR: its first unit holds the length (an integer
+/// object), and every unit after holds a routine's machine address, raw. The
+/// tracer follows the length and never the addresses. See `crate::slots`.
+pub const FLAG_SLOTS: Flags = Flags::new(0x200000);
+
 pub struct Objects {
     /// The bytes. Public because reaching for raw storage should SAY that it is
     /// reaching past the object model — `ptr ref-word` and the block operations
     /// genuinely work at that level, and hiding it behind delegating wrappers
     /// would be the object model pretending to own operations it does not.
     pub heap: Heap,
+    /// One bit per heap word, set where an object begins. The collector traces
+    /// a word as a reference only when it lands on one: a word inside a string's
+    /// bytes can carry the magic bit as easily as a header does, and marking
+    /// through it writes the mark into the text.
+    pub(crate) starts: Vec<u64>,
     /// Name to object. Symbol identity is pointer identity in x-lang, so this is
     /// a contract requirement rather than an optimisation.
     ///
@@ -359,7 +383,6 @@ pub const STAMPED_KINDS: &[(Flags, &str)] = &[
     (FLAG_FN, "PROCEDURE"),
     (FLAG_OP, "OPERATIVE"),
     (FLAG_WRAP, "PROCEDURE"),
-    (FLAG_ENV, "ENVIRONMENT"),
     (FLAG_TYPE, "TYPE"),
     (FLAG_ITER, "ITER"),
     (FLAG_BUF, "BUFFER"),
@@ -416,6 +439,7 @@ impl Objects {
     pub fn new() -> Self {
         let mut a = Objects {
             heap: Heap::new(),
+            starts: Vec::new(),
             symbols: Symbols::new(),
             shared_symbols: Symbols::new(),
             false_obj: NIL,
@@ -509,7 +533,7 @@ impl Objects {
         // sweeping means walking this link from the newest allocation back.
         self.heap.push(self.heap_chain.word());
         self.heap.push(ty.word());
-        let stored = flags.raw()
+        let stored = kind_store(flags)
             | FLAG_MAGIC_BIT
             | if meta > 0 {
                 FLAG_META_BIT | ((meta as u64) << FLAG_META_SHIFT)
@@ -522,8 +546,32 @@ impl Objects {
             self.heap.push(NIL.word());
         }
         let o = at.as_obj();
+        self.note_start(o);
         self.heap_chain = o;
         o
+    }
+
+    fn note_start(&mut self, o: Obj) {
+        let Some(i) = self.heap.word_number(o.addr()) else {
+            return;
+        };
+        if self.starts.len() <= i / 64 {
+            self.starts.resize(i / 64 + 1, 0);
+        }
+        self.starts[i / 64] |= 1 << (i % 64);
+    }
+
+    /// Whether `w` is the address of an object's start.
+    pub(crate) fn is_start(&self, w: u64) -> bool {
+        if w % WORD as u64 != 0 {
+            return false;
+        }
+        let Some(i) = self.heap.word_number(crate::obj::Addr::new(w)) else {
+            return false;
+        };
+        self.starts
+            .get(i / 64)
+            .is_some_and(|b| b & (1 << (i % 64)) != 0)
     }
 
     /// Whether this object's allocation prepended meta words — the raw
@@ -689,7 +737,7 @@ impl Objects {
             .set_word(a.plus(SLOT_HEAP * w), self.heap_chain.word());
         self.heap.set_word(a.plus(SLOT_TYPE * w), ty.word());
         self.heap
-            .set_word(a.plus(SLOT_FLAGS * w), Word(flags.raw()));
+            .set_word(a.plus(SLOT_FLAGS * w), Word(kind_store(flags)));
         self.heap.set_word(a.plus(SLOT_LEN * w), Word(n as u64));
     }
 
@@ -710,7 +758,7 @@ impl Objects {
                 .map(|(f, a, b)| {
                     format!(
                         "{} first={} rest={}",
-                        kind_name(Flags::from_word(Word(*f))),
+                        kind_name(kind_load(*f)),
                         self.describe_word(*a),
                         self.describe_word(*b)
                     )
@@ -723,13 +771,22 @@ impl Objects {
                 self.holders_of(o)
             );
         }
-        Flags::from_word(Word(
+        kind_load(
             self.heap
                 .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
-                .raw()
-                & !FLAG_META_BIT
-                & 0x00ff_ffff_ffff_ffff,
-        ))
+                .raw(),
+        )
+    }
+
+    /// Set contract attribute bits in an object's stored flags word, beside
+    /// its kind.
+    pub(crate) fn set_attr(&mut self, o: Obj, bits: u64) {
+        if o.is_nil() {
+            return;
+        }
+        let at = o.addr().plus(SLOT_FLAGS * WORD as u64);
+        let w = self.heap.word(at).raw();
+        self.heap.set_word(at, Word(w | bits));
     }
 
     pub fn is(&self, o: Obj, flags: Flags) -> bool {
@@ -911,7 +968,7 @@ impl Objects {
         if o.is_nil() {
             return "()".to_string();
         }
-        if w % 8 != 0 || (w / 8) as usize + META_LEN as usize > self.heap.words_len() {
+        if !self.heap.fits(w, META_LEN) {
             return format!("raw:{}", w);
         }
         let f = self
@@ -921,7 +978,7 @@ impl Objects {
         if f == crate::collect::POISON {
             return "<freed>".to_string();
         }
-        let flags = Flags::from_word(Word(f));
+        let flags = kind_load(f);
         if flags == FLAG_SYM || flags == FLAG_STR || flags == FLAG_HANDLE {
             format!("{}:{}", kind_name(flags), self.str_val(o))
         } else if flags == FLAG_INT {

@@ -5,42 +5,25 @@
 //! and their one unsafe dereference live in the foreign crate; this file is
 //! the SAFE half — [`x_engine_foreign::JitHost`] implemented on the engine.
 //!
-//! Object references cross the door as REAL machine addresses, which the
-//! PINNED arena makes stable (law 7): a real address maps back to an arena
-//! offset with `from_real`, and an offset forward with `address_of`. Nil
-//! crosses as 0 in both directions, as the reference's NULL does.
+//! Object references cross the door as they are: an object is its real
+//! address in the pinned arena (law 7), and nil crosses as 0, as the
+//! reference's NULL does.
 
 use crate::engine::Engine;
-use crate::obj::{Obj, Word, NIL};
+use crate::obj::{Obj, Word};
 
 impl Engine {
-    /// The real address an object crosses the door as; 0 for nil.
-    fn jit_real(&self, o: Obj) -> u64 {
-        if o.is_nil() {
-            return 0;
-        }
-        self.objects.heap.address_of(o.addr())
+    /// The address an object crosses the door as; 0 for nil.
+    pub(crate) fn jit_real(&self, o: Obj) -> u64 {
+        o.word().raw()
     }
 
-    /// The object a crossed value names; nil for 0 or an address outside
-    /// the arena.
-    ///
-    /// EITHER CURRENCY, the same discrimination `prims/ptr.rs` applies: a
-    /// value under the arena's byte length is an OFFSET — the x-lang#583
-    /// emitter embeds fvar objects as `(%ptr->int (%obj->ptr val))`, which
-    /// this engine's `obj ->ptr` answers in offsets — and anything above is
-    /// a REAL address from `jit_real`. The ranges do not overlap.
-    fn jit_obj(&self, real: u64) -> Obj {
-        if real == 0 {
-            return NIL;
-        }
-        if (real as usize) < self.objects.heap.words_len() * crate::obj::WORD {
-            return crate::obj::Addr::new(real).as_obj();
-        }
-        match self.objects.heap.from_real(real) {
-            Some(at) => at.as_obj(),
-            None => NIL,
-        }
+    /// The object a crossed value names: the word itself, as the reference
+    /// passes it. A word outside the arena is a value too — a routine's
+    /// address read out of a slot vector crosses this way — and every read
+    /// through it answers 0, as the heap's reads do past the arena.
+    pub(crate) fn jit_obj(&self, real: u64) -> Obj {
+        Word(real).as_obj()
     }
 }
 
@@ -75,14 +58,23 @@ impl x_engine_foreign::JitHost for Engine {
     }
 
     /// Evaluate, as the reference's `x_eval_arg` does for a compiled
-    /// analyser's re-entry. A condition cannot cross machine code, so an
-    /// erroring argument answers nil.
+    /// function's argument. A raise cannot cross the machine code between
+    /// here and the engine, so it is held on the engine and the argument
+    /// answers nil; the door that entered the code raises it when the code
+    /// returns, as the reference's longjmp would have. Once one is held,
+    /// nothing more is evaluated: the reference's code would not have run on.
     fn jit_eval_arg(&mut self, expr: u64) -> u64 {
+        if self.slot_error.is_some() {
+            return 0;
+        }
         let form = self.jit_obj(expr);
         let env = self.jit_env.unwrap_or_else(|| self.root_env());
         match self.eval(form, env) {
             Ok(v) => self.jit_real(v),
-            Err(_) => 0,
+            Err(c) => {
+                self.slot_error = Some(c);
+                0
+            }
         }
     }
 
@@ -106,5 +98,76 @@ impl x_engine_foreign::JitHost for Engine {
     fn jit_buffer_len(&mut self, buffer: u64) -> i64 {
         let b = self.jit_obj(buffer);
         self.objects.buf_cursor(b) as i64 - self.objects.buf_retain(b) as i64
+    }
+
+    /// The byte the buffer read last, as the reference's
+    /// `x_bufferlastchar` reads it: the byte before the read mark.
+    fn jit_buffer_last_char(&mut self, buffer: u64) -> i64 {
+        let b = self.jit_obj(buffer);
+        let at = self.objects.buf_cursor(b);
+        if at == 0 {
+            return 0;
+        }
+        let text = self.objects.buf_text(b);
+        let bytes = self.objects.str_bytes(text);
+        self.objects.heap.byte(bytes.plus(at - 1)) as i64
+    }
+
+    /// The label an analyser accepted, written into the label cell the
+    /// score's rest holds, as `jit.c` words it.
+    fn jit_score_label(&mut self, score: u64, label: i64) -> u64 {
+        let s = self.jit_obj(score);
+        let cell = self.objects.rest(s);
+        self.objects.set_data(cell, 0, Word(label as u64));
+        score
+    }
+
+    /// Call a primitive the compiled code chose at run time: `args` is
+    /// `(callee arg0 ...)`, the prim layout. A callee that is not a
+    /// primitive raises, as the reference refuses to branch to it; a raise
+    /// is held for the door that entered the code, as jit_eval_arg's is.
+    fn jit_call_value(&mut self, args: u64) -> u64 {
+        if self.slot_error.is_some() {
+            return 0;
+        }
+        let call = self.jit_obj(args);
+        let callee = self.objects.first(call);
+        let base = self.objects.base;
+        let prim_t = self
+            .objects
+            .builtin_type_in(base, crate::objects::FLAG_PRIM);
+        if callee.is_nil() || self.objects.obj_type(callee) != prim_t {
+            self.slot_error = Some(crate::diag::Cond::EngineMsg(
+                crate::vocabulary::MSG_CALL_VALUE.to_string(),
+            ));
+            return 0;
+        }
+        let rest = self.objects.rest(call);
+        let env = self.jit_env.unwrap_or_else(|| self.root_env());
+        let out = match self.combine(callee, rest, env) {
+            Some(r) => self.settle(r, env),
+            None => Ok(callee),
+        };
+        match out {
+            Ok(v) => self.jit_real(v),
+            Err(c) => {
+                self.slot_error = Some(c);
+                0
+            }
+        }
+    }
+
+    /// A slot door entered from foreign code. A raise cannot cross the C
+    /// frames between here and the engine, so it is held on the engine and
+    /// the door answers nil; `slot_call` raises it when the foreign routine
+    /// returns.
+    fn slot_routine(&mut self, slot: usize, _base: u64, run: &mut [u64]) -> u64 {
+        match self.slot_run(slot, run) {
+            Ok(v) => v,
+            Err(c) => {
+                self.slot_error = Some(c);
+                0
+            }
+        }
     }
 }

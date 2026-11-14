@@ -12,32 +12,19 @@
 //! on the safe side, because moving ordinary code next to unsafe code does not
 //! make it safer, it only makes the unsafe harder to review.
 //!
-//! # Why this is a different pointer representation
-//!
-//! Everywhere else in this engine a "pointer" is a BYTE OFFSET into
-//! the engine's heap, and that is what lets the rest be safe: nothing outside the
-//! engine ever dereferences one, so an offset can never be a wild address.
-//! `dlsym` answers a real machine address and breaks that premise, so foreign
-//! addresses are kept in their own type — confusing the two is exactly the class
-//! of bug the newtypes exist to prevent, and here it would be a segfault rather
-//! than a wrong answer.
-//!
 //! # Handing C a pointer into the heap
 //!
-//! A string's bytes live in the heap's `Vec<u64>`, NUL-terminated, so a real
-//! pointer to them can be handed to C for the duration of one call. That is
-//! sound only because the call cannot allocate into this heap — nothing
-//! re-enters the engine — so the Vec cannot reallocate under the callee and no
-//! foreign code retains the address afterwards. Both conditions are the caller's
-//! to keep, which is why marshalling lives here and not at the call sites.
+//! The engine's heap is a pinned `Vec<u64>` whose addresses are real and never
+//! move, so an object or a string's NUL-terminated bytes cross to C as they
+//! are. A `Foreign` is an address the engine did not allocate: a library
+//! handle, a symbol, memory C owns.
 
 use std::ffi::{c_char, c_int, c_long, c_void};
 
 /// A real machine address, as answered by `dlopen`/`dlsym`.
 ///
-/// Deliberately NOT the engine's `Addr`, which is an offset into its own heap. The two are both machine words and mean entirely different things;
-/// one of them is safe to dereference and the other is not this engine's to
-/// vouch for.
+/// Not the engine's `Addr`: an `Addr` the engine reaches through its own
+/// heap, and a `Foreign` is not the engine's to vouch for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Foreign(pub u64);
 
@@ -59,6 +46,13 @@ extern "C" {
     fn clock() -> c_long;
     fn signal(sig: c_int, handler: usize) -> usize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
+    fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+    #[link_name = "open"]
+    fn open_file(path: *const c_char, flags: c_int, ...) -> c_int;
+    fn close(fd: c_int) -> c_int;
+    fn exit(status: c_int) -> !;
+    fn malloc(n: usize) -> *mut c_void;
+    fn free(p: *mut c_void);
     /// VARIADIC, and declared that way deliberately. On aarch64 a variadic
     /// argument goes on the STACK where a fixed one goes in a register, so a
     /// non-variadic declaration would compile, run, and hand the kernel
@@ -354,6 +348,80 @@ pub trait JitHost {
     fn jit_score_set(&mut self, score: u64, sign: i64, buffer: u64) -> u64;
     fn jit_buffer_unread(&mut self, buffer: u64) -> u64;
     fn jit_buffer_len(&mut self, buffer: u64) -> i64;
+    fn jit_buffer_last_char(&mut self, buffer: u64) -> i64;
+    fn jit_score_label(&mut self, score: u64, label: i64) -> u64;
+    /// Call the callee at the head of `args`, `(callee arg0 arg1 ...)`,
+    /// a primitive chosen at run time.
+    fn jit_call_value(&mut self, args: u64) -> u64;
+    /// Run the engine's own routine for slot `slot` of the base's slot
+    /// vector over its argument run, one word an argument, as the slot's row
+    /// in tools/contract/base-slots.x gives them. A routine may write a word
+    /// back (token-analyse declares its label in its second word).
+    fn slot_routine(&mut self, slot: usize, base: u64, run: &mut [u64]) -> u64;
+}
+
+/// How many words each slot's argument run holds, by position: the third
+/// element of each row of tools/contract/base-slots.x.
+pub const SLOT_ARITY: [usize; 19] = [1, 1, 1, 1, 1, 2, 1, 1, 1, 2, 3, 3, 2, 1, 2, 1, 0, 0, 3];
+
+/// The slot doors: one C-ABI entry a slot, `(base, run) -> value`, the
+/// engine's one signature. The base's slot vector holds these addresses, so a
+/// language reads a slot, calls it through `ptr call`, stores another routine
+/// over it, and calls the one it replaced from compiled code, as it does on
+/// the reference.
+macro_rules! slot_doors {
+    ($($name:ident = $slot:expr;)*) => {
+        $(
+            #[no_mangle]
+            /// # Safety
+            /// `run` is null or holds at least the slot's arity in words.
+            pub unsafe extern "C" fn $name(base: u64, run: *mut u64) -> u64 {
+                let n = SLOT_ARITY[$slot];
+                let words: &mut [u64] = if n == 0 || run.is_null() {
+                    &mut []
+                } else {
+                    // SAFETY: the caller hands a run of at least the slot's
+                    // arity in words, as the contract row says; the run lives
+                    // for the duration of the call.
+                    unsafe { std::slice::from_raw_parts_mut(run, n) }
+                };
+                jit_host().slot_routine($slot, base, words)
+            }
+        )*
+
+        /// Every slot door's address, by position.
+        pub fn slot_doors() -> [usize; 19] {
+            [$($name as unsafe extern "C" fn(u64, *mut u64) -> u64 as usize,)*]
+        }
+    };
+}
+
+slot_doors! {
+    x_slot_eval = 0;
+    x_slot_eval_list = 1;
+    x_slot_eval_body = 2;
+    x_slot_eval_body_tco = 3;
+    x_slot_eval_tco_trampoline = 4;
+    x_slot_eval_op_body = 5;
+    x_slot_callable_call = 6;
+    x_slot_callable_apply = 7;
+    x_slot_obj_prim_call = 8;
+    x_slot_env_lookup = 9;
+    x_slot_env_bind = 10;
+    x_slot_env_extend = 11;
+    x_slot_alist_bst_lookup = 12;
+    x_slot_token_read = 13;
+    x_slot_token_analyse = 14;
+    x_slot_token_delimit = 15;
+    x_slot_heap_mark = 16;
+    x_slot_heap_sweep = 17;
+    x_slot_obj_alloc = 18;
+}
+
+/// Call a routine through its address with the engine's one signature:
+/// `(base, run)`, the run a pointer to words the caller owns for the call.
+pub fn call_routine(f: Foreign, base: u64, run: &mut [u64]) -> u64 {
+    call_ints(f, &[base, run.as_mut_ptr() as u64])
 }
 
 struct HostPtr(*mut dyn JitHost);
@@ -428,9 +496,24 @@ pub extern "C" fn jit_buffer_len(buffer: u64) -> i64 {
     jit_host().jit_buffer_len(buffer)
 }
 
-/// The nine exported addresses, for the binary to anchor so the linker keeps
+#[no_mangle]
+pub extern "C" fn jit_buffer_last_char(buffer: u64) -> i64 {
+    jit_host().jit_buffer_last_char(buffer)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_score_label(score: u64, label: i64) -> u64 {
+    jit_host().jit_score_label(score, label)
+}
+
+#[no_mangle]
+pub extern "C" fn jit_call_value(_base: u64, args: u64) -> u64 {
+    jit_host().jit_call_value(args)
+}
+
+/// The twelve exported addresses, for the binary to anchor so the linker keeps
 /// them reachable by `dlsym`.
-pub fn jit_exports() -> [usize; 9] {
+pub fn jit_exports() -> [usize; 12] {
     [
         jit_mkint as extern "C" fn(u64, i64) -> u64 as usize,
         jit_mkpair as extern "C" fn(u64, u64, u64) -> u64 as usize,
@@ -441,7 +524,69 @@ pub fn jit_exports() -> [usize; 9] {
         jit_score_set as extern "C" fn(u64, i64, u64) -> u64 as usize,
         jit_buffer_unread as extern "C" fn(u64) -> u64 as usize,
         jit_buffer_len as extern "C" fn(u64) -> i64 as usize,
+        jit_buffer_last_char as extern "C" fn(u64) -> i64 as usize,
+        jit_score_label as extern "C" fn(u64, i64) -> u64 as usize,
+        jit_call_value as extern "C" fn(u64, u64) -> u64 as usize,
     ]
+}
+
+/// open(2) on a path's bytes with raw flags, mode 0666 for a create:
+/// the reference's `x_sys_open`. A negative answer is a refusal.
+pub fn open_path(path: &[u8], flags: i32) -> i64 {
+    let mut z = path.to_vec();
+    z.push(0);
+    // SAFETY: the path is NUL-terminated and lives across the call; open(2)
+    // reports refusal as -1 rather than by faulting.
+    unsafe { open_file(z.as_ptr().cast::<c_char>(), flags as c_int, 0o666 as c_int) as i64 }
+}
+
+/// close(2).
+pub fn close_fd(fd: i32) -> i64 {
+    // SAFETY: close(2) validates the descriptor.
+    unsafe { close(fd) as i64 }
+}
+
+/// read(2) of up to `n` bytes into process memory at the real address `at`.
+/// The caller owns the region, as the reference's `(sys read fd p n)` does.
+pub fn read_into(fd: i32, at: u64, n: usize) -> i64 {
+    // SAFETY: the caller hands a writable region of n bytes.
+    unsafe { read(fd, at as *mut c_void, n) as i64 }
+}
+
+/// write(2) of `n` bytes from process memory at the real address `at`.
+pub fn write_from(fd: i32, at: u64, n: usize) -> i64 {
+    // SAFETY: the caller hands a readable region of n bytes.
+    unsafe { write(fd, at as *const c_void, n) as i64 }
+}
+
+/// One byte from a descriptor, or -1 at end of input or on a refusal.
+pub fn read_char(fd: i32) -> i64 {
+    let mut b = 0u8;
+    // SAFETY: one byte into a live local.
+    let n = unsafe { read(fd, (&mut b as *mut u8).cast::<c_void>(), 1) };
+    if n == 1 {
+        b as i64
+    } else {
+        -1
+    }
+}
+
+/// End the process with `status`.
+pub fn exit_with(status: i32) -> ! {
+    // SAFETY: exit(3) does not return.
+    unsafe { exit(status) }
+}
+
+/// malloc(3): `n` bytes the caller owns, or 0.
+pub fn alloc_c(n: usize) -> u64 {
+    // SAFETY: malloc(3) answers a fresh region or NULL.
+    unsafe { malloc(n) as u64 }
+}
+
+/// free(3) of a region `alloc_c` (or C) handed out.
+pub fn free_c(at: u64) {
+    // SAFETY: the caller hands back what malloc answered, or NULL.
+    unsafe { free(at as *mut c_void) }
 }
 
 #[cfg(test)]

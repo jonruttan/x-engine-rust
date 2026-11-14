@@ -169,8 +169,11 @@ pub const CHAR_UNKNOWN: &str = "?";
 /// The truth answer of every predicate, and the name that evaluates to it.
 /// What an interrupt raises, so a guard can recognise it.
 pub const MSG_STOP: &str = "STOP";
-/// The applicative arg walk's refusal of a dotted spine (#69).
-pub const MSG_IMPROPER_ARGS: &str = "improper argument list";
+/// The refusal of a dotted spine, an applicative's arguments (#69) or a
+/// body (#487), in x-engine-c's words.
+pub const MSG_IMPROPER_ARGS: &str = "call: improper argument list (dotted tail)";
+/// jit_call_value's refusal of a callee that is not a primitive.
+pub const MSG_CALL_VALUE: &str = "asm-compile: call through a value that is not a callable prim";
 
 pub const TRUE: &str = "#t";
 pub const FALSE: &str = "#f";
@@ -179,7 +182,9 @@ pub const TOKEN_EOF: &str = "%token-eof";
 pub const SIGINT_FLAG: &str = "%sigint-flag";
 /// The evaluator-state routes on the base spine.
 pub const ROUTE_TRUE: &str = "true";
-pub const ROUTE_ENV_GLOBAL_TREE: &str = "env-global-tree";
+pub const ROUTE_ENV_ROOT: &str = "env-root";
+/// The base's one ERR, the value every engine raise fills in place.
+pub const ROUTE_ERR: &str = "err";
 pub const ROUTE_SAVE_STACK: &str = "save-stack";
 pub const ROUTE_TCO_EXPR: &str = "tco-expr";
 pub const ROUTE_TCO_ENV: &str = "tco-env";

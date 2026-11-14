@@ -1,11 +1,8 @@
 //! The objects door: pointer casts and unchecked memory.
 //!
-//! A "pointer" here is a BYTE OFFSET into the objects, never a machine address.
-//! Nothing outside this engine dereferences one — the `core` profile has no
-//! foreign door, no `dlopen` and no `ptr call` — so every offset x-lang computes
-//! from `obj-layout.x` lands back inside the objects by construction. That is what
-//! lets the whole engine be safe Rust, and it stops being true the day a foreign
-//! door is added.
+//! A pointer is a real machine address. One inside the arena is read and
+//! written through the heap's Vec; one outside it goes through the foreign
+//! crate, which holds the engine's only `unsafe`.
 //!
 //! Nearly everything here reaches through `objects.heap`, and the spelling is
 //! deliberate: these instructions work BELOW the object model, on bytes and
@@ -40,14 +37,8 @@ fn int_to_ptr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 fn str_to_ptr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    // The REAL address of the bytes — what leaves for a C call, and what an
-    // argv array a C call reads must hold. The pinned heap is what makes the
-    // address stable enough to hand out. `obj ->ptr` stays the arena-offset
-    // reflection door; this is the FFI one.
-    let s = a[0];
-    let at = a_.str_bytes(s);
-    let real = a_.heap.address_of(at);
-    Ok(a_.ptr(Addr::new(real)))
+    let at = a_.str_bytes(a[0]);
+    Ok(a_.ptr(at))
 }
 
 /// A COPY of the NUL-bounded bytes at the pointer, as the reference's
@@ -68,16 +59,13 @@ fn ptr_to_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.str_from_bytes(&bytes))
 }
 
-/// An accessor operand is either an ARENA OFFSET (what `obj ->ptr` answers,
-/// for reflection) or a REAL ADDRESS (what `str ->ptr` and C calls answer).
-/// The two ranges do not overlap — an offset is bounded by the heap, real
-/// mappings sit far above it — so the value discriminates itself, the same
-/// way the marshal door discriminates on the way out.
+/// Whether an accessor's address is inside the arena, where the heap's Vec
+/// reaches it; anything else is process memory.
 fn in_arena(a_: &Objects, at: u64) -> bool {
-    (at as usize) < a_.heap.words_len() * crate::obj::WORD
+    a_.heap.from_real(at).is_some()
 }
 
-/// One byte at an offset-or-real operand address.
+/// One byte at an operand address.
 fn rd_byte(a_: &Objects, at: u64) -> u8 {
     if in_arena(a_, at) {
         a_.heap.byte(Addr::new(at))
@@ -200,12 +188,9 @@ fn mem_set(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 }
 
 fn mem_alloc(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    // Answers the REAL address, like `str ->ptr`: an allocated region exists
-    // to be filled and handed across the door.
     let n = a_.as_int(a[0]).max(0) as usize;
     let at = a_.heap.alloc_bytes(n);
-    let real = a_.heap.address_of(at);
-    Ok(a_.ptr(Addr::new(real)))
+    Ok(a_.ptr(at))
 }
 
 /// A NO-OP, and honestly so: the objects never reuses a region, so releasing one
@@ -216,6 +201,133 @@ fn mem_free(_a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
     Ok(NIL)
 }
 
+/// The pointer an operand names, or nil for a null answer.
+fn ptr_or_nil(a_: &mut Objects, at: u64) -> Obj {
+    if at == 0 {
+        NIL
+    } else {
+        a_.ptr(Addr::new(at))
+    }
+}
+
+/// `(ptr alloc n)` — malloc(3): a region C owns, or nil.
+fn ptr_alloc(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let n = a_.as_int(a[0]).max(0) as usize;
+    Ok(ptr_or_nil(a_, crate::foreign::alloc_c(n)))
+}
+
+/// `(ptr free! p)` — free(3) of what `ptr alloc` or C handed out.
+fn ptr_free(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    crate::foreign::free_c(a_.as_ptr(a[0]).raw());
+    Ok(NIL)
+}
+
+/// `(ptr copy! dst src n)` — answers dst.
+fn ptr_copy(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    mem_copy(a_, a)?;
+    Ok(a[0])
+}
+
+/// `(ptr fill! p byte n)` — answers p.
+fn ptr_fill(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    mem_set(a_, a)?;
+    Ok(a[0])
+}
+
+/// Bytes from `at` up to (not including) the NUL.
+fn c_len(a_: &Objects, at: u64) -> u64 {
+    let mut n = 0;
+    while rd_byte(a_, at + n) != 0 {
+        n += 1;
+    }
+    n
+}
+
+/// strncmp(3) over at most `n` bytes: the difference of the first unequal
+/// pair, as unsigned bytes.
+fn c_cmp(a_: &Objects, pa: u64, pb: u64, n: u64) -> i64 {
+    for i in 0..n {
+        let x = rd_byte(a_, pa + i);
+        let y = rd_byte(a_, pb + i);
+        if x != y || x == 0 {
+            return x as i64 - y as i64;
+        }
+    }
+    0
+}
+
+/// `(ptr strlen p)`
+fn ptr_strlen(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let n = c_len(a_, a_.as_ptr(a[0]).raw());
+    Ok(a_.int(n as i64))
+}
+
+/// `(ptr strcmp a b)`
+fn ptr_strcmp(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let (pa, pb) = (a_.as_ptr(a[0]).raw(), a_.as_ptr(a[1]).raw());
+    let r = c_cmp(a_, pa, pb, u64::MAX);
+    Ok(a_.int(r))
+}
+
+/// `(ptr strncmp a b n)`
+fn ptr_strncmp(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let (pa, pb) = (a_.as_ptr(a[0]).raw(), a_.as_ptr(a[1]).raw());
+    let n = a_.as_int(a[2]).max(0) as u64;
+    let r = c_cmp(a_, pa, pb, n);
+    Ok(a_.int(r))
+}
+
+/// `(ptr strchr p c)` — the first byte `c`, the terminator included as
+/// strchr(3) finds it, or nil.
+fn ptr_strchr(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let p = a_.as_ptr(a[0]).raw();
+    let c = a_.as_int(a[1]) as u8;
+    let mut at = p;
+    loop {
+        let b = rd_byte(a_, at);
+        if b == c {
+            return Ok(a_.ptr(Addr::new(at)));
+        }
+        if b == 0 {
+            return Ok(NIL);
+        }
+        at += 1;
+    }
+}
+
+/// `(ptr strndup p n)` — at most `n` bytes into a malloc'd, NUL-terminated
+/// region the caller owns, or nil.
+fn ptr_strndup(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let p = a_.as_ptr(a[0]).raw();
+    let n = c_len(a_, p).min(a_.as_int(a[1]).max(0) as u64);
+    let dst = crate::foreign::alloc_c(n as usize + 1);
+    if dst == 0 {
+        return Ok(NIL);
+    }
+    for i in 0..n {
+        let b = rd_byte(a_, p + i);
+        wr_byte(a_, dst + i, b);
+    }
+    wr_byte(a_, dst + n, 0);
+    Ok(a_.ptr(Addr::new(dst)))
+}
+
+/// `(int abs n)` — abs(3) of the value as a C int, as the reference takes it.
+fn int_abs(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
+    let n = a_.as_int(a[0]) as i32;
+    Ok(a_.int(n.wrapping_abs() as i64))
+}
+
+crate::uniform_value!(ptr_alloc_u, ptr_alloc, 1);
+crate::uniform_value!(ptr_free_u, ptr_free, 1);
+crate::uniform_value!(ptr_copy_u, ptr_copy, 3);
+crate::uniform_value!(ptr_fill_u, ptr_fill, 3);
+crate::uniform_value!(ptr_strlen_u, ptr_strlen, 1);
+crate::uniform_value!(ptr_strcmp_u, ptr_strcmp, 2);
+crate::uniform_value!(ptr_strncmp_u, ptr_strncmp, 3);
+crate::uniform_value!(ptr_strchr_u, ptr_strchr, 2);
+crate::uniform_value!(ptr_strndup_u, ptr_strndup, 2);
+crate::uniform_value!(int_abs_u, int_abs, 1);
 crate::uniform_value!(obj_to_ptr_u, obj_to_ptr, 1);
 crate::uniform_value!(ptr_to_obj_u, ptr_to_obj, 1);
 crate::uniform_value!(ptr_to_int_u, ptr_to_int, 1);
@@ -249,6 +361,16 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::row(None, Some(("mem", "set")), 3, mem_set_u),
     PrimDef::row(None, Some(("mem", "alloc")), 1, mem_alloc_u),
     PrimDef::row(None, Some(("mem", "free")), 1, mem_free_u),
+    PrimDef::row(None, Some(("ptr", "alloc")), 1, ptr_alloc_u),
+    PrimDef::row(None, Some(("ptr", "strlen")), 1, ptr_strlen_u),
+    PrimDef::row(None, Some(("ptr", "strcmp")), 2, ptr_strcmp_u),
+    PrimDef::row(None, Some(("ptr", "strncmp")), 3, ptr_strncmp_u),
+    PrimDef::row(None, Some(("ptr", "strchr")), 2, ptr_strchr_u),
+    PrimDef::row(None, Some(("ptr", "strndup")), 2, ptr_strndup_u),
+    PrimDef::row(None, Some(("int", "abs")), 1, int_abs_u),
+    PrimDef::row(None, Some(("ptr", "free!")), 1, ptr_free_u),
+    PrimDef::row(None, Some(("ptr", "copy!")), 3, ptr_copy_u),
+    PrimDef::row(None, Some(("ptr", "fill!")), 3, ptr_fill_u),
 ];
 
 #[cfg(test)]

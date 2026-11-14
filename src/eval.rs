@@ -511,36 +511,26 @@ impl Engine {
 
     /// Apply an emitted function: hand it the base and the raw argument
     /// spine as real addresses, take an object back the same way.
-    fn apply_foreign(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
+    pub(crate) fn apply_foreign(&mut self, callee: Obj, args: Obj, env: EnvId) -> EvalResult {
         let addr = self.objects.foreign_addr(callee);
         let f = x_engine_foreign::Foreign(addr);
-        let base_real = if self.base.is_nil() {
-            0
-        } else {
-            self.objects.heap.address_of(self.base.addr())
-        };
+        let base_real = self.jit_real(self.base);
         // The C prim layout: the spine's head is SELF, the arguments follow —
         // the emitted prologue skips one cell before its first argument.
         let spine = self.objects.pair(callee, args);
-        let args_real = self.objects.heap.address_of(spine.addr());
+        let args_real = self.jit_real(spine);
         // The code evaluates its arguments through jit_eval_arg, which must
         // resolve them where the CALL stands — the reference's x_eval_arg
         // reads the base's live environment, and a closure passing its
         // locals to an emitted function is the ordinary case.
         let prev_env = self.jit_env.replace(env);
+        let prev_error = self.slot_error.take();
         let out = x_engine_foreign::call_ints(f, &[base_real, args_real]);
         self.jit_env = prev_env;
-        if out == 0 {
-            return Ok(NIL);
-        }
-        // Either currency, as jit_obj discriminates: an emitted analyser
-        // returning an fvar object returns the OFFSET its imm64 carried.
-        if (out as usize) < self.objects.heap.words_len() * crate::obj::WORD {
-            return Ok(crate::obj::Addr::new(out).as_obj());
-        }
-        match self.objects.heap.from_real(out) {
-            Some(at) => Ok(at.as_obj()),
-            None => Ok(NIL),
+        // A raise held while the code ran (jit_eval_arg) is raised here.
+        match std::mem::replace(&mut self.slot_error, prev_error) {
+            Some(c) => Err(c),
+            None => Ok(self.jit_obj(out)),
         }
     }
 
@@ -581,6 +571,18 @@ impl Engine {
         }
     }
 
+    /// Whether a callee is a procedure by its TYPE, as `x_obj_type_isprocedure`
+    /// asks: a closure compiled in place (lib/x/tool/compiled.x) keeps its
+    /// kind but takes the primitive type, and is applied as a primitive.
+    fn is_procedure(&mut self, callee: Obj) -> bool {
+        if callee.is_nil() {
+            return false;
+        }
+        let base = self.objects.base;
+        let proc_t = self.objects.builtin_type_in(base, crate::objects::FLAG_FN);
+        self.objects.obj_type(callee) == proc_t
+    }
+
     /// Call a combiner with values already computed, IN TAIL POSITION.
     ///
     /// The difference from [`Engine::call_with_values`] is the whole of tail-call
@@ -595,15 +597,28 @@ impl Engine {
     /// made every `let` in a tail position grow the Rust stack. 50,000 frames of
     /// `(let ((m (- n 1))) (self m))` overflowed it.
     pub fn call_with_values_tail(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        // Anything but a procedure goes through the callable-apply slot, as
+        // x_prim_apply calls x_callable_apply through it: a language that
+        // stored its own routine there (x/tool/fn-compile.x hands a compiled
+        // function its values that way) is asked first.
+        if !self.is_procedure(callee) && self.slot_replaced(crate::slots::CALLABLE_APPLY).is_some()
+        {
+            return self.call_with_values(callee, vals, env);
+        }
         let mark = self.root_mark();
         self.root_push(callee);
         for v in vals {
             self.root_push(*v);
         }
-        let spine = if self.objects.is_foreign(callee) {
-            self.value_spine(vals)
-        } else {
+        // A procedure binds the values: quoted, its operand evaluation hands
+        // them back as they are. Anything else gets the values themselves, as
+        // `x_prim_apply` hands them to `x_callable_apply`: an operative binds
+        // them unevaluated, and a primitive evaluates them, so the library
+        // quotes what a primitive is to see as itself.
+        let spine = if self.is_procedure(callee) {
             self.quote_values(vals)
+        } else {
+            self.value_spine(vals)
         };
         self.root_push(spine);
         let out = match self.combine(callee, spine, env) {
@@ -614,8 +629,32 @@ impl Engine {
         out
     }
 
-    /// Call a combiner with values already computed.
+    /// Call a combiner with values already computed, through the base's
+    /// callable-apply slot: the engine's own routine, or the one a language
+    /// stored there, handed `(callee . values)` as the prim ABI lays it out.
     pub fn call_with_values(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
+        if self.slot_replaced(crate::slots::CALLABLE_APPLY).is_none() {
+            return self.apply_values_own(callee, vals, env);
+        }
+        let mark = self.root_mark();
+        self.root_push(callee);
+        for v in vals {
+            self.root_push(*v);
+        }
+        let spine = self.value_spine(vals);
+        let call = self.objects.pair(callee, spine);
+        self.root_push(call);
+        let mut run = [self.jit_real(call)];
+        let prev_env = self.jit_env.replace(env);
+        let out = self.slot_call(crate::slots::CALLABLE_APPLY, &mut run);
+        self.jit_env = prev_env;
+        self.root_truncate(mark);
+        Ok(self.jit_obj(out?))
+    }
+
+    /// The engine's own callable-apply: call a combiner with values already
+    /// computed.
+    pub(crate) fn apply_values_own(&mut self, callee: Obj, vals: &[Obj], env: EnvId) -> EvalResult {
         // ROOTED while the spine is BUILT. `quote_values` allocates a cell per
         // value, so a collection partway through would be free to take the
         // values still waiting in the caller's slice — and callers hand this a
@@ -913,7 +952,26 @@ impl Engine {
     ///
     /// The last form of a body is in tail position, so evaluating it here would
     /// be the recursion this whole mechanism exists to avoid.
+    /// Whether a body's spine ends in an atom rather than nil. The forms
+    /// before the dot run, then the walk raises, as x-engine-c's
+    /// `x_eval_spine_guard` makes every body walk do (#487).
+    fn body_dotted(&self, body: Obj) -> bool {
+        let mut at = body;
+        while self.objects.is_cell(at) {
+            at = self.objects.rest(at);
+        }
+        !at.is_nil()
+    }
+
+    fn dotted_body() -> Cond {
+        Cond::EngineMsg(crate::vocabulary::MSG_IMPROPER_ARGS.to_string())
+    }
+
     pub fn eval_body_tail(&mut self, body: Obj, env: EnvId) -> EvalResult {
+        if self.body_dotted(body) {
+            self.eval_body(body, env)?;
+            return Err(Self::dotted_body());
+        }
         let forms: Vec<Obj> = self.objects.list(body).collect();
         let Some((last, rest)) = forms.split_last() else {
             return Ok(NIL);
@@ -1092,19 +1150,16 @@ mod tests {
         );
     }
 
-    /// A def that is (part of) a closure's parked tail binds GLOBALLY: the
-    /// save covers the body's non-tail forms only. include/import and the
-    /// doc-wrapping machinery rely on it.
+    /// A def binds in the environment it is evaluated in, tail or not: a
+    /// closure body's def is the call's own, and a parameterless body has an
+    /// environment of its own (the reference's tests/bare/specs/env.spec.md).
     #[test]
-    fn a_tail_def_binds_globally() {
-        assert_eq!(
-            int_of("(def n 1) (def get (fn (self) n)) (def call (fn (self) (%seq (def n 2) (get)))) (call)"),
-            2
-        );
+    fn a_def_in_a_body_binds_in_the_call() {
         assert_eq!(
             int_of("(def n 1) (def call (fn (self) (%seq (def n 2) ()))) (call) n"),
-            2
+            1
         );
+        assert_eq!(int_of("((fn (_) (def a 1) ((fn () (def a 2))) a))"), 1);
     }
 
     /// The settled environment convention, observable: a library eval handler
@@ -1125,7 +1180,7 @@ mod tests {
                (fn (self v env) (eval (lit target) env))) ())))
              (def i (%minst h 7))
              (def target 55)
-             (eval i ())"
+             (eval i)"
         );
         assert_eq!(
             crate::testkit::int_of(&program),

@@ -220,6 +220,11 @@ pub struct PrimDef {
     /// call is x-lang's job, one layer up.
     pub arity: (usize, Option<usize>),
     pub f: PrimFn,
+    /// A type's own handler, as x-engine-c's satoms are: dispatched, it is
+    /// handed the subject as `callee`; applied as a value, the subject is
+    /// the first argument, as `x_callable_apply` hands a satom its call with
+    /// no self.
+    pub subject: bool,
 }
 
 impl PrimDef {
@@ -236,6 +241,16 @@ impl PrimDef {
             coord,
             arity: (n, Some(n)),
             f,
+            subject: false,
+        }
+    }
+
+    /// A type's own handler: a row whose subject rides first when it is
+    /// applied as a value.
+    pub const fn handler(bare: Option<&'static str>, f: PrimFn) -> Self {
+        PrimDef {
+            subject: true,
+            ..PrimDef::row(bare, None, 0, f)
         }
     }
 }

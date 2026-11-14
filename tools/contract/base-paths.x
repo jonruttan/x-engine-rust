@@ -16,6 +16,10 @@
 ; `make check-base-routes` derives the required set from the library's own call
 ; sites and holds this file to it.
 ;
+; THE BASE IS TWO UNITS, as the reference's is: the spine first, the slot
+; vector second (tools/contract/base-slots.x).  So every row's first step is
+; `f`, into the spine.
+;
 ; A FLAT SPINE, one cell per route, rather than the C's nested fields.  There is
 ; nothing here to nest yet: this base carries eight things where the C's carries
 ; a hundred, and inventing a hierarchy for eight would be arranging furniture in
@@ -29,62 +33,61 @@
 ;   (<name> base <step> ...)
 
 (def %base-paths (lit (
-  (prims base)                ; the primitive catalogue, ((ns . ((method . prim) ...)) ...)
-  (type-alist base r)         ; registered types, by name
-  (error-str base r r)        ; the last error's text
-  (err-line base r r r)
-  (err-file base r r r r)
-  (file-registry base r r r r r)
-  (obj-meta-extra base r r r r r r)
-  (env base r r r r r r r)    ; this base's environment, as a first-class value
-  ; DERIVED, not a spine cell: through the env object (f) into its holder (f),
-  ; whose first is the frame chain -- the alist of (sym . val) cells, as the
-  ; reference's env-alist is.  Expressible only because frames are heap data.
-  (env-alist base r r r r r r r f f)
+  (prims base f)                ; the primitive catalogue, ((ns . ((method . prim) ...)) ...)
+  (type-alist base f r)         ; registered types, by name
+  (error-str base f r r)        ; the last error's text
+  (err-line base f r r r)
+  (err-file base f r r r r)
+  (file-registry base f r r r r r)
+  (obj-meta-extra base f r r r r r r)
+  (env base f r r r r r r r)    ; this base's environment, as a first-class value
 
   ; --- the heap's registration lists, and the allocation ceiling ---
   ; LISTS the engine prepends to, not collector internals: a registered callable
   ; is invoked by the CONSUMING LAYER, once per mark phase.  The engine records.
-  (heap-mark-hooks base r r r r r r r r)
-  (heap-free-hooks base r r r r r r r r r)
-  (heap-mark-roots base r r r r r r r r r r)
-  (alloc-limit base r r r r r r r r r r r)
-  (alloc-count base r r r r r r r r r r r r)
+  (heap-mark-hooks base f r r r r r r r r)
+  (heap-free-hooks base f r r r r r r r r r)
+  (heap-mark-roots base f r r r r r r r r r r)
+  (alloc-limit base f r r r r r r r r r r r)
+  (alloc-count base f r r r r r r r r r r r r)
 
   ; --- routes the LIBRARY walks by name ---
   ; Not engine state: cells x-lang reads and writes. They used to be reached by
   ; literal first/rest chains in lib/, which assumed x-engine-c's layout; the
   ; library now resolves them by name, which is what decision L1 requires.
-  (line    base r r r r r r r r r r r r r f)
-  (files   base r r r r r r r r r r r r r r f)
-  (profile base r r r r r r r r r r r r r r r)
+  (line    base f r r r r r r r r r r r r r f)
+  (files   base f r r r r r r r r r r r r r r f)
+  (profile base f r r r r r r r r r r r r r r r)
   ; The false SINGLETON, whose REST x-lang uses as scratch (module.x hangs the
   ; include list there), so this answers the OBJECT ITSELF -- the final step
   ; matters: without it the walk ends on the spine node, and module.x's
   ; set-rest! CUTS THE SPINE, orphaning every row behind it.
-  (false   base r r r r r r r r r r r r r r r r f)
+  (false   base f r r r r r r r r r r r r r r r r f)
   ; The REPL's pair: the fd being read, and the buffer being read from.
   ; Rows that land on the value, as the reference's are: the walk lands ON the
   ; input stack,
   ; whose first is the current fd / read buffer.
-  (filein  base r r r r r r r r r r r r r r r r r f)
-  (buffer  base r r r r r r r r r r r r r r r r r r f)
+  (filein  base f r r r r r r r r r r r r r r r r r f)
+  (buffer  base f r r r r r r r r r r r r r r r r r r f)
 
   ; --- the evaluator's own state ---
   ; Rows that land on the value, as the reference's do for these names.  save-stack is nil at the top level and non-nil over a closure
   ; body's non-tail forms; the tco pair holds the deferred tail expression and
   ; its environment; sigint is the CELL holding the object %sigint-flag names
-; (first reaches the flag, as on the reference); error-handler is
-  ; the active guard chain.
-  (save-stack    base r r r r r r r r r r r r r r r r r r r f)
-  (tco-expr      base r r r r r r r r r r r r r r r r r r r r f)
-  (tco-env       base r r r r r r r r r r r r r r r r r r r r r f)
-  (sigint        base r r r r r r r r r r r r r r r r r r r r r r)
-  (error-handler base r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; (first reaches the flag, as on the reference); error-handler is the CELL
+  ; whose first is the active guard chain, as the reference's handler cell is.
+  (save-stack    base f r r r r r r r r r r r r r r r r r r r f)
+  (tco-expr      base f r r r r r r r r r r r r r r r r r r r r f)
+  (tco-env       base f r r r r r r r r r r r r r r r r r r r r r f)
+  (sigint        base f r r r r r r r r r r r r r r r r r r r r r r)
+  (error-handler base f r r r r r r r r r r r r r r r r r r r r r r r)
   ; The true SINGLETON, a row that lands on the value as false's is.
-  (true          base r r r r r r r r r r r r r r r r r r r r r r r r f)
-  ; The global-binding tree: a BST view of the root frame, (binding . (left . right)).
-  (env-global-tree base r r r r r r r r r r r r r r r r r r r r r r r r r f)
+  (true          base f r r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; The root environment, (bindings . ()), whose bindings are a tree.
+  (env-root base f r r r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; The raised-error value: one ERR, (code . subject), each a string atom a
+  ; raise repoints.  x-lang reaches its type through it.
+  (err base f r r r r r r r r r r r r r r r r r r r r r r r r r r f)
 
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
   ; These steps are the REFERENCE ENGINE'S, chosen

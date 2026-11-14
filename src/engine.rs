@@ -131,6 +131,11 @@ pub struct Engine {
     /// here, between forms. That is soon enough: x-lang's own case reads the
     /// flag in the form AFTER the one that raises.
     pub(crate) sigint_flag: Obj,
+    /// What the last collection freed, summed over its sweep phases.
+    pub(crate) last_freed: usize,
+    /// A raise from an engine routine run through a slot door, held while
+    /// the foreign code that called the door returns to the engine.
+    pub(crate) slot_error: Option<crate::diag::Cond>,
 }
 
 /// The kinds whose types carry an engine call handler, and which. `FLAG_WRAP`
@@ -182,6 +187,8 @@ impl Engine {
 
             token_eof: NIL,
             sigint_flag: NIL,
+            last_freed: 0,
+            slot_error: None,
         };
 
         // One pass over the whole instruction set. Each row contributes its bare
@@ -338,6 +345,7 @@ impl Engine {
             }
             at = self.objects.chain_next(at);
         }
+        self.install_err(base);
     }
 
     /// FRESH builtin types for a new base, as `x_type_*_register(child, child)`
@@ -350,6 +358,26 @@ impl Engine {
         for (flags, _) in crate::objects::STAMPED_KINDS.iter().rev() {
             self.objects.builtin_type_in(base, *flags);
         }
+        self.install_err(base);
+    }
+
+    /// The ERR type and the base's one instance of it, as `x_type_err_register`
+    /// makes them. An ERR is two units, (code . subject), each a string atom
+    /// an engine raise rewrites in place, so a raise allocates nothing. Its IO
+    /// stacks boot empty: the wording is the language's (x-lang's err-io.x).
+    fn install_err(&mut self, base: Obj) {
+        if !crate::base::err(&self.objects, base).is_nil() {
+            return;
+        }
+        let name = self.objects.handle("ERR");
+        let t = self.objects.type_new(name, NIL);
+        self.file_type_in(base, t);
+        let err = self.objects.instance(t, 2);
+        let code = self.objects.error_atom();
+        let subject = self.objects.error_atom();
+        self.objects.set_data(err, 0, code.word());
+        self.objects.set_data(err, 1, subject.word());
+        crate::base::set_err(&mut self.objects, base, err);
     }
 
     /// Arm the extended-meta policy at two units — source line and file id —
@@ -487,9 +515,6 @@ impl Engine {
         }
 
         let base = crate::base::build(&mut self.objects, self.catalogue, env);
-        // The root frame serves the spine just built — stamped after, because
-        // the spine cannot exist before its env does.
-        self.envs.set_base(&mut self.objects, env, base);
         // The sigint row holds the SAME object %sigint-flag is bound to.
         crate::base::set(&mut self.objects, base, crate::base::SIGINT, f);
         // Fresh builtin types, except for the engine's own base: registration
@@ -624,7 +649,7 @@ mod tests {
         let mut e = Engine::new();
         for b in [e.base, e.make_base()] {
             for (n, name) in base::ROUTES.iter().enumerate() {
-                let mut at = b;
+                let mut at = e.objects.first(b);
                 for _ in 0..n {
                     at = e.objects.rest(at);
                 }

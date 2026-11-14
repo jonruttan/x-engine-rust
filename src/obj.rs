@@ -16,9 +16,8 @@ pub const WORD: usize = 8;
 
 /// An object reference.
 ///
-/// It happens to be a byte offset into the objects, but that is a fact about this
-/// engine's representation, not about what an `Obj` is. Code that wants the
-/// offset says `addr()` and means it.
+/// The real address of the object's first word, as x-engine-c's is. Code that
+/// wants the address says `addr()` and means it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Obj(u64);
 
@@ -32,10 +31,8 @@ impl Obj {
 
     /// The address this object begins at.
     ///
-    /// A re-labelling, not a conversion: an object IS its own offset here, which
-    /// is exactly what makes `obj ->ptr` and `ptr ->obj` round-trip by
-    /// construction. It works only because the `core` profile has no foreign
-    /// door — no `dlopen`, no `ptr call` — so an offset never escapes to C.
+    /// A re-labelling, not a conversion: an object IS its own address, which
+    /// is what makes `obj ->ptr` and `ptr ->obj` round-trip by construction.
     pub const fn addr(self) -> Addr {
         Addr(self.0)
     }
@@ -46,7 +43,7 @@ impl Obj {
     }
 }
 
-/// A byte offset into the objects.
+/// A machine address.
 ///
 /// Distinct from `Obj` because most addresses are NOT objects: the bytes of a
 /// string, a raw region from `mem alloc`, a header slot part-way into an object.
@@ -83,11 +80,6 @@ impl Addr {
     /// Move forward by an unsigned byte count.
     pub const fn plus(self, bytes: u64) -> Addr {
         Addr(self.0.wrapping_add(bytes))
-    }
-
-    /// Index of the word this address falls in.
-    pub const fn word_index(self) -> usize {
-        (self.0 / WORD as u64) as usize
     }
 
     /// Which byte within that word.
@@ -218,9 +210,8 @@ mod tests {
     }
 
     #[test]
-    fn word_addressing_splits_into_index_and_byte() {
+    fn word_addressing_splits_into_word_and_byte() {
         let a = Addr::new(19);
-        assert_eq!(a.word_index(), 2);
         assert_eq!(a.byte_in_word(), 3);
         assert_eq!(a.word_base(), Addr::new(16));
     }

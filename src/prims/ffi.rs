@@ -12,7 +12,7 @@ use crate::dbl;
 use crate::engine::Engine;
 use crate::eval::EvalResult;
 use crate::foreign::{self, Foreign};
-use crate::obj::{Obj, NIL, WORD};
+use crate::obj::{Obj, NIL};
 use crate::prim::PrimDef;
 use crate::vocabulary::{
     CONV_DD_TO_D, CONV_D_TO_D, CONV_D_TO_I, CONV_D_TO_S, CONV_I_TO_D, CONV_S0_TO_D,
@@ -37,23 +37,13 @@ fn cstr(e: &Engine, o: Obj) -> Option<Vec<u8>> {
 fn marshal(e: &Engine, o: Obj) -> u64 {
     if e.objects.is_str(o) {
         let at = e.objects.str_bytes(o);
-        return e.objects.heap.address_of(at);
+        return at.raw();
     }
     if e.objects.is_foreign(o) {
         return e.objects.foreign_addr(o);
     }
-    // A PTR into this engine's heap becomes a REAL ADDRESS, exactly as a
-    // string does: the heap is the engine's own array, so an address inside it
-    // must be resolved before it crosses the door — `Sys wait` hands `waitpid`
-    // a region as `(%str->ptr s)` and reads the status back through it. The
-    // two spaces do not overlap: a heap offset is bounded by the heap, and
-    // anything the foreign side hands back is a process address far above it.
     if e.objects.is_ptr(o) {
-        let at = e.objects.as_ptr(o);
-        if (at.raw() as usize) < e.objects.heap.words_len() * WORD {
-            return e.objects.heap.address_of(at);
-        }
-        return at.raw();
+        return e.objects.as_ptr(o).raw();
     }
     e.objects.as_int(o) as u64
 }

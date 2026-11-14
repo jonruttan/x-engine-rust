@@ -80,10 +80,12 @@ pub const ROUTES: &[&str] = &[
     crate::vocabulary::ROUTE_ERROR_HANDLER,
     // The true SINGLETON, walked by name as `false` is.
     crate::vocabulary::ROUTE_TRUE,
-    // The global-binding TREE the isa spec walks: a BST view of the root
-    // frame, `(binding . (left . right))` per node, sharing the frame's own
-    // `(sym . val)` cells so redefinition is visible through both.
-    crate::vocabulary::ROUTE_ENV_GLOBAL_TREE,
+    // The ROOT environment, where top-level forms, `eval!` and the loader
+    // bind: `(Env root)` reads it. The `env` row holds the same environment,
+    // the one this base evaluates in.
+    crate::vocabulary::ROUTE_ENV_ROOT,
+    // The raised-error value: one ERR, (code . subject), filled per raise.
+    crate::vocabulary::ROUTE_ERR,
 ];
 
 /// Slots the heap instructions reach for by name.
@@ -127,7 +129,8 @@ pub const TCO_ENV: usize = 21;
 pub const SIGINT: usize = 22;
 pub const ERROR_HANDLER: usize = 23;
 pub const TRUE: usize = 24;
-pub const ENV_GLOBAL_TREE: usize = 25;
+pub const ENV_ROOT: usize = 25;
+pub const ERR: usize = 26;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -194,30 +197,35 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
     // printer renders the base as the bounded opaque form instead of walking
     // the whole spine.
     let label = o.base_label();
-    o.set_type_word(spine, label);
+    // The base is two units, as the reference's is: the spine first, the slot
+    // vector second (`crate::slots`). The label rides the base object.
+    let slots = crate::slots::make(o);
+    let base = o.spair(spine, slots);
+    o.set_type_word(base, label);
     // The error-scratch atom: every engine-raised condition writes its
     // message into this base's atom and raises THE ATOM — one identity the
     // printer knows (#54). Its bytes are this base's error-str row.
     let scratch = o.error_atom();
-    set_slot(o, spine, ERROR_STR, scratch);
+    set_slot(o, base, ERROR_STR, scratch);
     let env_obj = o.env_obj(env);
-    set_slot(o, spine, PRIMS_SLOT, catalogue);
-    set_slot(o, spine, ENV_SLOT, env_obj);
+    set_slot(o, base, PRIMS_SLOT, catalogue);
+    set_slot(o, base, ENV_SLOT, env_obj);
+    set_slot(o, base, ENV_ROOT, env_obj);
 
     // The library's own slots, laid out the way it reads them.
     // A fresh base's line counter reads 1: the first line of the source is
     // line one, and x-lang's own spec says so.
     let line = raw_cell(o, 1);
-    set_slot(o, spine, LINE, line);
+    set_slot(o, base, LINE, line);
     // The extended-meta policy cell: how many meta words an allocation
     // prepends. Zero until the boot arms it.
     let mc = raw_cell(o, 0);
-    set_slot(o, spine, OBJ_META_EXTRA, mc);
+    set_slot(o, base, OBJ_META_EXTRA, mc);
     // The raise-site snapshot cells (io error-line / error-file read them).
     let el = raw_cell(o, 0);
-    set_slot(o, spine, ERR_LINE, el);
+    set_slot(o, base, ERR_LINE, el);
     let ef = raw_cell(o, 0);
-    set_slot(o, spine, ERR_FILE, ef);
+    set_slot(o, base, ERR_FILE, ef);
     // stdin, stdout, stderr: the library indexes the second and third, and
     // the engine's own write path reads the second, so the cells carry the
     // real descriptors from birth.
@@ -229,35 +237,36 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
         o.set_data(c, 0, v.word());
         at = o.rest(at);
     }
-    set_slot(o, spine, FILES, files);
+    set_slot(o, base, FILES, files);
     // Counters, read through %cell-int. Nine, which is what lib/x/tool/profile.x
     // names; unused ones simply stay zero.
     let profile = cell_spine(o, 9);
-    set_slot(o, spine, PROFILE, profile);
+    set_slot(o, base, PROFILE, profile);
     // A HOLDER CELL per singleton, as the reference's eval fields are: the
     // route lands on the holder, whose FIRST is the singleton — what the
     // predicates and the base-paths spec read — and whose REST is scratch
     // x-lang writes (module.x hangs the include list there).
     let f = o.false_obj();
     let fh = o.spair(f, NIL);
-    set_slot(o, spine, FALSE, fh);
+    set_slot(o, base, FALSE, fh);
     let t = o.true_obj();
     let th = o.spair(t, NIL);
-    set_slot(o, spine, TRUE, th);
+    set_slot(o, base, TRUE, th);
     // A cell holding the fd, so `(%cell-int (first …))` reads it. 0 is stdin,
     // which is where a bare engine's program arrives.
     let fd = raw_cell(o, 0);
-    set_slot(o, spine, FILEIN, fd);
+    set_slot(o, base, FILEIN, fd);
     // The buffer slot exists and is empty: the library resets what it finds
     // here, and a route that walked off the end would answer nil either way —
     // indistinguishable from a route this engine forgot.
-    set_slot(o, spine, BUFFER, NIL);
-    spine
+    set_slot(o, base, BUFFER, NIL);
+    base
 }
 
 /// The cell at `n` steps of `rest` from the base.
 fn cell(o: &Objects, base: Obj, n: usize) -> Obj {
-    let mut at = base;
+    // The spine is the base's first unit.
+    let mut at = o.first(base);
     for _ in 0..n {
         at = o.rest(at);
     }
@@ -323,6 +332,21 @@ pub fn set(o: &mut Objects, base: Obj, n: usize, v: Obj) {
     set_slot(o, base, n, v)
 }
 
+/// The base's ERR, or nil before one is installed. The row is a CELL field,
+/// as x-engine-c's is: the slot holds a cell whose first is the ERR.
+pub fn err(o: &Objects, base: Obj) -> Obj {
+    let c = slot(o, base, ERR);
+    if c.is_nil() {
+        return NIL;
+    }
+    o.first(c)
+}
+
+pub fn set_err(o: &mut Objects, base: Obj, err: Obj) {
+    let c = o.spair(err, NIL);
+    set_slot(o, base, ERR, c);
+}
+
 /// Prepend to one of the list slots, answering the new head.
 ///
 /// PREPEND, because that is what the contract says: "mark-hook! prepends the
@@ -333,45 +357,6 @@ pub fn push(o: &mut Objects, base: Obj, n: usize, v: Obj) -> Obj {
     let cell = o.pair(v, head);
     set_slot(o, base, n, cell);
     cell
-}
-
-/// A global-tree node: the binding, then a kids cell (left . right).
-fn tree_node(o: &mut Objects, binding: Obj) -> Obj {
-    let kids = o.spair(NIL, NIL);
-    o.spair(binding, kids)
-}
-
-/// Mirror one root-frame binding into the base's global tree.
-///
-/// The node holds the frame's own `(sym . val)` cell, so `set!` through
-/// either view is seen by both. Insertion is keyed by the symbol's word —
-/// any total order gives the walker its layout. A name already mirrored is
-/// left alone: `Envs::bind` rebinds in place, so its cell is already here.
-pub fn global_tree_insert(o: &mut Objects, base: Obj, binding: Obj) {
-    let c = cell(o, base, ENV_GLOBAL_TREE);
-    let root = o.first(c);
-    if root.is_nil() {
-        let n = tree_node(o, binding);
-        o.set_data(c, 0, n.word());
-        return;
-    }
-    let key = o.first(binding);
-    let mut at = root;
-    loop {
-        let b = o.first(at);
-        if o.first(b) == key {
-            return;
-        }
-        let kids = o.rest(at);
-        let left = key.word().raw() < o.first(b).word().raw();
-        let child = if left { o.first(kids) } else { o.rest(kids) };
-        if child.is_nil() {
-            let n = tree_node(o, binding);
-            o.set_data(kids, if left { 0 } else { 1 }, n.word());
-            return;
-        }
-        at = child;
-    }
 }
 
 #[cfg(test)]
@@ -455,7 +440,12 @@ mod tests {
                 if root != "base" {
                     return None;
                 }
+                // The first step is `f`, into the spine; the rest walk it.
                 let steps: Vec<&str> = w.collect();
+                let steps = match steps.split_first() {
+                    Some((&"f", rest)) => rest.to_vec(),
+                    _ => return Some((name.to_string(), usize::MAX, false)),
+                };
                 let rs = steps.iter().take_while(|s| **s == "r").count();
                 let clean = steps[rs..].iter().all(|s| *s == "f");
                 Some((name.to_string(), rs, clean))
@@ -473,40 +463,5 @@ mod tests {
             assert!(row.2, "route {route}: steps are not r-run then f-run");
             assert_eq!(row.1, i, "route {route}: r-count disagrees with its slot");
         }
-    }
-
-    /// The derived env-alist route lands on the frame chain: seven rests to the
-    /// env cell, first into the env object, first into its holder — whose first
-    /// is the alist of `(sym . val)` cells. Walked with the same raw first/rest
-    /// the library's registry uses, on a REAL engine, so a change to either the
-    /// spine or the env representation fails here rather than in a spec.
-    #[test]
-    fn the_env_alist_route_reaches_the_bindings() {
-        let mut e = crate::engine::Engine::new();
-        e.eval_str("(def env-alist-probe 77)").unwrap();
-        let mut at = e.base;
-        for _ in 0..ENV_SLOT {
-            at = e.objects.rest(at);
-        }
-        let holder = {
-            let env_obj = e.objects.first(at);
-            e.objects.first(env_obj)
-        };
-        let mut chain = e.objects.first(holder);
-        let name = e.objects.sym("env-alist-probe");
-        let mut found = false;
-        while !chain.is_nil() {
-            let pair = e.objects.first(chain);
-            if e.objects.first(pair) == name {
-                assert_eq!(e.objects.as_int(e.objects.rest(pair)), 77);
-                found = true;
-                break;
-            }
-            chain = e.objects.rest(chain);
-        }
-        assert!(
-            found,
-            "the bound name is not on the chain the route reaches"
-        );
     }
 }

@@ -35,10 +35,10 @@
 //! knowing, which is instances; everywhere else the layout is known and
 //! precision is both cheaper and correct.
 
-use crate::obj::{EnvId, Flags, Obj, Word};
+use crate::obj::{EnvId, Obj, Word};
 use crate::objects::{
-    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_ENV, FLAG_ENVH, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP,
-    FLAG_PAIR, FLAG_SPAIR, FLAG_WRAP,
+    Objects, FLAG_BUF, FLAG_BUFMARKS, FLAG_FALSE, FLAG_FN, FLAG_ITER, FLAG_OP, FLAG_PAIR,
+    FLAG_SPAIR, FLAG_WRAP,
 };
 
 /// The mark, kept in a spare bit of the flags word.
@@ -109,23 +109,20 @@ impl Objects {
 
     /// Could this word be an object in this heap?
     ///
-    /// Used only for the conservative cases. It is allowed to say yes to a
-    /// non-object; it must never say no to a real one.
+    /// Yes only for the start of an allocation: a word that merely carries
+    /// the magic bit may sit inside a string's bytes, and the mark written
+    /// through it lands in the text.
     fn plausible(&self, w: u64) -> bool {
-        // Word-aligned, inside the heap, and with room for a header.
-        w != 0
-            && w % 8 == 0
-            && (w / 8) as usize + crate::objects::META_LEN as usize <= self.heap.words_len()
+        self.heap.fits(w, crate::objects::META_LEN) && self.is_start(w)
     }
 
     /// Does an object's claimed data extent fit inside the heap? True for
     /// every real object; a conservative hit on a word run that is not one
     /// fails it and is marked without traversal.
     fn extent_ok(&self, o: Obj, n: u64) -> bool {
-        (o.word().raw() / 8)
-            .checked_add(crate::objects::META_LEN + n)
-            .map(|end| end as usize <= self.heap.words_len())
-            .unwrap_or(false)
+        crate::objects::META_LEN
+            .checked_add(n)
+            .is_some_and(|words| self.heap.fits(o.word().raw(), words))
     }
 
     /// Mark everything reachable from `stack`. One walk: an environment is
@@ -149,13 +146,9 @@ impl Objects {
                 stack.push(ty);
             }
 
-            // The KIND bits only: the mark bit, the meta bit and the meta
-            // count all ride the same word, and a flags value they contaminate
-            // matches no kind — an armed PAIR would traverse as opaque and its
-            // children would be swept alive.
-            let flags = Flags::from_word(Word(
-                self.flags_word(o) & !crate::objects::FLAG_META_BIT & 0x00ff_ffff_ffff_ffff,
-            ));
+            // The kind field only: the mark bit, the meta bit, the meta count
+            // and x-lang's attribute bits ride the same word.
+            let flags = crate::objects::kind_load(self.flags_word(o));
             let n = self.data_len(o);
             match flags {
                 // Both words are references.
@@ -169,16 +162,6 @@ impl Objects {
                 // the spine, traced like everything else on it.
                 f if f == FLAG_FN || f == FLAG_OP || f == FLAG_WRAP => {
                     stack.push(self.data(o, 1).as_obj());
-                }
-                // An environment OBJECT names a holder and nothing else.
-                f if f == FLAG_ENV => {
-                    stack.push(self.env_id(o).obj());
-                }
-                // An ENV HOLDER: chain head, parent holder, base — all objects.
-                f if f == FLAG_ENVH => {
-                    stack.push(self.data(o, 0).as_obj());
-                    stack.push(self.data(o, 1).as_obj());
-                    stack.push(self.data(o, 2).as_obj());
                 }
                 // THE FALSE SINGLETON IS SCRATCH SPACE. It looks like a value
                 // with nothing in it, and x-lang hangs the include list off its
@@ -202,6 +185,10 @@ impl Objects {
                 // Raw marks: an object with NO object slots. Marked, never
                 // traversed.
                 f if f == FLAG_BUFMARKS => {}
+                // A slot vector: the length object, never the addresses.
+                f if f == crate::objects::FLAG_SLOTS => {
+                    stack.push(self.data(o, 0).as_obj());
+                }
                 // Everything else: either a raw value (int, char, prim index,
                 // foreign address, string byte offset) or an INSTANCE whose words
                 // are x-lang's to use. The raw kinds have no references to miss;
@@ -368,9 +355,21 @@ impl crate::engine::Engine {
 
     /// `(heap collect)` — reclaim what nothing can reach. Answers the count.
     ///
-    /// One mark pass over the roots, then one sweep. Environments are heap
-    /// data, so their holders and chains trace like any other objects.
+    /// The mark phase, then the sweep phase, each called through its slot in
+    /// the base's slot vector, as the reference's collect calls them: a
+    /// language that stores a routine in either slot is called in its place.
     pub fn collect(&mut self) -> usize {
+        self.last_freed = 0;
+        let mut none: [u64; 0] = [];
+        let _ = self.slot_call(crate::slots::HEAP_MARK, &mut none);
+        let _ = self.slot_call(crate::slots::HEAP_SWEEP, &mut none);
+        self.in_gc = false;
+        self.last_freed
+    }
+
+    /// The collector's mark phase: the mark hooks, then everything reachable
+    /// from the roots. The reference's `x_heap_mark_phase`.
+    pub(crate) fn mark_phase(&mut self) {
         // HOOKS FIRST, BEFORE ANY MARKING.
         if !self.in_gc {
             self.in_gc = true;
@@ -415,11 +414,15 @@ impl crate::engine::Engine {
             }
         }
         self.objects.mark(&mut ostack);
+    }
 
-        // Between mark and sweep, as the reference does it.
+    /// The collector's sweep phase: the free hooks, then the sweep. The
+    /// reference's `x_heap_sweep_phase`.
+    pub(crate) fn sweep_phase(&mut self) {
         self.run_gc_hooks(crate::base::FREE_HOOKS);
 
         let freed = self.objects.sweep();
+        self.last_freed += freed;
 
         // A snapshot outlives its continuation OBJECT only as garbage: when
         // the sweep frees the cont, its snapshot goes too — the same
@@ -439,7 +442,6 @@ impl crate::engine::Engine {
         // freed chunk's flags word, so the test is one read per map key —
         // never a walk of the free list, whose size is unbounded.
         let o = &self.objects;
-        self.envs.index.retain(|h, _| !o.is_freed(*h));
         self.base_syms.retain(|b, _| !o.is_freed(*b));
 
         // DEBUG (X_DBG_FREECHECK): nothing REACHABLE may sit on the free
@@ -479,9 +481,6 @@ impl crate::engine::Engine {
                 );
             }
         }
-
-        self.in_gc = false;
-        freed
     }
 
     /// Invoke every callable on one of the base's handler lists, with NO

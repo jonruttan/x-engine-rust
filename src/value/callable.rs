@@ -5,14 +5,15 @@
 //! have nothing else to do with each other.
 
 use crate::obj::{EnvId, Obj, Word};
-use crate::objects::{
-    Objects, FLAG_CONT, FLAG_ENV, FLAG_FN, FLAG_FOREIGN, FLAG_OP, FLAG_PRIM, FLAG_WRAP,
-};
+use crate::objects::{Objects, FLAG_CONT, FLAG_FN, FLAG_FOREIGN, FLAG_OP, FLAG_PRIM, FLAG_WRAP};
 
 impl Objects {
-    /// A primitive: the data word holds an index into the engine's prim table.
+    /// A primitive: data word 0 holds an index into the engine's prim table,
+    /// data word 1 its state, nil. Two words, as every function object is on
+    /// the reference: x-lang installs a compiled version into a function by
+    /// writing its type and both words (lib/x/tool/compiled.x).
     pub fn prim(&mut self, idx: usize) -> Obj {
-        let o = self.alloc(FLAG_PRIM, 1);
+        let o = self.alloc(FLAG_PRIM, 2);
         self.set_data(o, 0, Word::from_usize(idx));
         o
     }
@@ -33,7 +34,7 @@ impl Objects {
     /// because a primitive's data word is an INDEX into the instruction table,
     /// and an address would alias a real instruction.
     pub fn foreign(&mut self, addr: u64) -> Obj {
-        let o = self.alloc(FLAG_FOREIGN, 1);
+        let o = self.alloc(FLAG_FOREIGN, 2);
         self.set_data(o, 0, Word(addr));
         o
     }
@@ -53,13 +54,11 @@ impl Objects {
     /// entry the slot holds, not cases of a dispatcher.
     ///
     /// A closure: entry in slot 0; slot 1 is the STATE SPINE
-    /// `(params body env . bst)` — the reference's `x_procstate` layout, which
-    /// the library reads (`lib/x/tool/cov.x` walks slot 1 for the body). The
-    /// bst tail is nil here: this engine's globals live in the frame chain.
+    /// `(params . (body . env))` — the reference's procedure state, which the
+    /// library reads: `(Fn env f)` is its `(rest (rest s))`, and
+    /// `lib/x/tool/cov.x` walks it for the body.
     pub fn closure(&mut self, params: Obj, body: Obj, env: EnvId) -> Obj {
-        let env_obj = self.env_obj(env);
-        let s3 = self.spair(env_obj, crate::obj::NIL);
-        let s2 = self.spair(body, s3);
+        let s2 = self.spair(body, env.obj());
         let state = self.spair(params, s2);
         let o = self.alloc(FLAG_FN, 2);
         self.set_data(o, 0, self.entry_words[0]);
@@ -84,15 +83,14 @@ impl Objects {
     }
 
     pub fn closure_env(&self, o: Obj) -> EnvId {
-        self.env_id(self.first(self.rest(self.rest(self.state_of(o)))))
+        self.env_id(self.rest(self.rest(self.state_of(o))))
     }
 
     /// An operative: entry, then the state spine
     /// `(params envname body . env)` — `x_opstate`'s layout, env in the DOTTED
     /// tail as the reference keeps it.
     pub fn operative(&mut self, params: Obj, envname: Obj, body: Obj, env: EnvId) -> Obj {
-        let env_obj = self.env_obj(env);
-        let s3 = self.spair(body, env_obj);
+        let s3 = self.spair(body, env.obj());
         let s2 = self.spair(envname, s3);
         let state = self.spair(params, s2);
         let o = self.alloc(FLAG_OP, 2);
@@ -121,18 +119,16 @@ impl Objects {
         self.env_id(self.rest(self.rest(self.rest(self.state_of(o)))))
     }
 
-    pub fn env_obj(&mut self, id: EnvId) -> Obj {
-        let o = self.alloc(FLAG_ENV, 1);
-        self.set_data(o, 0, id.word());
-        o
+    /// An environment as a value: the pair itself.
+    pub fn env_obj(&self, id: EnvId) -> Obj {
+        id.obj()
     }
 
-    pub fn is_env(&self, o: Obj) -> bool {
-        self.is(o, FLAG_ENV)
-    }
-
+    /// A value as an environment. Unchecked, as the reference's `eval` reads
+    /// its second argument: a value that is not an environment resolves
+    /// nothing.
     pub fn env_id(&self, o: Obj) -> EnvId {
-        EnvId::from_word(self.data(o, 0))
+        EnvId::from_obj(o)
     }
 
     pub fn cont(&mut self, id: u64) -> Obj {
