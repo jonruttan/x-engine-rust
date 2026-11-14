@@ -27,15 +27,13 @@
   (binary "x-engine")
 
   ; --- guarantees ---
-  ; Two of these are free, and saying why is more useful than asserting them.
-  ; This engine has NO COLLECTOR: the `core` profile does not include isa/gc, so
-  ; the smallest thing that can boot x-lang allocates into a growing arena and
-  ; never frees.  Allocation therefore cannot collect, and a live object cannot
-  ; move -- not because the collector is careful, but because there is none.  If
-  ; a collector is ever added, both rows stop being free and must be re-earned.
+  ; The collector is mark and sweep over a pinned arena (src/collect.rs).  It
+  ; runs only when x-lang calls `heap collect`, never from allocation, and a
+  ; sweep reclaims words in place without compacting, so a live object keeps
+  ; its address.
   (guarantee gc/explicit-only)
   (guarantee gc/non-moving)
-  ; The fixnum and the arena offset are both a machine word.
+  ; The fixnum and the object address are both a machine word.
   (guarantee int/ptr-same-width)
 
   ; Proper tail calls, unbounded depth.  EARNED, not free: this engine recursed
@@ -75,8 +73,8 @@
 
   ; int <-> ptr round-trips faithfully enough to size a word, which is how
   ; lib/x/boot/data.x probes the width at boot.  Free here for the same reason
-  ; int/ptr-same-width is: a pointer IS an arena offset, so the round trip is a
-  ; re-labelling rather than a conversion.
+  ; int/ptr-same-width is: a pointer IS a machine address, so the round trip is
+  ; a re-labelling rather than a conversion.
   (provides reflect/word-probe)
 
   ; The in-process assembler lane: this engine exports the nine jit_*

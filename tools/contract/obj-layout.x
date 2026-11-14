@@ -27,23 +27,10 @@
 ;
 ; Units are words; multiply by %word-size for byte offsets.
 ;
-; NO HEAP LINK.  x-engine-c reserves word 0 for a garbage-collector chain.  This
-; engine has no collector: the `core` profile does not include isa/gc, and the
-; smallest thing that can boot x-lang therefore allocates and never frees.  So the
-; link word is absent, every later slot shifts down by one, and the header is two
-; words rather than three.  The C engine's own descriptor documents this exact
-; layout for its non-X_HEAP build, which is what makes it a legitimate variation
-; rather than an invention.
-;
-; That difference is the point.  If x-lang boots on both, L1 is doing its job; if
-; it only boots on a layout identical to the C one, "engine-supplied layout" was
-; never real.
-;
-; THE ARENA.  Objects live in a flat array of machine words.  An object pointer is
-; a BYTE OFFSET into that array, not a machine address -- nothing outside this
-; engine ever dereferences one, because the `core` profile has no foreign door.
-; Every reflective read x-lang performs lands back inside the arena by
-; construction.
+; THE ARENA.  Objects live in one pinned array of machine words, and an object
+; pointer is the real machine address of its first word, as the reference's is:
+; compiled x code follows the words stored in objects, so they have to be
+; addresses.
 ;
 ; FORMAT (rigid, one entry per line -- the awk parses the same bytes):
 ;   (def %obj-<name> <decimal integer>)

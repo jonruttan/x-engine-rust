@@ -1,4 +1,4 @@
-//! Escape continuations.
+//! Continuations.
 //!
 //! Mirrors the reference engine's `x-prim/callcc.c`. The boundary is not invented
 //! here: x-engine-c drew it, and an engine that grouped these differently
@@ -11,11 +11,10 @@ use crate::eval::{ContSnapshot, ControlRec, EvalResult};
 use crate::obj::{EnvId, Obj, NIL};
 use crate::prim::PrimDef;
 
-/// `(call/cc f)` — ESCAPE-only continuations.
+/// `(call/cc f)` — call `f` with the current continuation.
 ///
-/// The continuation unwinds outward and cannot be re-entered. x-lang's library
-/// never calls call/cc at all — only doc-prims.x documents it — so escape covers
-/// everything the language does.
+/// Invoked while this frame is live, the continuation unwinds to it; invoked
+/// after, it replays the snapshot taken here (see `with_escape`).
 fn call_cc(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.with_escape(a[0], e.root_env())
 }
