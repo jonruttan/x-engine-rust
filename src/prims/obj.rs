@@ -141,10 +141,9 @@ fn obj_make(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 
 /// `(obj make-callable p)` — a raw address dressed as callable.
 ///
-/// Answers a value that can sit at the head of a form. Calling it does what
-/// calling any non-combiner does — the form is data — because the `core`
-/// profile has no foreign door and there is nothing to jump to. An engine with
-/// one makes this callable without changing what it constructs.
+/// Answers a value that can sit at the head of a form. Applying it calls
+/// through the address with the C primitive convention
+/// (`Engine::apply_foreign`).
 fn make_callable(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     let at = a_.as_ptr(a[0]);
     Ok(a_.foreign(at.raw()))

@@ -10,9 +10,11 @@
 //! Layout, and it is NOT x-engine-c's (see obj-layout.x for why):
 //!
 //! ```text
-//!   word 0   type      offset of the type object, or NIL
-//!   word 1   flags     bitfield; carries the simple-type code
-//!   word 2+  data
+//!   word 0   heap      the collector's chain link
+//!   word 1   type      address of the type object, or NIL
+//!   word 2   flags     bitfield; carries the simple-type code
+//!   word 3   length    how many data words follow
+//!   word 4+  data
 //! ```
 //!
 //! Word 0 is the HEAP LINK, threading every live object into one chain so the
@@ -173,8 +175,8 @@ pub const FLAG_WRAP: Flags = Flags::new(0x8000);
 /// A FOREIGN CALLABLE: an address dressed as something callable.
 ///
 /// `obj make-callable` turns a raw pointer — in practice a `dlsym` result — into
-/// a value that can sit at the head of a form. This engine cannot call one: the
-/// `core` profile has no foreign door, so there is nothing to jump to.
+/// a value that can sit at the head of a form. Applying one calls through
+/// the address with the C primitive convention (`Engine::apply_foreign`).
 ///
 /// It is a flag of its own rather than a primitive carrying an address, because
 /// a primitive's data word is an INDEX into the engine's instruction table and
@@ -206,11 +208,11 @@ pub const FLAG_BUF: Flags = Flags::new(0x20000);
 /// pointers, not objects").
 pub const FLAG_BUFMARKS: Flags = Flags::new(0x20001);
 
-/// An escape CONTINUATION, identified by a serial number.
+/// A CONTINUATION, identified by a serial number.
 ///
-/// Escape-only: it unwinds outward and cannot be re-entered. x-lang's library
-/// never calls call/cc -- only doc-prims.x documents it -- so escape semantics
-/// cover everything the language actually does.
+/// Invoked while its frame is live, it unwinds to that frame. Invoked after
+/// the frame has returned, it replays the control records captured with it
+/// (`crate::prims::callcc`).
 pub const FLAG_CONT: Flags = Flags::new(0x10000);
 
 /// The clean end-of-input sentinel, bound to x-lang as `%token-eof`.
@@ -486,9 +488,9 @@ impl Objects {
 
     /// A header plus `n` data words; answers the object's reference.
     ///
-    /// Never frees. That is the whole memory manager: the `core` profile has no
-    /// isa/gc, so an engine aiming at it is not permitted a collector and does
-    /// not need one.
+    /// Reuses a swept object of the same size when there is one, and grows the
+    /// heap otherwise. It never collects: a collection happens only when x-lang
+    /// asks for one (`gc/explicit-only`).
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
         self.live += 1;

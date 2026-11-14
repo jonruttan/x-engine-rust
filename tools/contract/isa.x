@@ -37,10 +37,9 @@
   (ctrl call/cc spine)
 
   ; --- the heap ---
-  ; THIS ENGINE HAS NO COLLECTOR, and implementing the group does not add one.
   ; `heap collect` must PRESERVE a reachable object and be idempotent from the
-  ; caller's view; a heap that never frees satisfies both by construction rather
-  ; than by sweeping carefully.  Registration is the engine's job and invocation
+  ; caller's view; src/collect.rs marks from the roots and sweeps the heap
+  ; chain.  Registration is the engine's job and invocation
   ; the library's -- a mark hook is invoked once per mark phase BY THE CONSUMING
   ; LAYER, so the engine only puts it on a list the base addresses.
   (heap count gc)
@@ -99,11 +98,10 @@
   ; vocabulary files them under reflect/ptr-casts, NOT under the foreign-call
   ; group: these are how a reflective language reads its own objects.
   ;
-  ; A "pointer" here is a BYTE OFFSET into this engine's heap, never a machine
-  ; address -- which is what keeps the two senses of `ffi` apart.  The foreign
-  ; door below traffics in real addresses and is the ONLY place they appear; an
-  ; offset arriving there, or an address arriving here, is a segfault rather than
-  ; a wrong answer, and that is why `crate::foreign` keeps its own type for one.
+  ; A "pointer" here is a real machine address, as an object reference is.  One
+  ; inside the arena is reached through the heap; one outside it goes through
+  ; the foreign crate, which keeps its own type for an address the engine did
+  ; not allocate.
   (obj ->ptr ffi)
   (ptr ->obj ffi)
   (ptr ->int ffi)
@@ -140,8 +138,8 @@
   (bytes ->str alloc)
   (type make-instance alloc)
   (obj make alloc)            ; needs a REGISTERED type handle; nil otherwise
-  (obj make-callable alloc)   ; a raw address dressed as callable; NOT callable
-                              ;   here -- `core` has no foreign door to jump to
+  (obj make-callable alloc)   ; a raw address dressed as callable; applied with
+                              ;   the C prim convention
 
   ; --- the type registry ---
   (type make types)
@@ -209,7 +207,7 @@
   (unwrap spine)              ; the very same object back -- same?, not equal
   (atomic spine)
   (tail-eval spine)
-  (call/cc spine)             ; ESCAPE-only; unwinds outward, cannot be re-entered
+  (call/cc spine)             ; unwinds while live; replays its snapshot after
   (%cc-invoke spine)
   (op spine)                  ; operative: args UNEVALUATED, caller's env by name
   (set! spine)                ; rebinds where a name already lives; never creates

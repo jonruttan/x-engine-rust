@@ -1,14 +1,9 @@
-//! The reader.
+//! The reader's built-in syntax.
 //!
-//! A minimal s-expression reader: lists, integers, strings, symbols, and `;`
-//! comments. It is deliberately NOT the engine's final reader — x-lang's real
-//! one is extensible, and `tok/read-str` drives registered types through an
-//! analyser-and-score protocol (x-lang's `tests/x/conformance/core/reader.spec.md`
-//! defines it). That protocol needs the type registry, which does not exist yet.
-//!
-//! What this gives is the observation channel: enough to read `(error "ok")` so
-//! the engine can be watched at all. Every conformance case depends on that and
-//! nothing else can be checked until it works.
+//! Lists, integers, strings, characters, symbols, and `;` comments. This is the
+//! FALLBACK: where a form may begin, the analysers registered on the base's
+//! types are asked first (`crate::form`), and these routines read only what
+//! none of them claims.
 //!
 //! The reader has NO state of its own: it walks a BUFFER — `(val . (read .
 //! write))` over a text string — and the buffer it walks is the head of the
