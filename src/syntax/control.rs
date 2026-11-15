@@ -35,6 +35,23 @@ fn error(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     Err(Cond::Raised(v))
 }
 
+/// Close each fd pushed on `filein` since the snapshot, head first, and put
+/// the three include rows back. A latched cell holds the fd's complement,
+/// which is recovered for the close. Entries pushed before the guard stay:
+/// a guard inside an included file keeps that file's frames.
+fn unwind_include_state(e: &mut Engine, (filein, buffer, line): (Obj, Obj, Obj)) {
+    let base = e.base;
+    let mut head = crate::base::get(&e.objects, base, crate::base::FILEIN);
+    while head != filein && !head.is_nil() {
+        let fd = e.objects.as_int(e.objects.first(head));
+        x_engine_foreign::close_fd((if fd < 0 { !fd } else { fd }) as i32);
+        head = e.objects.rest(head);
+    }
+    crate::base::set(&mut e.objects, base, crate::base::FILEIN, filein);
+    crate::base::set(&mut e.objects, base, crate::base::BUFFER, buffer);
+    crate::base::set(&mut e.objects, base, crate::base::LINE, line);
+}
+
 /// `(guard (name handler...) body...)` — on a raise, bind the RAISED VALUE to
 /// `name` in a fresh frame and run the handler.
 fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
@@ -43,6 +60,14 @@ fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     // A handler is now active, which is what lets a pending interrupt become a
     // STOP rather than tearing the run down.
     e.handler_push(env);
+    // The include state, as x-engine-c's guard snapshots it (#242): a raise
+    // inside a load x-lang's loader pushed leaves the file's entries on
+    // these rows, and the loader's pops never run.
+    let rows = (
+        crate::base::get(&e.objects, e.base, crate::base::FILEIN),
+        crate::base::get(&e.objects, e.base, crate::base::BUFFER),
+        crate::base::get(&e.objects, e.base, crate::base::LINE),
+    );
     let outcome = e.eval_body(body, env);
     e.handler_pop();
     match outcome {
@@ -52,6 +77,7 @@ fn guard(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
         // depth, silently turning a non-local exit into a handled error.
         Err(cond) if e.is_escaping() => Err(cond),
         Err(cond) => {
+            unwind_include_state(e, rows);
             // Freeze the raise-site location into err-line/err-file BEFORE the
             // handler body runs and moves the live counters — the reference
             // snapshots at raise time, and nothing evaluates in between.
