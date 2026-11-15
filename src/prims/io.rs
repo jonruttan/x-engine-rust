@@ -292,4 +292,17 @@ mod tests {
         assert!(truthy("(match ((eq? %token-eof 0) ()) (#t 1))"));
         assert!(truthy("(same? %token-eof %token-eof)"));
     }
+
+    /// A raise inside an included file, caught by a guard in a closure body
+    /// around the include: the guard's handler answers, and the file's
+    /// trailing forms stay unread.
+    #[test]
+    fn a_raise_in_an_include_inside_a_closure_is_caught() {
+        let p = std::env::temp_dir().join(format!("xrs-incl-{}.x", std::process::id()));
+        std::fs::write(&p, "(def zz-a 1)\n(error \"boom\")\n(def zz-b 2)\n").unwrap();
+        let src = format!("((fn (_) (guard (e 7) (include \"{}\"))))", p.display());
+        let got = crate::testkit::int_of(&src);
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(got, 7);
+    }
 }

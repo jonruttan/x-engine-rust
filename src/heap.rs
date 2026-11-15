@@ -40,6 +40,8 @@ pub struct Heap {
     /// requires only to RISE across an allocation, so collection must not lower
     /// it. `Objects::live` is the other number.
     allocations: usize,
+    /// Freed byte runs, by length in words.
+    free_runs: std::collections::HashMap<usize, Vec<Addr>>,
 }
 
 impl Heap {
@@ -58,6 +60,7 @@ impl Heap {
             words,
             base,
             allocations: 0,
+            free_runs: std::collections::HashMap::new(),
         }
     }
 
@@ -151,16 +154,33 @@ impl Heap {
         self.words.push(v.raw());
     }
 
-    /// A run of `n` zeroed bytes. Never freed: the whole memory manager here is
-    /// that the heap grows, which the `core` profile permits precisely because
-    /// it has no isa/gc.
+    /// A run of `n` zeroed bytes. The word before the run holds its length in
+    /// words, as malloc keeps a block's size, so [`Heap::free_bytes`] can hand
+    /// it back; a freed run of exactly that length is reused before the arena
+    /// grows. Non-moving, as objects are: a run stays where it was made.
     pub fn alloc_bytes(&mut self, n: usize) -> Addr {
-        self.grow_guard(n / WORD + 2);
-        let start = self.frontier();
-        for _ in 0..n.div_ceil(WORD).max(1) {
-            self.words.push(0);
+        let words = n.div_ceil(WORD).max(1);
+        let reuse = self.free_runs.get_mut(&words).and_then(|v| v.pop());
+        if let Some((at, i)) = reuse.and_then(|at| self.index(at).map(|i| (at, i))) {
+            self.words[i..i + words].fill(0);
+            return at;
         }
+        self.grow_guard(words + 1);
+        self.words.push(words as u64);
+        let start = self.frontier();
+        self.words.resize(self.words.len() + words, 0);
         start
+    }
+
+    /// Return a run [`Heap::alloc_bytes`] made, as the reference's sweep
+    /// frees an owned object's allocation.
+    pub fn free_bytes(&mut self, at: Addr) {
+        let Some(i) = self.index(at) else { return };
+        if i == 0 {
+            return;
+        }
+        let words = self.words[i - 1] as usize;
+        self.free_runs.entry(words).or_default().push(at);
     }
 
     /// `width` bytes assembled into the low end of a zeroed integer, and its
@@ -202,21 +222,11 @@ impl Heap {
     /// unobservable — and storing them terminated is what makes that true here
     /// rather than something to remember at each site.
     pub fn store_bytes(&mut self, bytes: &[u8]) -> Addr {
-        self.grow_guard(bytes.len() / WORD + 2);
-        let start = self.frontier();
-        let mut w: u64 = 0;
-        let mut n = 0;
-        for &c in bytes.iter().chain(std::iter::once(&0u8)) {
-            w |= (c as u64) << (8 * n);
-            n += 1;
-            if n == WORD {
-                self.words.push(w);
-                w = 0;
-                n = 0;
-            }
-        }
-        if n > 0 {
-            self.words.push(w);
+        let start = self.alloc_bytes(bytes.len() + 1);
+        for (k, chunk) in bytes.chunks(WORD).enumerate() {
+            let mut w = [0u8; WORD];
+            w[..chunk.len()].copy_from_slice(chunk);
+            self.set_word(start.plus((k * WORD) as u64), Word(u64::from_le_bytes(w)));
         }
         start
     }
@@ -253,6 +263,21 @@ mod tests {
     fn nothing_is_allocated_at_offset_zero() {
         let mut s = Heap::new();
         assert!(s.alloc_bytes(8).raw() > 0);
+    }
+
+    /// A freed run serves the next allocation of its length, zeroed, and the
+    /// arena does not grow for it.
+    #[test]
+    fn a_freed_run_is_reused_zeroed() {
+        let mut s = Heap::new();
+        let a = s.alloc_bytes(20);
+        s.fill_bytes(a, 65, 20);
+        s.free_bytes(a);
+        let len = s.words_len();
+        let b = s.alloc_bytes(17);
+        assert_eq!(b, a);
+        assert_eq!(s.words_len(), len);
+        assert_eq!(s.byte(b.plus(3)), 0);
     }
 
     #[test]
