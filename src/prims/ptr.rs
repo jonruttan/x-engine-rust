@@ -193,10 +193,8 @@ fn mem_alloc(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
     Ok(a_.ptr(at))
 }
 
-/// A NO-OP, and honestly so: the objects never reuses a region, so releasing one
-/// has nothing to do. An engine with a collector would owe something here; this
-/// one owes nothing, for the same reason `gc/non-moving` is free rather than
-/// earned.
+/// A NO-OP: a region `mem alloc` makes is never given back. Only a swept
+/// object that owns its run returns one (`Heap::free_bytes`).
 fn mem_free(_a_: &mut Objects, _a: &[Obj]) -> Result<Obj, Cond> {
     Ok(NIL)
 }

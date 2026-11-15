@@ -234,6 +234,12 @@ impl Objects {
                 // compacted, so every address x-lang is holding stays valid.
                 let n = self.data_len(at);
                 let meta = (self.flags_word(at) >> crate::objects::FLAG_META_SHIFT) & 0x3f;
+                // An object that owns its first datum's run gives it back, as
+                // the reference's x_obj_free frees it.
+                if self.flags_word(at) & crate::objects::ATTR_OWN != 0 {
+                    let run = self.data(at, 0).as_addr();
+                    self.heap.free_bytes(run);
+                }
                 if self.poison_freed {
                     let was = self.flags_word(at) & !MARK;
                     // Keep the first two data words as well: when the trap
