@@ -66,6 +66,35 @@ mod tests {
         with_coords(BASES, body)
     }
 
+    /// x-engine-c #136: an error caught from a child, then a collect, then a
+    /// second caught error from the same child. Each raise leaves the root
+    /// stacks where they were, so the collect marks nothing the raise cut away.
+    #[test]
+    fn an_error_caught_from_a_child_survives_a_collect_before_the_next() {
+        let coords = [
+            ("%mkb", "base", "make"),
+            ("%beval", "base", "eval"),
+            ("%collect", "heap", "collect"),
+        ];
+        let (mut e, v) = crate::testkit::eval(&with_coords(
+            &coords,
+            "(def churn (fn (self n acc) (match ((= n 0) acc) (#t (self (- n 1) (pair n acc))))))
+             (def b (%mkb))
+             (guard (err (lit caught)) (%beval b (lit nope)))",
+        ));
+        assert!(v.is_ok());
+        let (roots, env_roots) = (e.root_mark(), e.env_root_mark());
+        let v = e
+            .eval_str(
+                "(%collect) (churn 3000 ()) (%collect) (churn 3000 ())
+                 (guard (err (lit caught)) (%beval b (lit (error \"boom\"))))",
+            )
+            .unwrap();
+        let caught = e.objects.sym("caught");
+        assert_eq!(v, caught);
+        assert_eq!((e.root_mark(), e.env_root_mark()), (roots, env_roots));
+    }
+
     /// A fresh base is born knowing the MACHINE. A sandbox withholds the host's
     /// definitions, not the instruction set.
     #[test]
