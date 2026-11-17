@@ -142,22 +142,22 @@ const PRIMS_SLOT: usize = 0;
 /// Every cell EXISTS even when its value is nil: a route that resolved to
 /// nothing would be indistinguishable from a route the engine forgot, and the
 /// library's walk would answer nil rather than failing.
-/// A spine of `n` cells, each holding a fresh one-word cell the library can read
-/// with `%cell-int` and write with `%set-cell-int!`.
-///
-/// The library treats these slots as CELLS, not as values: `lib/x/sys/stream.x`
-/// reads the current output fd with `(first (first (rest (%files))))`, so the
-/// slot has to contain something with a `first` to read.
-fn cell_spine(o: &mut Objects, n: usize) -> Obj {
+/// A spine of `n` holders, each holding a fresh one-word cell the library can
+/// read with `%cell-int` and write with `%set-cell-int!` — the reference's
+/// profile spine, whose element i is a holder over counter i's atom:
+/// lib/x/tool/profile.x reads it as `(%cell-int (first (first (rest^i
+/// spine))))`.
+fn holder_spine(o: &mut Objects, n: usize) -> Obj {
     let mut spine = NIL;
     for _ in 0..n {
         let cell = raw_cell(o, 0);
-        spine = o.spair(cell, spine);
+        let holder = o.spair(cell, NIL);
+        spine = o.spair(holder, spine);
     }
     spine
 }
 
-/// As `cell_spine`, but with SPAIR cells the collector traverses — for rows
+/// A spine of cells, with SPAIR cells the collector traverses — for rows
 /// whose cells hold object references (the files row's fd INT objects).
 fn obj_cell_spine(o: &mut Objects, n: usize) -> Obj {
     let mut spine = NIL;
@@ -238,9 +238,11 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
         at = o.rest(at);
     }
     set_slot(o, base, FILES, files);
-    // Counters, read through %cell-int. Nine, which is what lib/x/tool/profile.x
-    // names; unused ones simply stay zero.
-    let profile = cell_spine(o, 9);
+    // Counters: eleven, as x-engine-c's profile spine holds them
+    // (include/x-eval-layout.h) -- allocs, evals, tco, assoc calls and
+    // steps, sym-find calls and steps, gc runs, bst hits and misses, env
+    // steps. Ones this engine does not count stay zero.
+    let profile = holder_spine(o, 11);
     set_slot(o, base, PROFILE, profile);
     // A HOLDER CELL per singleton, as the reference's eval fields are: the
     // route lands on the holder, whose FIRST is the singleton — what the
