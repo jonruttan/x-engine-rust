@@ -144,11 +144,11 @@ pub struct Engine {
 /// The EXPRESSION LAYER's version, which `x-version` reports.
 ///
 /// Not this crate's version, and the distinction is the reference engine's:
-/// x-version is "ext/x-expr's X_VERSION, '0.1.0' and rightly stable", while
-/// which release of x-lang an engine belongs to is `x-release`. This engine has
-/// no separate expression crate, so the number it reports is the one the layer
-/// has always reported rather than a second thing to keep in step.
-pub const X_EXPR_VERSION: &str = "0.1.0";
+/// x-version is ext/x-expr's X_VERSION, while which release of x-lang an
+/// engine belongs to is `x-release`. This engine has no separate expression
+/// crate, so it reports the release of ext/x-expr that x-engine-c builds
+/// (0.2.0, x-engine-c #138).
+pub const X_EXPR_VERSION: &str = "0.2.0";
 
 impl Engine {
     pub fn new() -> Self {
