@@ -180,6 +180,13 @@ pub const FALSE: &str = "#f";
 pub const ARGS: &str = "args";
 pub const TOKEN_EOF: &str = "%token-eof";
 pub const SIGINT_FLAG: &str = "%sigint-flag";
+/// The continuation closure's names, as x-engine-c's call/cc binds them:
+/// k is `(fn %cc-args (%cc-invoke %cc-ptr %cc-state %cc-args))`, and
+/// lib/x/sys/cont.x reads `%cc-state` out of its environment.
+pub const CC_ARGS: &str = "%cc-args";
+pub const CC_PTR: &str = "%cc-ptr";
+pub const CC_STATE: &str = "%cc-state";
+pub const CC_INVOKE: &str = "%cc-invoke";
 /// The evaluator-state routes on the base spine.
 pub const ROUTE_TRUE: &str = "true";
 pub const ROUTE_ENV_ROOT: &str = "env-root";

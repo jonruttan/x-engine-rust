@@ -57,7 +57,7 @@
   ; library now resolves them by name, which is what decision L1 requires.
   (line    base f r r r r r r r r r r r r r f)
   (files   base f r r r r r r r r r r r r r r f)
-  (profile base f r r r r r r r r r r r r r r r)
+  (profile base f r r r r r r r r r r r r r r r f)
   ; The false SINGLETON, whose REST x-lang uses as scratch (module.x hangs the
   ; include list there), so this answers the OBJECT ITSELF -- the final step
   ; matters: without it the walk ends on the spine node, and module.x's

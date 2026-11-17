@@ -24,15 +24,13 @@ fn def(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let name = e.nth(args, 0);
     let form = e.nth(args, 1);
     let depth = e.active_evals;
-    e.control.push(crate::eval::ControlRec::Bind {
+    let rec = crate::eval::ControlRec::Bind {
         name,
         env,
         set: false,
         depth,
-    });
-    let r = e.eval(form, env);
-    e.control.pop();
-    let v = r?;
+    };
+    let v = e.under(rec, |e| e.eval(form, env))?;
     e.envs.bind(&mut e.objects, env, name, v);
     Ok(v)
 }
@@ -44,15 +42,13 @@ fn set(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     let name = e.nth(args, 0);
     let form = e.nth(args, 1);
     let depth = e.active_evals;
-    e.control.push(crate::eval::ControlRec::Bind {
+    let rec = crate::eval::ControlRec::Bind {
         name,
         env,
         set: true,
         depth,
-    });
-    let r = e.eval(form, env);
-    e.control.pop();
-    let v = r?;
+    };
+    let v = e.under(rec, |e| e.eval(form, env))?;
     if e.envs.set_existing(&mut e.objects, env, name, v) {
         Ok(v)
     } else {

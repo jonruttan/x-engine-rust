@@ -85,14 +85,26 @@ impl Objects {
         self.flags_word(o) & MARK != 0
     }
 
-    fn set_mark(&mut self, o: Obj) {
+    fn set_bit(&mut self, o: Obj, bit: u64) {
         let w = self.flags_word(o);
-        self.set_flags_word(o, w | MARK);
+        self.set_flags_word(o, w | bit);
     }
 
     pub(crate) fn clear_mark(&mut self, o: Obj) {
         let w = self.flags_word(o);
         self.set_flags_word(o, w & !MARK);
+    }
+
+    /// Clear `bit` on every object on the allocation chain — the reference's
+    /// x_heap_chain_clear. It reaches what became garbage since a tree mark,
+    /// which no walk from a root can find.
+    pub(crate) fn chain_clear(&mut self, bit: u64) {
+        let mut at = self.heap_chain;
+        while !at.is_nil() {
+            let w = self.flags_word(at);
+            self.set_flags_word(at, w & !bit);
+            at = self.chain_next(at);
+        }
     }
 
     /// The next object on the allocation chain.
@@ -129,8 +141,15 @@ impl Objects {
     /// heap data — a holder whose slots are its chain, its parent holder and
     /// its base — so a closure's captured env traces like any other slot.
     pub(crate) fn mark(&mut self, stack: &mut Vec<Obj>) {
+        self.tree_mark(stack, MARK);
+    }
+
+    /// Set `bit` on everything reachable from `stack` — the reference's
+    /// x_heap_tree_mark, whose flag is a parameter. The bit doubles as the
+    /// visited test, so a bit already set on an object stops the walk there.
+    pub(crate) fn tree_mark(&mut self, stack: &mut Vec<Obj>, bit: u64) {
         while let Some(o) = stack.pop() {
-            if o.is_nil() || !self.plausible(o.word().raw()) || self.is_marked(o) {
+            if o.is_nil() || !self.plausible(o.word().raw()) || self.flags_word(o) & bit != 0 {
                 continue;
             }
             // Only a word run carrying the allocation magic is an object.
@@ -138,7 +157,7 @@ impl Objects {
             if self.flags_word(o) & crate::objects::FLAG_MAGIC_BIT == 0 {
                 continue;
             }
-            self.set_mark(o);
+            self.set_bit(o, bit);
 
             // The type word is a reference like any other.
             let ty = self.type_of_word(o);
@@ -412,11 +431,11 @@ impl crate::engine::Engine {
             crate::eval::ControlRec::Pass { .. } => {}
         };
         for r in &self.control {
-            push_rec(&mut ostack, r);
+            push_rec(&mut ostack, &r.rec);
         }
         for snap in self.cont_snapshots.values() {
             for r in &snap.recs {
-                push_rec(&mut ostack, r);
+                push_rec(&mut ostack, &r.rec);
             }
         }
         self.objects.mark(&mut ostack);
@@ -572,6 +591,23 @@ mod tests {
         e.collect();
         let v = e.eval_str("(held)").unwrap();
         assert_eq!(e.objects.as_int(v), 42);
+    }
+
+    /// A tree mark sets the caller's bit on what it reaches, and the chain
+    /// clear takes it off everything on the chain, an object no root holds
+    /// included -- x-engine-c's x_heap_tree_mark and x_heap_chain_clear.
+    #[test]
+    fn a_tree_mark_sets_the_callers_bit_and_a_chain_clear_takes_it_back() {
+        const BIT: u64 = 0x400;
+        let mut e = Engine::new();
+        let inner = e.eval_str("(pair 1 2)").unwrap();
+        let outer = e.objects.pair(inner, crate::obj::NIL);
+        e.objects.tree_mark(&mut vec![outer], BIT);
+        assert_ne!(e.objects.flags_word(outer) & BIT, 0);
+        assert_ne!(e.objects.flags_word(inner) & BIT, 0);
+        e.objects.chain_clear(BIT);
+        assert_eq!(e.objects.flags_word(outer) & BIT, 0);
+        assert_eq!(e.objects.flags_word(inner) & BIT, 0);
     }
 
     /// And so is its PARENT chain, which is what a lookup walks. `outer` is not

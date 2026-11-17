@@ -68,15 +68,85 @@ impl ControlRec {
     }
 }
 
-/// What a `call/cc` capture keeps: the control records at capture time and
-/// whether they covered every in-flight frame.
+/// A record on the control stack, with the identity of the frame that
+/// pushed it. A snapshot keeps the identities, so a frame still running
+/// when a dead-extent continuation is invoked knows it is one the
+/// continuation shares.
+#[derive(Clone)]
+pub(crate) struct Frame {
+    pub id: u64,
+    pub rec: ControlRec,
+}
+
+/// What a `call/cc` capture keeps: the control records at capture time, the
+/// evaluation depth of the capture, and whether the records covered every
+/// in-flight frame.
 pub(crate) struct ContSnapshot {
     pub k: Obj,
-    pub recs: Vec<ControlRec>,
+    pub recs: Vec<Frame>,
+    pub depth: u32,
     pub resumable: bool,
 }
 
+/// Do `recs` describe each depth from `first` to `last`, one record a depth,
+/// in order?
+pub(crate) fn covers(recs: &[Frame], first: u32, last: u32) -> bool {
+    recs.len() as u32 == (last + 1).saturating_sub(first)
+        && recs
+            .iter()
+            .enumerate()
+            .all(|(i, f)| f.rec.depth() == first + i as u32)
+}
+
 impl Engine {
+    /// Run `work`, the evaluation a frame described by `rec` waits on, with
+    /// the record on the control stack; then let a dead-extent escape that
+    /// shares this frame rejoin it.
+    pub(crate) fn under(
+        &mut self,
+        rec: ControlRec,
+        work: impl FnOnce(&mut Self) -> EvalResult,
+    ) -> EvalResult {
+        let id = self.next_frame;
+        self.next_frame += 1;
+        self.control.push(Frame { id, rec });
+        let r = work(self);
+        // The record stays while a rejoin replays above it: the frame is
+        // still running, and a capture during the replay must see it.
+        let r = self.rejoin(id, r);
+        self.control.pop();
+        r
+    }
+
+    /// An escape to a continuation whose call/cc has returned unwinds to the
+    /// deepest frame it shares with the live evaluation, the frame `id`
+    /// pushed, and stops there: the snapshot's records above that frame are
+    /// replayed, and their value stands as what the frame waited on. Frames
+    /// below keep running as they are, so nothing beneath the shared frame is
+    /// rebuilt.
+    fn rejoin(&mut self, id: u64, r: EvalResult) -> EvalResult {
+        if r.is_ok() {
+            return r;
+        }
+        let Some((cid, v)) = self.escaping else {
+            return r;
+        };
+        let rest = match self.cont_snapshots.get(&cid) {
+            Some(s) => match s.recs.iter().position(|f| f.id == id) {
+                Some(i) => {
+                    let rest = &s.recs[i + 1..];
+                    if !covers(rest, s.recs[i].rec.depth() + 1, s.depth - 1) {
+                        return r;
+                    }
+                    rest.to_vec()
+                }
+                None => return r,
+            },
+            None => return r,
+        };
+        self.escaping = None;
+        self.replay(&rest, v)
+    }
     /// GENERIC-OPERATOR DISPATCH — `x_type_op_try`, the ops half of the type
     /// system's hot path.
     ///
@@ -308,7 +378,7 @@ impl Engine {
             .is_nil()
     }
 
-    fn eval_pending(&mut self, form: Obj, env: EnvId) -> EvalResult {
+    pub(crate) fn eval_pending(&mut self, form: Obj, env: EnvId) -> EvalResult {
         let (mut form, mut env) = (form, env);
         // ONE root slot for the form under evaluation, replaced as the
         // trampoline moves rather than pushed per iteration — a long tail chain
@@ -504,9 +574,16 @@ impl Engine {
         }
         // A LIBRARY handler is an OPERATIVE taking `(obj . args)`: the
         // arguments stay unevaluated and the SUBJECT goes first — the
-        // selector and the rest are the handler's to interpret.
+        // selector and the rest are the handler's to interpret. The send
+        // stands where the call stood, so the handler's tail stays PARKED
+        // for the caller's trampoline: settling it here ran the method body
+        // as a nested evaluation no record describes, and a continuation
+        // captured inside a method could not be resumed.
         let spine = self.objects.pair(callee, args);
-        Some(self.eval_call(hook, spine, env))
+        match self.combine(hook, spine, env) {
+            Some(r) => Some(r),
+            None => Some(Ok(hook)),
+        }
     }
 
     /// Apply an emitted function: hand it the base and the raw argument
@@ -766,21 +843,20 @@ impl Engine {
         let mut node = args;
         for f in forms {
             node = self.objects.rest(node);
-            if !callee.is_nil() {
+            let r = if callee.is_nil() {
+                self.eval(f, env)
+            } else {
                 let depth = self.active_evals;
-                self.control.push(ControlRec::Args {
+                let rec = ControlRec::Args {
                     callee,
                     done: out.clone(),
                     rest: node,
                     env,
                     n,
                     depth,
-                });
-            }
-            let r = self.eval(f, env);
-            if !callee.is_nil() {
-                self.control.pop();
-            }
+                };
+                self.under(rec, |e| e.eval(f, env))
+            };
             match r {
                 Ok(v) => {
                     self.root_push(v);
@@ -977,17 +1053,15 @@ impl Engine {
             return Ok(NIL);
         };
         let mut node = body;
-        for f in rest {
+        for &f in rest {
             node = self.objects.rest(node);
             let depth = self.active_evals;
-            self.control.push(ControlRec::Body {
+            let rec = ControlRec::Body {
                 rest: node,
                 env,
                 depth,
-            });
-            let r = self.eval(*f, env);
-            self.control.pop();
-            r?;
+            };
+            self.under(rec, |e| e.eval(f, env))?;
         }
         Ok(self.park_tail(*last, env))
     }
@@ -1001,14 +1075,12 @@ impl Engine {
         for f in forms {
             node = self.objects.rest(node);
             let depth = self.active_evals;
-            self.control.push(ControlRec::Body {
+            let rec = ControlRec::Body {
                 rest: node,
                 env,
                 depth,
-            });
-            let r = self.eval(f, env);
-            self.control.pop();
-            last = r?;
+            };
+            last = self.under(rec, |e| e.eval(f, env))?;
         }
         Ok(last)
     }
