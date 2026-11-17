@@ -82,6 +82,33 @@ fn pin(_e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(a[0])
 }
 
+/// The attribute field of the flags word: the bits a caller's flag may name.
+/// The kind, the meta count, the magic bit and the collector's mark ride above
+/// it, and a flag naming them would corrupt the object it lands on.
+const ATTR_FIELD: u64 = 0xffff;
+
+/// `(heap tree-mark! o flags)` — set `flags` on everything reachable from o,
+/// the collector's own walk with the caller's bit. Which bit is the caller's
+/// problem, as on the reference: it doubles as the visited test. A flag with
+/// no bit in the attribute field marks nothing, since a walk with no visited
+/// test never ends on a cycle. Answers o.
+fn tree_mark(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let bit = e.objects.as_int(a[1]) as u64 & ATTR_FIELD;
+    if bit != 0 {
+        let mut stack = vec![a[0]];
+        e.objects.tree_mark(&mut stack, bit);
+    }
+    Ok(a[0])
+}
+
+/// `(heap chain-clear! flags)` — clear `flags` on every object on the
+/// allocation chain, garbage included. Answers nil.
+fn chain_clear(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let bit = e.objects.as_int(a[0]) as u64 & ATTR_FIELD;
+    e.objects.chain_clear(bit);
+    Ok(NIL)
+}
+
 /// `(heap mark-hook! f)` — prepend to the base's mark-hook list.
 fn mark_hook(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     let b = base;
@@ -174,6 +201,8 @@ crate::uniform_engine!(heap_check_u, heap_check, 0);
 crate::uniform_engine!(mark_hook_u, mark_hook, 1);
 crate::uniform_engine!(free_hook_u, free_hook, 1);
 crate::uniform_engine!(mark_root_u, mark_root, 1);
+crate::uniform_engine!(tree_mark_u, tree_mark, 2);
+crate::uniform_engine!(chain_clear_u, chain_clear, 1);
 crate::uniform_engine!(alloc_limit_u, alloc_limit, 1);
 
 #[rustfmt::skip]
@@ -187,6 +216,8 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::row(None, Some(("heap", "mark-hook!")), 1, mark_hook_u),
     PrimDef::row(None, Some(("heap", "free-hook!")), 1, free_hook_u),
     PrimDef::row(None, Some(("heap", "mark-root!")), 1, mark_root_u),
+    PrimDef::row(None, Some(("heap", "tree-mark!")), 2, tree_mark_u),
+    PrimDef::row(None, Some(("heap", "chain-clear!")), 1, chain_clear_u),
     PrimDef::row(Some("alloc-limit!"), Some(("alloc", "limit!")), 1, alloc_limit_u),
 ];
 

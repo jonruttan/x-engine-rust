@@ -50,6 +50,8 @@
   (heap mark-hook! gc)
   (heap free-hook! gc)
   (heap mark-root! gc)
+  (heap tree-mark! gc)
+  (heap chain-clear! gc)
   (heap check gc)             ; DEBUG: verify every reference slot on the chain
   (alloc limit! gc)           ; ENFORCED, not merely recorded
 
