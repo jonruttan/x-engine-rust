@@ -431,11 +431,11 @@ impl crate::engine::Engine {
             crate::eval::ControlRec::Pass { .. } => {}
         };
         for r in &self.control {
-            push_rec(&mut ostack, r);
+            push_rec(&mut ostack, &r.rec);
         }
         for snap in self.cont_snapshots.values() {
             for r in &snap.recs {
-                push_rec(&mut ostack, r);
+                push_rec(&mut ostack, &r.rec);
             }
         }
         self.objects.mark(&mut ostack);

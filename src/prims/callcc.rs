@@ -7,7 +7,7 @@
 
 use crate::diag::Cond;
 use crate::engine::Engine;
-use crate::eval::{ContSnapshot, ControlRec, EvalResult};
+use crate::eval::{covers, ContSnapshot, ControlRec, EvalResult, Frame};
 use crate::obj::{EnvId, Obj, NIL};
 use crate::prim::PrimDef;
 
@@ -45,15 +45,24 @@ impl Engine {
     ///
     /// The capture also SNAPSHOTS the control records in flight: a live
     /// invocation still unwinds to this frame, but one arriving after this
-    /// frame has returned replays the snapshot at the top level instead —
-    /// the re-entry the reference gets from copying its C stack.
+    /// frame has returned unwinds to the deepest frame it shares with the
+    /// live evaluation and replays the snapshot's records above it (see
+    /// `Engine::under`) — the re-entry the reference gets from copying its
+    /// C stack.
     pub fn with_escape(&mut self, f: Obj, env: EnvId) -> EvalResult {
         let id = self.next_cont;
         self.next_cont += 1;
         let rec = self.objects.cont(id);
         let k = self.cont_closure(rec, env);
         self.capture(id, rec);
-        match self.call_with_values(f, &[k], env) {
+        // f runs as a nested evaluation, so this frame is described: once f
+        // returns, all that remains here is to hand its value outward. A
+        // continuation captured inside f replays through it as that.
+        let depth = self.active_evals;
+        let r = self.under(ControlRec::Pass { depth }, |e| {
+            e.call_with_values(f, &[k], env)
+        });
+        match r {
             Ok(v) => Ok(v),
             Err(e) => match self.escaping {
                 // Ours: stop the unwind here and answer the thrown value.
@@ -109,16 +118,8 @@ impl Engine {
     /// record — depths 1 through D-1, in order. A frame with none is an
     /// operative holding evaluation state in Rust locals the replay cannot
     /// see, so the capture is refused rather than resumed wrongly.
-    fn covers_every_frame(recs: &[ControlRec], depth: u32) -> bool {
-        if depth == 0 {
-            return false;
-        }
-        if recs.len() as u32 != depth - 1 {
-            return false;
-        }
-        recs.iter()
-            .enumerate()
-            .all(|(i, r)| r.depth() == i as u32 + 1)
+    fn covers_every_frame(recs: &[Frame], depth: u32) -> bool {
+        depth != 0 && covers(recs, 1, depth - 1)
     }
 
     /// An escape that reached the top with no live catcher: replay its
@@ -143,17 +144,41 @@ impl Engine {
     /// dead-extent invocation will replay.
     fn capture(&mut self, id: u64, k: Obj) {
         let recs = self.control.clone();
-        let resumable = Self::covers_every_frame(&recs, self.active_evals);
-        self.cont_snapshots
-            .insert(id, ContSnapshot { k, recs, resumable });
+        let depth = self.active_evals;
+        let resumable = Self::covers_every_frame(&recs, depth);
+        self.cont_snapshots.insert(
+            id,
+            ContSnapshot {
+                k,
+                recs,
+                depth,
+                resumable,
+            },
+        );
     }
 
     /// Rebuild the captured evaluation, inner record first, delivering `v`
     /// where `call/cc` originally returned.
-    fn replay(&mut self, recs: &[ControlRec], v: Obj) -> EvalResult {
-        recs.iter().rev().try_fold(v, |val, r| self.resume(r, val))
+    ///
+    /// Each record resumes at its own depth with the records outside it on
+    /// the control stack, as they stood when it was pushed: what remains of
+    /// the outer frames is described while the inner one runs, so a
+    /// continuation captured during the replay snapshots all of it.
+    pub(crate) fn replay(&mut self, recs: &[Frame], v: Obj) -> EvalResult {
+        let base = self.control.len();
+        let depth = self.active_evals;
+        self.control.extend_from_slice(recs);
+        let mut out = Ok(v);
+        for j in (0..recs.len()).rev() {
+            let Ok(val) = out else { break };
+            self.control.truncate(base + j);
+            self.active_evals = recs[j].rec.depth();
+            out = self.resume(&recs[j].rec, val);
+        }
+        self.control.truncate(base);
+        self.active_evals = depth;
+        out
     }
-
     /// One record's remaining work, with the incoming value rooted across it.
     pub(crate) fn resume(&mut self, r: &ControlRec, val: Obj) -> EvalResult {
         let mark = self.root_mark();
@@ -226,8 +251,22 @@ impl Engine {
             self.root_push(*x);
         }
         let more: Vec<Obj> = self.objects.list(rest).collect();
+        // The frame resumes as it ran: each remaining argument is evaluated
+        // under the record of what follows it, so a capture inside one sees
+        // this frame described.
+        let depth = self.active_evals;
+        let mut node = rest;
         for f in more {
-            match self.eval(f, env) {
+            node = self.objects.rest(node);
+            let rec = ControlRec::Args {
+                callee,
+                done: vals.clone(),
+                rest: node,
+                env,
+                n,
+                depth,
+            };
+            match self.under(rec, |e| e.eval(f, env)) {
                 Ok(x) => {
                     self.root_push(x);
                     vals.push(x);
@@ -241,7 +280,17 @@ impl Engine {
         if vals.len() < n {
             vals.resize(n, NIL);
         }
-        let out = self.call_with_values(callee, &vals, env);
+        // The application stands in tail position of this frame, as it does
+        // when the form is evaluated: the callee's tail stays parked and runs
+        // at this depth, so its records describe this frame as a normal call's
+        // would.
+        let out = match self.call_with_values_tail(callee, &vals, env) {
+            Ok(v) => match self.tail_take() {
+                Some((f, e)) => self.eval_pending(f, e),
+                None => Ok(v),
+            },
+            Err(c) => Err(c),
+        };
         self.root_truncate(mark);
         out
     }
@@ -355,6 +404,24 @@ mod tests {
         // "application" echoes it (a non-callable head answers itself).
         let src = "((fn (self) (def cell ()) (set! cell (call/cc (fn (_ k) k))) (match (cell (cell 42)) (#t ())) cell))";
         assert_eq!(int_of(src), 42);
+    }
+
+    /// A generator: each resume enters the continuation its last yield took,
+    /// whose call/cc has returned, from inside a frame the two share. The
+    /// unwind stops at that frame and the records above it replay, so the
+    /// second yield's capture -- made during a replay -- is resumable too.
+    /// 1 and 2 are the yields, 99 the end, 10 and 20 the values sent in.
+    #[test]
+    fn a_generator_resumes_through_the_frames_it_shares() {
+        let src = "((fn (self)
+            (def kgen ()) (def kcall ()) (def out ())
+            (def yield (fn (_ v) (call/cc (fn (_ k) (set! kgen k) (kcall v)))))
+            (def body (fn (_) (set! out (pair (yield 1) (yield 2))) (kcall 99)))
+            (def resume (fn (_ v) (call/cc (fn (_ k) (set! kcall k)
+              (match ((eq? kgen ()) (body)) (#t (kgen v)))))))
+            (def r1 (resume 0)) (def r2 (resume 10)) (def r3 (resume 20))
+            (+ r1 (+ (* r2 10) (+ (* r3 100) (+ (* (first out) 1000) (* (rest out) 100000)))))))";
+        assert_eq!(int_of(src), 1 + 20 + 9900 + 10_000 + 2_000_000);
     }
 
     #[test]

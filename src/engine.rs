@@ -97,7 +97,9 @@ pub struct Engine {
     pub(crate) escaping: Option<(u64, Obj)>,
     pub(crate) next_cont: u64,
     /// The control records in flight — see [`crate::eval::ControlRec`].
-    pub(crate) control: Vec<crate::eval::ControlRec>,
+    pub(crate) control: Vec<crate::eval::Frame>,
+    /// The identity the next control frame takes.
+    pub(crate) next_frame: u64,
     /// The environment of the foreign application in flight, for
     /// `jit_eval_arg` — the reference's "base's live env" spelled explicitly.
     pub(crate) jit_env: Option<crate::obj::EnvId>,
@@ -180,6 +182,7 @@ impl Engine {
             escaping: None,
             next_cont: 1,
             control: Vec::new(),
+            next_frame: 1,
             jit_env: None,
             cont_snapshots: std::collections::HashMap::new(),
             base_syms: HashMap::new(),

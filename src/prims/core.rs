@@ -196,9 +196,9 @@ fn eval_in(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     // environment rides the save stack while the given one is current.
     e.save_push(target);
     let depth = e.active_evals;
-    e.control.push(crate::eval::ControlRec::Pass { depth });
-    let out = e.eval(expr, target);
-    e.control.pop();
+    let out = e.under(crate::eval::ControlRec::Pass { depth }, |e| {
+        e.eval(expr, target)
+    });
     e.save_pop();
     out
 }
@@ -217,9 +217,9 @@ fn eval_here(e: &mut Engine, args: Obj, env: EnvId) -> EvalResult {
     e.root_push(outer);
     e.root_push(expr);
     let depth = e.active_evals;
-    e.control.push(crate::eval::ControlRec::Pass { depth });
-    let out = e.eval(expr, top);
-    e.control.pop();
+    let out = e.under(crate::eval::ControlRec::Pass { depth }, |e| {
+        e.eval(expr, top)
+    });
     e.restore_pending(outer);
     e.root_truncate(mark);
     out
