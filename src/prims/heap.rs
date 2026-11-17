@@ -147,7 +147,7 @@ fn mark_root(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
 fn alloc_limit(e: &mut Engine, base: Obj, a: &[Obj]) -> EvalResult {
     let n = e.objects.as_int(a[0]);
     let b = base;
-    base::set(&mut e.objects, b, base::ALLOC_LIMIT, a[0]);
+    base::set_cell_int(&mut e.objects, b, base::ALLOC_LIMIT, n.max(0));
     e.alloc_limit = if n > 0 { Some(n as usize) } else { None };
     // Side-effect primitive: answers nil, the C contract.
     Ok(NIL)

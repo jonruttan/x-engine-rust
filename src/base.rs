@@ -86,6 +86,11 @@ pub const ROUTES: &[&str] = &[
     crate::vocabulary::ROUTE_ENV_ROOT,
     // The raised-error value: one ERR, (code . subject), filled per raise.
     crate::vocabulary::ROUTE_ERR,
+    // The ROOT CHAIN's field cell, as x-engine-c's heap-root-chain: its first
+    // word is the head of a chain of off-heap cells that compiled frames
+    // link in (lib/x/tool/asm-compile.x, the function world). The collector
+    // marks what each holds.
+    "heap-root-chain",
 ];
 
 /// Slots the heap instructions reach for by name.
@@ -131,6 +136,7 @@ pub const ERROR_HANDLER: usize = 23;
 pub const TRUE: usize = 24;
 pub const ENV_ROOT: usize = 25;
 pub const ERR: usize = 26;
+pub const HEAP_ROOT_CHAIN: usize = 27;
 
 /// Where the environment sits, since the engine reads it constantly.
 const ENV_SLOT: usize = 7;
@@ -214,13 +220,21 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
 
     // The library's own slots, laid out the way it reads them.
     // A fresh base's line counter reads 1: the first line of the source is
-    // line one, and x-lang's own spec says so.
-    let line = raw_cell(o, 1);
+    // line one, and x-lang's own spec says so. The row is a STACK, one counter
+    // per input source, as x-engine-c keeps it: a pushed source conses its own
+    // counter on and the pop takes it off. x-lang reads `(first row)`.
+    let line = line_push(o, NIL);
     set_slot(o, base, LINE, line);
     // The extended-meta policy cell: how many meta words an allocation
     // prepends. Zero until the boot arms it.
     let mc = raw_cell(o, 0);
     set_slot(o, base, OBJ_META_EXTRA, mc);
+    // The allocation ceiling (0, unarmed) and the count of objects this base
+    // holds, which the allocator and the sweep keep (`count_allocs`).
+    let limit = raw_cell(o, 0);
+    set_slot(o, base, ALLOC_LIMIT, limit);
+    let count = raw_cell(o, 0);
+    set_slot(o, base, ALLOC_COUNT, count);
     // The raise-site snapshot cells (io error-line / error-file read them).
     let el = raw_cell(o, 0);
     set_slot(o, base, ERR_LINE, el);
@@ -238,6 +252,11 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
         at = o.rest(at);
     }
     set_slot(o, base, FILES, files);
+    // The root chain's field cell. A RAW cell: its word is a machine-stack
+    // address the tracer must never follow as an object; the mark phase
+    // walks the chain itself (`Engine::mark_phase`). 0 is the empty chain.
+    let chain = raw_cell(o, 0);
+    set_slot(o, base, HEAP_ROOT_CHAIN, chain);
     // Counters: eleven, as x-engine-c's profile spine holds them
     // (include/x-eval-layout.h) -- allocs, evals, tco, assoc calls and
     // steps, sym-find calls and steps, gc runs, bst hits and misses, env
@@ -280,7 +299,7 @@ fn set_slot(o: &mut Objects, base: Obj, n: usize, v: Obj) {
     o.set_data(c, 0, v.word());
 }
 
-fn slot(o: &Objects, base: Obj, n: usize) -> Obj {
+pub(crate) fn slot(o: &Objects, base: Obj, n: usize) -> Obj {
     o.first(cell(o, base, n))
 }
 
@@ -297,10 +316,24 @@ pub fn catalogue_of(o: &Objects, base: Obj) -> Obj {
     slot(o, base, PRIMS_SLOT)
 }
 
-/// A fresh line counter for a pushed input source, laid out as the library
-/// reads it (`%cell-int` on the row's value).
-pub fn fresh_line_cell(o: &mut Objects, n: i64) -> Obj {
-    raw_cell(o, n)
+/// The LINE row with a fresh counter at 1 pushed on `stack`: a pushed input
+/// source counts its own lines from one.
+pub fn line_push(o: &mut Objects, stack: Obj) -> Obj {
+    let counter = raw_cell(o, 1);
+    o.spair(counter, stack)
+}
+
+/// The current source's line: the top counter of the LINE stack.
+pub fn line(o: &Objects, base: Obj) -> i64 {
+    let stack = slot(o, base, LINE);
+    if stack.is_nil() {
+        return 0;
+    }
+    let counter = o.first(stack);
+    if counter.is_nil() {
+        return 0;
+    }
+    o.data(counter, 0).raw() as i64
 }
 
 /// Indices into `Objects::state_nodes`.
@@ -319,9 +352,14 @@ pub fn state_nodes(o: &Objects, base: Obj) -> [Obj; 4] {
     ]
 }
 
-/// The LINE and OBJ-META-EXTRA spine nodes, cached beside `state_nodes`.
-pub fn loc_nodes(o: &Objects, base: Obj) -> [Obj; 2] {
-    [cell(o, base, LINE), cell(o, base, OBJ_META_EXTRA)]
+/// The LINE, OBJ-META-EXTRA and ALLOC-COUNT spine nodes, cached beside
+/// `state_nodes`.
+pub fn loc_nodes(o: &Objects, base: Obj) -> [Obj; 3] {
+    [
+        cell(o, base, LINE),
+        cell(o, base, OBJ_META_EXTRA),
+        cell(o, base, ALLOC_COUNT),
+    ]
 }
 
 /// Read one of the named slots.

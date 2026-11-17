@@ -11,6 +11,7 @@
 # list against tools/contract/base-paths.x, in order, so a rename on one side
 # alone fails the tests.
 "alloc-count"	base route, checked against base-paths.x
+"heap-root-chain"	base route, checked against base-paths.x
 "alloc-limit"	base route, checked against base-paths.x
 "env"	base route, checked against base-paths.x
 "err-file"	base route, checked against base-paths.x

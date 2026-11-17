@@ -289,12 +289,12 @@ pub struct Objects {
     /// tco-env, error-handler — resolved once per base switch. Spine cells
     /// never move, so the addresses hold while the base is current.
     pub(crate) state_nodes: [Obj; 4],
-    /// The LINE and OBJ-META-EXTRA spine nodes of the current base, cached at
-    /// base switch: the line is written per evaluated form and the policy read
-    /// per allocation, and walking the spine each time was the whole suite's
-    /// runtime. The NODES are spine-stable; their inner cells swap (include
-    /// pushes a fresh line cell), so the cache holds nodes, not cells.
-    pub(crate) loc_nodes: [Obj; 2],
+    /// The LINE, OBJ-META-EXTRA and ALLOC-COUNT spine nodes of the current
+    /// base, cached at base switch: the line is written per evaluated form and
+    /// the policy and count per allocation, and walking the spine each time
+    /// was the whole suite's runtime. The NODES are spine-stable; their inner
+    /// values swap (include pushes a line counter), so the cache holds nodes.
+    pub(crate) loc_nodes: [Obj; 3],
     /// The INT token reader instruction, installed with the analyser states.
     pub(crate) int_read: Obj,
     /// The label every registered type TYPE carries in its own type word.
@@ -451,7 +451,7 @@ impl Objects {
             input_cap: 0,
             base: NIL,
             state_nodes: [NIL; 4],
-            loc_nodes: [NIL; 2],
+            loc_nodes: [NIL; 3],
             int_read: NIL,
             spair_marker: NIL,
             satom_marker: NIL,
@@ -494,6 +494,7 @@ impl Objects {
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
         self.live += 1;
+        self.count_allocs(1);
         let ty = self.stamp_for(flags);
         let meta = self.meta_extra();
 
@@ -588,18 +589,33 @@ impl Objects {
                 != 0
     }
 
-    /// Meta unit `i`, at word -(i+1) from the object — obj-layout.x's
-    /// committed placement. Zero for an object with none.
-    pub fn meta_i(&self, o: Obj, i: u64) -> i64 {
+    /// How many meta words this object's allocation prepended: the count its
+    /// flags word carries beside the META bit.
+    fn meta_count(&self, o: Obj) -> u64 {
         if !self.meta_stamped(o) {
+            return 0;
+        }
+        let flags = self
+            .heap
+            .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+            .raw();
+        (flags >> FLAG_META_SHIFT) & 0x3f
+    }
+
+    /// Meta unit `i`, at word -(i+1) from the object — obj-layout.x's
+    /// committed placement. Zero past the object's own meta words: the word
+    /// there belongs to the object before it.
+    pub fn meta_i(&self, o: Obj, i: u64) -> i64 {
+        if i >= self.meta_count(o) {
             return 0;
         }
         let at = o.addr().raw().wrapping_sub((i + 1) * WORD as u64);
         self.heap.word(crate::obj::Addr::new(at)).raw() as i64
     }
 
+    /// Write meta unit `i`; a no-op past the object's own meta words.
     pub fn set_meta_i(&mut self, o: Obj, i: u64, v: i64) {
-        if !self.meta_stamped(o) {
+        if i >= self.meta_count(o) {
             return;
         }
         let at = o.addr().raw().wrapping_sub((i + 1) * WORD as u64);
@@ -629,13 +645,34 @@ impl Objects {
         (self.data(cell, 0).raw() as usize).min(16)
     }
 
+    /// Move the current base's alloc-count cell by `delta`: up per allocation,
+    /// down by what a sweep frees, as x-expr's x_obj_alloc and x_obj_free
+    /// keep it. The count of objects this base holds, not of every one ever.
+    pub(crate) fn count_allocs(&mut self, delta: i64) {
+        let node = self.loc_nodes[2];
+        if node.is_nil() {
+            return;
+        }
+        let cell = self.first(node);
+        if cell.is_nil() {
+            return;
+        }
+        let n = self.data(cell, 0).raw() as i64;
+        self.set_data(cell, 0, Word(n.wrapping_add(delta) as u64));
+    }
+
     /// Write the live source line through the cached LINE node.
     pub(crate) fn set_live_line(&mut self, line: i64) {
         let node = self.loc_nodes[0];
         if node.is_nil() {
             return;
         }
-        let cell = self.first(node);
+        // The node's value is the LINE stack; its top is the live counter.
+        let stack = self.first(node);
+        if stack.is_nil() {
+            return;
+        }
+        let cell = self.first(stack);
         if cell.is_nil() {
             return;
         }

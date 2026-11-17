@@ -511,9 +511,17 @@ pub extern "C" fn jit_call_value(_base: u64, args: u64) -> u64 {
     jit_host().jit_call_value(args)
 }
 
-/// The twelve exported addresses, for the binary to anchor so the linker keeps
+/// The pair type a compiled frame stamps on each cell it links onto the root
+/// chain, as x-engine-c exports its `x_type_pair_obj`. Data, not code: the
+/// emitted code only stores its address. This engine's collector walks the
+/// chain itself and reads each cell's two words, so the address is an
+/// identity and the words behind it are never read.
+#[no_mangle]
+pub static x_type_pair_obj: [u64; 8] = [0; 8];
+
+/// The thirteen exported addresses, for the binary to anchor so the linker keeps
 /// them reachable by `dlsym`.
-pub fn jit_exports() -> [usize; 12] {
+pub fn jit_exports() -> [usize; 13] {
     [
         jit_mkint as extern "C" fn(u64, i64) -> u64 as usize,
         jit_mkpair as extern "C" fn(u64, u64, u64) -> u64 as usize,
@@ -527,6 +535,7 @@ pub fn jit_exports() -> [usize; 12] {
         jit_buffer_last_char as extern "C" fn(u64) -> i64 as usize,
         jit_score_label as extern "C" fn(u64, i64) -> u64 as usize,
         jit_call_value as extern "C" fn(u64, u64) -> u64 as usize,
+        std::ptr::addr_of!(x_type_pair_obj) as usize,
     ]
 }
 

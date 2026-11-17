@@ -53,12 +53,13 @@ pub struct Engine {
     /// Files `include` holds open while their fd rides the filein row, as
     /// the reference keeps its fd until the pop.
     pub(crate) files: Vec<std::fs::File>,
-    /// Displaced line cells, one per pushed input source.
-    pub(crate) line_stack: Vec<Obj>,
     /// The live source-FILE counter, updated per evaluated form from its meta
     /// — the reference's `x_eval_field_file`. The line twin lives on the
     /// base's LINE row.
     pub(crate) live_file: i64,
+    /// Set once err-line/err-file hold the site of the raise now travelling
+    /// up; see `Engine::freeze_raise_site`.
+    pub(crate) raise_site_frozen: bool,
     /// Values the EVALUATOR is holding that nothing else points at.
     ///
     /// A form being evaluated came from the reader and lives in a Rust local; a
@@ -163,8 +164,8 @@ impl Engine {
             prim_bindings: Vec::new(),
 
             files: Vec::new(),
-            line_stack: Vec::new(),
             live_file: 0,
+            raise_site_frozen: false,
             roots: Vec::new(),
             env_roots: Vec::new(),
             in_gc: false,

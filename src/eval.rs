@@ -344,6 +344,23 @@ impl Engine {
     }
 
     /// A guard is active while the base's error-handler row is non-nil.
+    /// Copy the live line and file into err-line/err-file, once per raise.
+    ///
+    /// x-engine-c snapshots inside `x_eval_error`, at the raise, and its
+    /// longjmp skips every pop on the way to the guard. Here a raise travels
+    /// up as a value and each included source pops its line counter as it
+    /// passes, so the FIRST pop freezes the site and later ones leave it.
+    pub(crate) fn freeze_raise_site(&mut self) {
+        if self.raise_site_frozen {
+            return;
+        }
+        self.raise_site_frozen = true;
+        let line = crate::base::line(&self.objects, self.base);
+        crate::base::set_cell_int(&mut self.objects, self.base, crate::base::ERR_LINE, line);
+        let file = self.live_file;
+        crate::base::set_cell_int(&mut self.objects, self.base, crate::base::ERR_FILE, file);
+    }
+
     pub(crate) fn handler_active(&self) -> bool {
         !self
             .objects
@@ -441,6 +458,8 @@ impl Engine {
                 let line = self.objects.meta_i(form, 0);
                 self.objects.set_live_line(line);
                 self.live_file = self.objects.meta_i(form, 1);
+                // Evaluating again: any raise frozen earlier was swallowed.
+                self.raise_site_frozen = false;
             }
             // THE MACHINE, as `x_eval` draws it: a value whose type word is
             // nil or a raw marker is ITSELF, and everything else is decided by
