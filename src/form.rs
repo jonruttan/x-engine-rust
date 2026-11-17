@@ -68,9 +68,12 @@ impl Engine {
         // An interactive source prefetches to a line boundary, so the
         // analyser contest's bounded view holds every byte a token on this
         // line can claim — a per-byte refill alone left a contest seeing
-        // one digit of an integer.
-        self.objects.buf_prefetch_line(b);
+        // one digit of an integer. Blanks are skipped FIRST: a cursor on the
+        // newline that ends the previous form already sees a line boundary,
+        // and the skip past it refills one byte at a time, so the next
+        // line's token was contested with only its first byte buffered.
         self.objects.buf_skip_blanks(b);
+        self.objects.buf_prefetch_line(b);
         if self.objects.buf_peek(b).is_none() {
             return Ok(None);
         }
