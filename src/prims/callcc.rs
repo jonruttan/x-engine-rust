@@ -19,9 +19,18 @@ fn call_cc(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     e.with_escape(a[0], e.root_env())
 }
 
-/// `(%cc-invoke k v)` — begin an unwind that only k's own call/cc will stop.
+/// `(%cc-invoke ptr state args)` — begin an unwind that only the
+/// continuation record `ptr`'s own call/cc will stop. `args` is k's
+/// bare-variadic parameter, the self-passed list (k val ...), so the value
+/// sits after the self slot; (k) alone passes nil.
 fn cc_invoke(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
-    e.invoke_cont(a[0], a[1])
+    let passed = e.objects.rest(a[2]);
+    let v = if e.objects.is_cell(passed) {
+        e.objects.first(passed)
+    } else {
+        NIL
+    };
+    e.invoke_cont(a[0], v)
 }
 
 impl Engine {
@@ -41,8 +50,9 @@ impl Engine {
     pub fn with_escape(&mut self, f: Obj, env: EnvId) -> EvalResult {
         let id = self.next_cont;
         self.next_cont += 1;
-        let k = self.objects.cont(id);
-        self.capture(id, k);
+        let rec = self.objects.cont(id);
+        let k = self.cont_closure(rec, env);
+        self.capture(id, rec);
         match self.call_with_values(f, &[k], env) {
             Ok(v) => Ok(v),
             Err(e) => match self.escaping {
@@ -54,6 +64,37 @@ impl Engine {
                 _ => Err(e),
             },
         }
+    }
+
+    /// k, as the reference builds it: `(fn %cc-args (%cc-invoke %cc-ptr
+    /// %cc-state %cc-args))`, closed over a child of `env` binding `%cc-ptr`
+    /// to the continuation record and `%cc-state` to the state list
+    /// `(env save-stack error-handler eval-list root-chain stack-lo
+    /// stack-size stack-copy)`. A library reads that list (lib/x/sys/cont.x).
+    /// This engine copies no stack and restores nothing from the list: its
+    /// snapshot is the control records, which the collector marks while the
+    /// record lives. So the interpreter fields are nil, the root chain and
+    /// the segment's bounds and copy are null pointers, and its size is 0 --
+    /// a segment with no nodes, whose walk marks nothing.
+    fn cont_closure(&mut self, rec: Obj, env: EnvId) -> Obj {
+        let o = &mut self.objects;
+        let args = o.sym(crate::vocabulary::CC_ARGS);
+        let ptr = o.sym(crate::vocabulary::CC_PTR);
+        let state = o.sym(crate::vocabulary::CC_STATE);
+        let invoke = o.sym(crate::vocabulary::CC_INVOKE);
+        let null = o.ptr(crate::obj::Addr::new(0));
+        let size = o.int(0);
+        let row = [env.obj(), NIL, NIL, NIL, null, null, size, null];
+        let st = row.iter().rev().fold(NIL, |l, &x| o.pair(x, l));
+        let call = [invoke, ptr, state, args]
+            .iter()
+            .rev()
+            .fold(NIL, |l, &x| o.pair(x, l));
+        let body = o.pair(call, NIL);
+        let frame = self.envs.push(&mut self.objects, env);
+        self.envs.bind(&mut self.objects, frame, ptr, rec);
+        self.envs.bind(&mut self.objects, frame, state, st);
+        self.objects.closure(args, body, frame)
     }
 
     /// Is an escape passing through? `guard` asks, because catching one would
@@ -207,12 +248,12 @@ impl Engine {
 }
 
 crate::uniform_engine!(call_cc_u, call_cc, 1);
-crate::uniform_engine!(cc_invoke_u, cc_invoke, 2);
+crate::uniform_engine!(cc_invoke_u, cc_invoke, 3);
 
 #[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
     PrimDef::row(Some("call/cc"), Some(("ctrl", "call/cc")), 1, call_cc_u),
-    PrimDef::row(Some("%cc-invoke"), None, 2, cc_invoke_u),
+    PrimDef::row(Some(crate::vocabulary::CC_INVOKE), None, 3, cc_invoke_u),
 ];
 
 #[cfg(test)]
