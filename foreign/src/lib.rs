@@ -47,6 +47,7 @@ extern "C" {
     fn dlsym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
     fn clock() -> c_long;
     fn signal(sig: c_int, handler: usize) -> usize;
+    fn siginterrupt(sig: c_int, flag: c_int) -> c_int;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     #[link_name = "open"]
@@ -270,6 +271,60 @@ pub fn interrupt_restore() {
 
 pub fn interrupted() -> bool {
     INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The highest signal number plus one: the size of the arrival table.
+#[cfg(target_os = "macos")]
+const NSIG: usize = 32;
+#[cfg(not(target_os = "macos"))]
+const NSIG: usize = 65;
+
+/// One arrival flag per signal, set by `on_signal` and cleared by
+/// `signal_take`. Atomics only, as for `INTERRUPTED`.
+static ARRIVED: [std::sync::atomic::AtomicBool; NSIG] =
+    [const { std::sync::atomic::AtomicBool::new(false) }; NSIG];
+
+/// `SIG_ERR`: `signal` refused the disposition.
+const SIG_ERR: usize = usize::MAX;
+
+extern "C" fn on_signal(sig: c_int) {
+    if let Some(flag) = ARRIVED.get(sig as usize) {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn signal_valid(sig: i64) -> bool {
+    sig > 0 && (sig as usize) < NSIG
+}
+
+/// Catch `sig`: its arrival is recorded instead of taking the default
+/// action. 0, or -1 for a signal that cannot be caught. No restart, as the
+/// reference's sigaction leaves SA_RESTART off: a blocked read or wait
+/// returns to its caller.
+pub fn signal_catch(sig: i64) -> i64 {
+    if !signal_valid(sig) {
+        return -1;
+    }
+    ARRIVED[sig as usize].store(false, std::sync::atomic::Ordering::SeqCst);
+    // SAFETY: the handler touches only an atomic; `signal` reports a
+    // disposition it refuses as SIG_ERR rather than faulting.
+    let old = unsafe { signal(sig as c_int, on_signal as extern "C" fn(c_int) as usize) };
+    if old == SIG_ERR {
+        return -1;
+    }
+    // SAFETY: as above; the signal number was just accepted.
+    unsafe {
+        siginterrupt(sig as c_int, 1);
+    }
+    0
+}
+
+/// 1 when `sig` has arrived since the last take, clearing the record; else 0.
+pub fn signal_take(sig: i64) -> i64 {
+    if !signal_valid(sig) {
+        return 0;
+    }
+    i64::from(ARRIVED[sig as usize].swap(false, std::sync::atomic::Ordering::SeqCst))
 }
 
 /// Write bytes to a raw file descriptor — the engine's `io write-str` door

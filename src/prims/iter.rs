@@ -39,6 +39,10 @@ fn make(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 fn peek(e: &mut Engine, it: Obj) -> Result<Option<(Obj, Obj)>, Cond> {
     let f = e.objects.iter_step(it);
     let st = e.objects.iter_state(it);
+    // Exhaustion rides the state: a nil state is done without a call.
+    if st == NIL {
+        return Ok(None);
+    }
     let r = e.call_with_values(f, &[st], e.root_env())?;
     if r == NIL {
         return Ok(None);
@@ -50,7 +54,10 @@ fn peek(e: &mut Engine, it: Obj) -> Result<Option<(Obj, Obj)>, Cond> {
 fn next(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let it = a[0];
     match peek(e, it)? {
-        None => Ok(NIL),
+        None => {
+            e.objects.set_iter_state(it, NIL);
+            Ok(NIL)
+        }
         Some((v, rest)) => {
             e.objects.set_iter_state(it, rest);
             Ok(v)
@@ -59,10 +66,11 @@ fn next(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
 }
 
 /// PEEKS. Asking whether an iterator is exhausted must not exhaust it, so the
-/// state word is left exactly as it was found.
+/// state word is left exactly as it was found. A nil state is the whole
+/// test, as the reference's `x_iterempty` reads it: the step is not called.
 fn empty(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let it = a[0];
-    let done = peek(e, it)?.is_none();
+    let done = e.objects.iter_state(it) == NIL;
     Ok(e.objects.truth(done))
 }
 

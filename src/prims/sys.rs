@@ -41,6 +41,19 @@ fn sigint_restore(_e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     Ok(NIL)
 }
 
+/// `(signal catch sig)` — record `sig`'s arrival instead of its default
+/// action: 0, or -1 for a signal that cannot be caught.
+fn signal_catch(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let sig = e.objects.as_int(a[0]);
+    Ok(e.objects.int(crate::foreign::signal_catch(sig)))
+}
+
+/// `(signal take sig)` — 1 when `sig` arrived since the last take, else 0.
+fn signal_take(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let sig = e.objects.as_int(a[0]);
+    Ok(e.objects.int(crate::foreign::signal_take(sig)))
+}
+
 /// A pointer operand as the address a system call receives.
 fn real_of(e: &Engine, p: Obj) -> u64 {
     e.objects.as_ptr(p).raw()
@@ -96,6 +109,8 @@ crate::uniform_engine!(sys_exit_u, sys_exit, 1);
 crate::uniform_engine!(clock_u, clock, 0);
 crate::uniform_engine!(sigint_install_u, sigint_install, 0);
 crate::uniform_engine!(sigint_restore_u, sigint_restore, 0);
+crate::uniform_engine!(signal_catch_u, signal_catch, 1);
+crate::uniform_engine!(signal_take_u, signal_take, 1);
 
 #[rustfmt::skip]
 pub const TABLE: &[PrimDef] = &[
@@ -108,6 +123,8 @@ pub const TABLE: &[PrimDef] = &[
     PrimDef::row(None, Some(("sys", "exit")), 1, sys_exit_u),
     PrimDef::row(Some("sigint-install"), None, 0, sigint_install_u),
     PrimDef::row(Some("sigint-restore"), None, 0, sigint_restore_u),
+    PrimDef::row(None, Some(("signal", "catch")), 1, signal_catch_u),
+    PrimDef::row(None, Some(("signal", "take")), 1, signal_take_u),
 ];
 
 #[cfg(test)]
