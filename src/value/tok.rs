@@ -69,6 +69,10 @@ impl Objects {
         }
         self.set_data(b, 4, Word(cursor));
         self.set_data(b, 5, Word(line as u64));
+        // The live line rides the buffer's meta word 0, as x-engine-c's
+        // tokenizer counts it there: (Source here) reads it while the form
+        // just read is evaluated. A buffer with no meta words keeps none.
+        self.set_meta_i(b, 0, line);
         line
     }
 

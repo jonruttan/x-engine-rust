@@ -93,6 +93,8 @@ impl Engine {
             self.read_atom_delimited(b)?
         };
         self.objects.stamp_meta(got, line, file);
+        // The buffer's live line advances past what the form consumed.
+        self.objects.buf_line(b);
         Ok(Some(got))
     }
 
