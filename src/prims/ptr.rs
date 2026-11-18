@@ -82,19 +82,29 @@ fn wr_byte(a_: &mut Objects, at: u64, v: u8) {
     }
 }
 
+/// A word at any byte address, as the reference's memcpy reads one. The
+/// heap's own word access indexes by word, so an unaligned address in the
+/// arena is assembled from its bytes rather than rounded down.
 fn rd_word(a_: &Objects, at: u64) -> u64 {
-    if in_arena(a_, at) {
-        a_.heap.word(Addr::new(at)).raw()
-    } else {
-        crate::foreign::read_word(at)
+    if !in_arena(a_, at) {
+        return crate::foreign::read_word(at);
     }
+    if at % crate::obj::WORD as u64 == 0 {
+        return a_.heap.word(Addr::new(at)).raw();
+    }
+    (0..8u64).fold(0, |v, i| v | (rd_byte(a_, at + i) as u64) << (8 * i))
 }
 
+/// The write half of `rd_word`, unaligned addresses included.
 fn wr_word(a_: &mut Objects, at: u64, v: u64) {
-    if in_arena(a_, at) {
+    if !in_arena(a_, at) {
+        crate::foreign::write_word(at, v);
+    } else if at % crate::obj::WORD as u64 == 0 {
         a_.heap.set_word(Addr::new(at), crate::obj::Word(v));
     } else {
-        crate::foreign::write_word(at, v);
+        for i in 0..8u64 {
+            wr_byte(a_, at + i, (v >> (8 * i)) as u8);
+        }
     }
 }
 
@@ -419,6 +429,19 @@ mod tests {
             )),
             12345
         );
+    }
+
+    /// A word at an offset that is no multiple of the word lands on its own
+    /// bytes, as the reference's memcpy puts it: byte 3 holds its low byte,
+    /// and the word below is untouched.
+    #[test]
+    fn a_word_at_an_unaligned_offset_lands_on_its_own_bytes() {
+        let s = src("(def p (%s2p (%mk 32))) (%set p 0 9 1) (%setw p 3 -3) (%refw p 3)");
+        assert_eq!(int_of(&s), -3);
+        let s = src("(def p (%s2p (%mk 32))) (%set p 0 9 1) (%setw p 3 -3) (%ref p 3 1)");
+        assert_eq!(int_of(&s), 253);
+        let s = src("(def p (%s2p (%mk 32))) (%set p 0 9 1) (%setw p 3 -3) (%ref p 0 1)");
+        assert_eq!(int_of(&s), 9);
     }
 
     /// Each offset is written before it is read: `str make` is not promised to
