@@ -206,10 +206,11 @@ impl Objects {
                 // THE FALSE SINGLETON IS SCRATCH SPACE. It looks like a value
                 // with nothing in it, and x-lang hangs the include list off its
                 // REST — lib/x/boot/module.x does that at boot and reads it for
-                // the rest of the run.
+                // the rest of the run. Its first word is its text, raw bytes
+                // the trace must never read as an object.
                 f if f == FLAG_FALSE => {
                     if self.extent_ok(o, n) {
-                        for i in 0..n {
+                        for i in 1..n {
                             stack.push(self.data(o, i).as_obj());
                         }
                     }

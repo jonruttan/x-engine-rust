@@ -97,12 +97,16 @@ pub const FLAG_MAGIC_BIT: u64 = 1 << 62;
 /// own, ro, meta, shared, mark, trace), and x-lang reads them off the raw
 /// word; a kind code stored there reads as attributes, as `FLAG_FN`'s low
 /// bit read as WRAP. Bits 32..53 lie below the meta count, the magic bit and
+/// the mark bit, and the contract assigns them nothing.
+pub const KIND_SHIFT: u64 = 32;
+/// The contract's WRAP attribute (obj-layout.x `%obj-flag-1`): a wrapped
+/// combiner is a procedure carrying it, and x-lang's `Fn label` reads it off
+/// the flags word to tell a wrap from a closure.
+pub const ATTR_WRAP: u64 = 0x01;
 /// The contract's OWN attribute (obj-layout.x `%obj-flag-own`): the object
 /// owns the storage its data word points at, as a string made with its own
 /// bytes does and a view over bytes already there does not.
 pub const ATTR_OWN: u64 = 0x20;
-/// the mark bit, and the contract assigns them nothing.
-pub const KIND_SHIFT: u64 = 32;
 /// The kind field's width: every kind code fits in 22 bits.
 pub const KIND_MASK: u64 = 0x3f_ffff;
 
@@ -480,12 +484,24 @@ impl Objects {
         // every wrong branch, silently.
         // The two labels, before anything exists to be labelled. Distinct objects:
         // the library compares against both and behaves differently.
-        a.spair_marker = a.alloc(Flags::new(0), 1);
+        // The spair label is the exported `x_type_pair_obj`, as the
+        // reference's is: compiled code asks whether a word is a type by
+        // comparing its type word with that symbol's address. It lies
+        // outside the arena, so the heap reads it as zeros and the collector
+        // passes it by.
+        a.spair_marker = Word(x_engine_foreign::type_pair_addr()).as_obj();
         a.satom_marker = a.alloc(Flags::new(0), 1);
         let pair_name = a.handle(crate::vocabulary::TYPE_PAIR);
         a.pair_type = a.type_new(pair_name, NIL);
 
         a.false_obj = a.alloc(FLAG_FALSE, 2);
+        // Its value word points at its text, as the reference's #f does
+        // (x_false_obj is built over X_OBJ_FALSE_TEXT): never 0, since `eq?`
+        // compares value words and `(eq? 0 #f)` is #f, and readable as the
+        // C string a symbol's word is. A zero here made every literal 0 the
+        // compiler is handed read as #f (x/tool/fn-compile's constant test).
+        let text = a.heap.store_bytes(crate::vocabulary::FALSE.as_bytes());
+        a.set_data(a.false_obj, 0, Word(text.raw()));
         a.true_obj = a.sym_shared(crate::vocabulary::TRUE);
         a
     }

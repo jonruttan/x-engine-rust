@@ -267,6 +267,14 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
     // route lands on the holder, whose FIRST is the singleton — what the
     // predicates and the base-paths spec read — and whose REST is scratch
     // x-lang writes (module.x hangs the include list there).
+    // The parked tail's two CELLS, as the reference's tco_expr and tco_env
+    // fields are: the route lands on the cell, whose first is the form (or
+    // its environment). Compiled code parks a tail call by writing that
+    // word, and fn-compile's apply routine reads it there.
+    let te = o.spair(NIL, NIL);
+    set_slot(o, base, TCO_EXPR, te);
+    let tv = o.spair(NIL, NIL);
+    set_slot(o, base, TCO_ENV, tv);
     let f = o.false_obj();
     let fh = o.spair(f, NIL);
     set_slot(o, base, FALSE, fh);
@@ -343,11 +351,12 @@ pub const SN_TCO_ENV: usize = 2;
 pub const SN_HANDLER: usize = 3;
 
 /// Resolve the evaluator-state nodes for a base, for `Objects::state_nodes`.
+/// The tco rows resolve to the cell each holds: the parked word is its first.
 pub fn state_nodes(o: &Objects, base: Obj) -> [Obj; 4] {
     [
         cell(o, base, SAVE_STACK),
-        cell(o, base, TCO_EXPR),
-        cell(o, base, TCO_ENV),
+        o.first(cell(o, base, TCO_EXPR)),
+        o.first(cell(o, base, TCO_ENV)),
         cell(o, base, ERROR_HANDLER),
     ]
 }

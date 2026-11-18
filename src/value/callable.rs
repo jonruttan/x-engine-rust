@@ -149,9 +149,11 @@ impl Objects {
     /// A wrap: entry, then the combiner. The reference spells a wrap as a
     /// procedure with a flag bit and the combiner in the env slot; this engine
     /// keeps the kind but the convention is identical — slot 0 says how to
-    /// apply, slot 1 is what the application uses.
+    /// apply, slot 1 is what the application uses. The contract's WRAP
+    /// attribute rides the flags word, where x-lang reads it.
     pub fn wrapper(&mut self, inner: Obj) -> Obj {
         let o = self.alloc(FLAG_WRAP, 2);
+        self.set_attr(o, crate::objects::ATTR_WRAP);
         self.set_data(o, 0, self.entry_words[2]);
         self.set_data(o, 1, inner.word());
         o

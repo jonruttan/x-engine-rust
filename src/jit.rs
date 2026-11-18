@@ -9,6 +9,7 @@
 //! address in the pinned arena (law 7), and nil crosses as 0, as the
 //! reference's NULL does.
 
+use crate::diag::Cond;
 use crate::engine::Engine;
 use crate::obj::{Obj, Word};
 
@@ -24,6 +25,52 @@ impl Engine {
     /// through it answers 0, as the heap's reads do past the arena.
     pub(crate) fn jit_obj(&self, real: u64) -> Obj {
         Word(real).as_obj()
+    }
+
+    /// Run machine code: `call` enters it. A door that holds a raise while
+    /// it runs leaves the code at once (the foreign crate's escape frame),
+    /// and the raise is answered here, as the reference's longjmp lands at
+    /// the guard. A raise held by an outer entry is kept aside and restored.
+    ///
+    /// The doors write the engine through the host pointer the foreign crate
+    /// holds, which the compiler cannot see from `self`: left alone it treats
+    /// `slot_error` as untouched across the call and reads back the None
+    /// written before it. The engine's address is published to opaque code
+    /// first, so the call is assumed to write it.
+    ///
+    /// An escape skips the compiled frames' unlinks from the root chain, as
+    /// the reference's longjmp does, and its guard restores the chain head it
+    /// saved: here the head is restored where the escape lands, or the next
+    /// collect walks cells on a dead stack.
+    pub(crate) fn enter_foreign(&mut self, call: impl FnOnce() -> u64) -> Result<u64, Cond> {
+        let prev = self.slot_error.take();
+        let base = self.base;
+        let chain = self.root_chain_head(base);
+        let me = std::hint::black_box(&mut *self);
+        let out = call();
+        match std::mem::replace(&mut me.slot_error, prev) {
+            Some(c) => {
+                me.set_root_chain_head(base, chain);
+                Err(c)
+            }
+            None => Ok(out),
+        }
+    }
+
+    /// The head of base `b`'s root chain: a machine-stack address, 0 empty.
+    fn root_chain_head(&self, b: Obj) -> u64 {
+        let field = crate::base::slot(&self.objects, b, crate::base::HEAP_ROOT_CHAIN);
+        if field.is_nil() {
+            return 0;
+        }
+        self.objects.data(field, 0).raw()
+    }
+
+    fn set_root_chain_head(&mut self, b: Obj, head: u64) {
+        let field = crate::base::slot(&self.objects, b, crate::base::HEAP_ROOT_CHAIN);
+        if !field.is_nil() {
+            self.objects.set_data(field, 0, Word(head));
+        }
     }
 }
 
@@ -169,5 +216,9 @@ impl x_engine_foreign::JitHost for Engine {
                 0
             }
         }
+    }
+
+    fn raise_held(&self) -> bool {
+        self.slot_error.is_some()
     }
 }

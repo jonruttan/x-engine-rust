@@ -329,8 +329,11 @@ impl Engine {
     }
 
     /// The parked tail, read and cleared — the tco-expr/tco-env rows are the
-    /// only place it lives.
-    pub(crate) fn tail_take(&mut self) -> Option<(Obj, EnvId)> {
+    /// only place it lives. A tail parked with no environment is evaluated
+    /// in `cur`, the one the caller stands in, as the reference's trampoline
+    /// keeps its environment when tco-env is nil: compiled code parks a tail
+    /// call in tco-expr alone.
+    pub(crate) fn tail_take(&mut self, cur: EnvId) -> Option<(Obj, EnvId)> {
         let node = self.objects.state_nodes[crate::base::SN_TCO_EXPR];
         let form = self.objects.first(node);
         if form.is_nil() {
@@ -340,7 +343,12 @@ impl Engine {
         let env = self.objects.first(env_node);
         self.objects.set_data(node, 0, NIL.word());
         self.objects.set_data(env_node, 0, NIL.word());
-        Some((form, crate::obj::EnvId::from_obj(env)))
+        let env = if env.is_nil() {
+            cur
+        } else {
+            crate::obj::EnvId::from_obj(env)
+        };
+        Some((form, env))
     }
 
     /// A guard is active while the base's error-handler row is non-nil.
@@ -508,7 +516,7 @@ impl Engine {
             };
             // Something in tail position asked to be evaluated HERE rather than
             // under another frame. Loop instead of recursing.
-            match self.tail_take() {
+            match self.tail_take(env) {
                 Some((f, e)) => {
                     form = f;
                     env = e;
@@ -548,12 +556,9 @@ impl Engine {
     /// how a parked tail leaks into an unrelated evaluation.
     pub(crate) fn settle(&mut self, r: EvalResult, env: EnvId) -> EvalResult {
         let v = r?;
-        match self.tail_take() {
+        match self.tail_take(env) {
             Some((f, e)) => self.eval(f, e),
-            None => {
-                let _ = env;
-                Ok(v)
-            }
+            None => Ok(v),
         }
     }
 
@@ -620,14 +625,9 @@ impl Engine {
         // reads the base's live environment, and a closure passing its
         // locals to an emitted function is the ordinary case.
         let prev_env = self.jit_env.replace(env);
-        let prev_error = self.slot_error.take();
-        let out = x_engine_foreign::call_ints(f, &[base_real, args_real]);
+        let out = self.enter_foreign(|| x_engine_foreign::call_ints(f, &[base_real, args_real]));
         self.jit_env = prev_env;
-        // A raise held while the code ran (jit_eval_arg) is raised here.
-        match std::mem::replace(&mut self.slot_error, prev_error) {
-            Some(c) => Err(c),
-            None => Ok(self.jit_obj(out)),
-        }
+        Ok(self.jit_obj(out?))
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the
@@ -918,10 +918,12 @@ impl Engine {
         out
     }
 
-    /// Settle a parked tail for a caller that needs a VALUE.
+    /// Settle a parked tail for a caller that needs a VALUE. A tail parked
+    /// with no environment runs in the root's: this caller stands in none.
     fn settle_tail(&mut self, r: EvalResult) -> EvalResult {
         let v = r?;
-        match self.tail_take() {
+        let root = self.root_env();
+        match self.tail_take(root) {
             Some((f, e)) => self.eval(f, e),
             None => Ok(v),
         }
