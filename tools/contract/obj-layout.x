@@ -66,3 +66,8 @@
 (def %obj-flag-own 32)          ; 0x20  object owns its storage
 (def %obj-flag-ro 64)           ; 0x40  read-only
 (def %obj-flag-meta 128)        ; 0x80  extended meta units prepended
+; TRACE is the bit a caller borrows to mark objects of its own: (heap
+; tree-mark! o %obj-flag-trace) sets it, (heap chain-clear! ...) clears it.
+; The collector's own mark is elsewhere (the flags word's top bit), so the two
+; never meet.
+(def %obj-flag-trace 1024)      ; 0x400

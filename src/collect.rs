@@ -95,6 +95,27 @@ impl Objects {
         self.set_flags_word(o, w & !MARK);
     }
 
+    /// What base `b`'s root chain holds, onto `stack` — the reference's
+    /// x_heap_root_chain_mark. The chain's cells are off the heap, on the
+    /// machine stack of a compiled frame, linked through their heap word
+    /// from the head in the heap-root-chain row; each is a pair whose two
+    /// words are what the frame holds. They are read where they stand and
+    /// never marked, since no flag may be written into a frame.
+    pub(crate) fn root_chain_into(&self, b: Obj, stack: &mut Vec<Obj>) {
+        let field = crate::base::slot(self, b, crate::base::HEAP_ROOT_CHAIN);
+        if field.is_nil() {
+            return;
+        }
+        let w = crate::obj::WORD as u64;
+        let data = crate::objects::META_LEN * w;
+        let mut node = self.data(field, 0).raw();
+        while node != 0 {
+            stack.push(Word(x_engine_foreign::read_word(node + data)).as_obj());
+            stack.push(Word(x_engine_foreign::read_word(node + data + w)).as_obj());
+            node = x_engine_foreign::read_word(node + crate::objects::SLOT_HEAP * w);
+        }
+    }
+
     /// Clear `bit` on every object on the allocation chain — the reference's
     /// x_heap_chain_clear. It reaches what became garbage since a tree mark,
     /// which no walk from a root can find.
@@ -185,10 +206,11 @@ impl Objects {
                 // THE FALSE SINGLETON IS SCRATCH SPACE. It looks like a value
                 // with nothing in it, and x-lang hangs the include list off its
                 // REST — lib/x/boot/module.x does that at boot and reads it for
-                // the rest of the run.
+                // the rest of the run. Its first word is its text, raw bytes
+                // the trace must never read as an object.
                 f if f == FLAG_FALSE => {
                     if self.extent_ok(o, n) {
-                        for i in 0..n {
+                        for i in 1..n {
                             stack.push(self.data(o, i).as_obj());
                         }
                     }
@@ -278,6 +300,7 @@ impl Objects {
         }
         self.heap_chain = kept;
         self.live -= freed;
+        self.count_allocs(-(freed as i64));
         freed
     }
 
@@ -327,6 +350,7 @@ impl crate::engine::Engine {
             self.base,
             self.objects.spair_marker,
             self.objects.satom_marker,
+            self.objects.pair_type,
         ];
         r.push(self.objects.int_read);
         r.extend(self.objects.kind_handles.iter().copied());
@@ -344,9 +368,6 @@ impl crate::engine::Engine {
         for syms in self.base_syms.values() {
             r.extend(syms.all());
         }
-
-        // Displaced line cells wait off-spine while a pushed source runs.
-        r.extend(self.line_stack.iter().copied());
 
         // The evaluator's live values.
         r.extend(self.base_stack.iter().copied());
@@ -404,6 +425,12 @@ impl crate::engine::Engine {
         let mut ostack = self.root_set();
         for e in self.env_root_set() {
             ostack.push(e.obj());
+        }
+        let bases: Vec<Obj> = std::iter::once(self.base)
+            .chain(self.base_stack.iter().copied())
+            .collect();
+        for b in bases {
+            self.objects.root_chain_into(b, &mut ostack);
         }
         // The control records and continuation snapshots hold spines, names
         // and values nothing else points at while an evaluation is captured.

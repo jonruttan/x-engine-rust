@@ -36,17 +36,16 @@ impl Objects {
         let marks = self.alloc(FLAG_BUFMARKS, 2);
         self.set_data(marks, 0, Word(at));
         self.set_data(marks, 1, Word(write));
-        let o = self.alloc(FLAG_BUF, 7);
+        let o = self.alloc(FLAG_BUF, 6);
         self.set_data(o, 0, Word(at));
         self.set_data(o, 1, marks.word());
         self.set_data(o, 2, text.word());
         self.set_data(o, 3, Word(0));
         // Source-location slots, invisible to x-lang (first/rest stop at 0/1):
-        // the line anchor — "line ANCHOR_LINE at byte ANCHOR_POS" — and the
-        // file id `include` stamps.
+        // the line anchor — "line ANCHOR_LINE at byte ANCHOR_POS". The file
+        // id is not here: it rides the buffer's meta word 1 (`buf_file_id`).
         self.set_data(o, 4, Word(0));
         self.set_data(o, 5, Word(1));
-        self.set_data(o, 6, Word(0));
         o
     }
 
@@ -70,6 +69,10 @@ impl Objects {
         }
         self.set_data(b, 4, Word(cursor));
         self.set_data(b, 5, Word(line as u64));
+        // The live line rides the buffer's meta word 0, as x-engine-c's
+        // tokenizer counts it there: (Source here) reads it while the form
+        // just read is evaluated. A buffer with no meta words keeps none.
+        self.set_meta_i(b, 0, line);
         line
     }
 
@@ -82,12 +85,15 @@ impl Objects {
         self.set_data(b, 4, Word(pos.saturating_sub(shift)));
     }
 
+    /// The file id the buffer's forms are stamped with: its meta word 1, as
+    /// x-engine-c keeps it, so 0 for a buffer allocated with fewer than two.
+    /// x-lang's own loader writes it there (`%reflect-meta-set! buf 1 id`).
     pub fn buf_file_id(&self, b: Obj) -> i64 {
-        self.data(b, 6).raw() as i64
+        self.meta_i(b, 1)
     }
 
     pub fn set_buf_file_id(&mut self, b: Obj, id: i64) {
-        self.set_data(b, 6, Word(id as u64));
+        self.set_meta_i(b, 1, id);
     }
 
     pub fn is_buf(&self, o: Obj) -> bool {

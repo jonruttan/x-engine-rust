@@ -97,12 +97,16 @@ pub const FLAG_MAGIC_BIT: u64 = 1 << 62;
 /// own, ro, meta, shared, mark, trace), and x-lang reads them off the raw
 /// word; a kind code stored there reads as attributes, as `FLAG_FN`'s low
 /// bit read as WRAP. Bits 32..53 lie below the meta count, the magic bit and
+/// the mark bit, and the contract assigns them nothing.
+pub const KIND_SHIFT: u64 = 32;
+/// The contract's WRAP attribute (obj-layout.x `%obj-flag-1`): a wrapped
+/// combiner is a procedure carrying it, and x-lang's `Fn label` reads it off
+/// the flags word to tell a wrap from a closure.
+pub const ATTR_WRAP: u64 = 0x01;
 /// The contract's OWN attribute (obj-layout.x `%obj-flag-own`): the object
 /// owns the storage its data word points at, as a string made with its own
 /// bytes does and a view over bytes already there does not.
 pub const ATTR_OWN: u64 = 0x20;
-/// the mark bit, and the contract assigns them nothing.
-pub const KIND_SHIFT: u64 = 32;
 /// The kind field's width: every kind code fits in 22 bits.
 pub const KIND_MASK: u64 = 0x3f_ffff;
 
@@ -289,12 +293,12 @@ pub struct Objects {
     /// tco-env, error-handler — resolved once per base switch. Spine cells
     /// never move, so the addresses hold while the base is current.
     pub(crate) state_nodes: [Obj; 4],
-    /// The LINE and OBJ-META-EXTRA spine nodes of the current base, cached at
-    /// base switch: the line is written per evaluated form and the policy read
-    /// per allocation, and walking the spine each time was the whole suite's
-    /// runtime. The NODES are spine-stable; their inner cells swap (include
-    /// pushes a fresh line cell), so the cache holds nodes, not cells.
-    pub(crate) loc_nodes: [Obj; 2],
+    /// The LINE, OBJ-META-EXTRA and ALLOC-COUNT spine nodes of the current
+    /// base, cached at base switch: the line is written per evaluated form and
+    /// the policy and count per allocation, and walking the spine each time
+    /// was the whole suite's runtime. The NODES are spine-stable; their inner
+    /// values swap (include pushes a line counter), so the cache holds nodes.
+    pub(crate) loc_nodes: [Obj; 3],
     /// The INT token reader instruction, installed with the analyser states.
     pub(crate) int_read: Obj,
     /// The label every registered type TYPE carries in its own type word.
@@ -308,6 +312,9 @@ pub struct Objects {
     /// x-lang probes it off `(type of 0)` and uses it to tell a handle from a
     /// thing that merely has a type. The two must not be equal.
     pub(crate) satom_marker: Obj,
+    /// The type an engine-built cell reports: x-expr's one static
+    /// `x_type_pair_obj`, named PAIR, shared by every base.
+    pub(crate) pair_type: Obj,
     /// The newest allocation; every object links to the one before it.
     ///
     /// The C engine keeps the same chain in header word 0, and for the same
@@ -451,9 +458,10 @@ impl Objects {
             input_cap: 0,
             base: NIL,
             state_nodes: [NIL; 4],
-            loc_nodes: [NIL; 2],
+            loc_nodes: [NIL; 3],
             int_read: NIL,
             spair_marker: NIL,
+            pair_type: NIL,
             satom_marker: NIL,
             heap_chain: NIL,
             free: HashMap::new(),
@@ -476,10 +484,24 @@ impl Objects {
         // every wrong branch, silently.
         // The two labels, before anything exists to be labelled. Distinct objects:
         // the library compares against both and behaves differently.
-        a.spair_marker = a.alloc(Flags::new(0), 1);
+        // The spair label is the exported `x_type_pair_obj`, as the
+        // reference's is: compiled code asks whether a word is a type by
+        // comparing its type word with that symbol's address. It lies
+        // outside the arena, so the heap reads it as zeros and the collector
+        // passes it by.
+        a.spair_marker = Word(x_engine_foreign::type_pair_addr()).as_obj();
         a.satom_marker = a.alloc(Flags::new(0), 1);
+        let pair_name = a.handle(crate::vocabulary::TYPE_PAIR);
+        a.pair_type = a.type_new(pair_name, NIL);
 
         a.false_obj = a.alloc(FLAG_FALSE, 2);
+        // Its value word points at its text, as the reference's #f does
+        // (x_false_obj is built over X_OBJ_FALSE_TEXT): never 0, since `eq?`
+        // compares value words and `(eq? 0 #f)` is #f, and readable as the
+        // C string a symbol's word is. A zero here made every literal 0 the
+        // compiler is handed read as #f (x/tool/fn-compile's constant test).
+        let text = a.heap.store_bytes(crate::vocabulary::FALSE.as_bytes());
+        a.set_data(a.false_obj, 0, Word(text.raw()));
         a.true_obj = a.sym_shared(crate::vocabulary::TRUE);
         a
     }
@@ -494,6 +516,7 @@ impl Objects {
     pub fn alloc(&mut self, flags: Flags, n: usize) -> Obj {
         self.heap.note_allocation();
         self.live += 1;
+        self.count_allocs(1);
         let ty = self.stamp_for(flags);
         let meta = self.meta_extra();
 
@@ -588,18 +611,33 @@ impl Objects {
                 != 0
     }
 
-    /// Meta unit `i`, at word -(i+1) from the object — obj-layout.x's
-    /// committed placement. Zero for an object with none.
-    pub fn meta_i(&self, o: Obj, i: u64) -> i64 {
+    /// How many meta words this object's allocation prepended: the count its
+    /// flags word carries beside the META bit.
+    fn meta_count(&self, o: Obj) -> u64 {
         if !self.meta_stamped(o) {
+            return 0;
+        }
+        let flags = self
+            .heap
+            .word(o.addr().plus(SLOT_FLAGS * WORD as u64))
+            .raw();
+        (flags >> FLAG_META_SHIFT) & 0x3f
+    }
+
+    /// Meta unit `i`, at word -(i+1) from the object — obj-layout.x's
+    /// committed placement. Zero past the object's own meta words: the word
+    /// there belongs to the object before it.
+    pub fn meta_i(&self, o: Obj, i: u64) -> i64 {
+        if i >= self.meta_count(o) {
             return 0;
         }
         let at = o.addr().raw().wrapping_sub((i + 1) * WORD as u64);
         self.heap.word(crate::obj::Addr::new(at)).raw() as i64
     }
 
+    /// Write meta unit `i`; a no-op past the object's own meta words.
     pub fn set_meta_i(&mut self, o: Obj, i: u64, v: i64) {
-        if !self.meta_stamped(o) {
+        if i >= self.meta_count(o) {
             return;
         }
         let at = o.addr().raw().wrapping_sub((i + 1) * WORD as u64);
@@ -629,13 +667,34 @@ impl Objects {
         (self.data(cell, 0).raw() as usize).min(16)
     }
 
+    /// Move the current base's alloc-count cell by `delta`: up per allocation,
+    /// down by what a sweep frees, as x-expr's x_obj_alloc and x_obj_free
+    /// keep it. The count of objects this base holds, not of every one ever.
+    pub(crate) fn count_allocs(&mut self, delta: i64) {
+        let node = self.loc_nodes[2];
+        if node.is_nil() {
+            return;
+        }
+        let cell = self.first(node);
+        if cell.is_nil() {
+            return;
+        }
+        let n = self.data(cell, 0).raw() as i64;
+        self.set_data(cell, 0, Word(n.wrapping_add(delta) as u64));
+    }
+
     /// Write the live source line through the cached LINE node.
     pub(crate) fn set_live_line(&mut self, line: i64) {
         let node = self.loc_nodes[0];
         if node.is_nil() {
             return;
         }
-        let cell = self.first(node);
+        // The node's value is the LINE stack; its top is the live counter.
+        let stack = self.first(node);
+        if stack.is_nil() {
+            return;
+        }
+        let cell = self.first(stack);
         if cell.is_nil() {
             return;
         }

@@ -103,7 +103,7 @@ fn ptr_call(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     for &o in &a[1..] {
         args.push(marshal_guarded(e, o, "ptr-call")?);
     }
-    let r = foreign::call_ints(f, &args);
+    let r = e.enter_foreign(|| foreign::call_ints(f, &args))?;
     Ok(e.objects.int(r as i64))
 }
 

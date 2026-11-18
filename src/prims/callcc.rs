@@ -285,7 +285,7 @@ impl Engine {
         // at this depth, so its records describe this frame as a normal call's
         // would.
         let out = match self.call_with_values_tail(callee, &vals, env) {
-            Ok(v) => match self.tail_take() {
+            Ok(v) => match self.tail_take(env) {
                 Some((f, e)) => self.eval_pending(f, e),
                 None => Ok(v),
             },

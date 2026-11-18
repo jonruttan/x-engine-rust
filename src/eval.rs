@@ -329,8 +329,11 @@ impl Engine {
     }
 
     /// The parked tail, read and cleared — the tco-expr/tco-env rows are the
-    /// only place it lives.
-    pub(crate) fn tail_take(&mut self) -> Option<(Obj, EnvId)> {
+    /// only place it lives. A tail parked with no environment is evaluated
+    /// in `cur`, the one the caller stands in, as the reference's trampoline
+    /// keeps its environment when tco-env is nil: compiled code parks a tail
+    /// call in tco-expr alone.
+    pub(crate) fn tail_take(&mut self, cur: EnvId) -> Option<(Obj, EnvId)> {
         let node = self.objects.state_nodes[crate::base::SN_TCO_EXPR];
         let form = self.objects.first(node);
         if form.is_nil() {
@@ -340,10 +343,32 @@ impl Engine {
         let env = self.objects.first(env_node);
         self.objects.set_data(node, 0, NIL.word());
         self.objects.set_data(env_node, 0, NIL.word());
-        Some((form, crate::obj::EnvId::from_obj(env)))
+        let env = if env.is_nil() {
+            cur
+        } else {
+            crate::obj::EnvId::from_obj(env)
+        };
+        Some((form, env))
     }
 
     /// A guard is active while the base's error-handler row is non-nil.
+    /// Copy the live line and file into err-line/err-file, once per raise.
+    ///
+    /// x-engine-c snapshots inside `x_eval_error`, at the raise, and its
+    /// longjmp skips every pop on the way to the guard. Here a raise travels
+    /// up as a value and each included source pops its line counter as it
+    /// passes, so the FIRST pop freezes the site and later ones leave it.
+    pub(crate) fn freeze_raise_site(&mut self) {
+        if self.raise_site_frozen {
+            return;
+        }
+        self.raise_site_frozen = true;
+        let line = crate::base::line(&self.objects, self.base);
+        crate::base::set_cell_int(&mut self.objects, self.base, crate::base::ERR_LINE, line);
+        let file = self.live_file;
+        crate::base::set_cell_int(&mut self.objects, self.base, crate::base::ERR_FILE, file);
+    }
+
     pub(crate) fn handler_active(&self) -> bool {
         !self
             .objects
@@ -441,6 +466,8 @@ impl Engine {
                 let line = self.objects.meta_i(form, 0);
                 self.objects.set_live_line(line);
                 self.live_file = self.objects.meta_i(form, 1);
+                // Evaluating again: any raise frozen earlier was swallowed.
+                self.raise_site_frozen = false;
             }
             // THE MACHINE, as `x_eval` draws it: a value whose type word is
             // nil or a raw marker is ITSELF, and everything else is decided by
@@ -489,7 +516,7 @@ impl Engine {
             };
             // Something in tail position asked to be evaluated HERE rather than
             // under another frame. Loop instead of recursing.
-            match self.tail_take() {
+            match self.tail_take(env) {
                 Some((f, e)) => {
                     form = f;
                     env = e;
@@ -529,12 +556,9 @@ impl Engine {
     /// how a parked tail leaks into an unrelated evaluation.
     pub(crate) fn settle(&mut self, r: EvalResult, env: EnvId) -> EvalResult {
         let v = r?;
-        match self.tail_take() {
+        match self.tail_take(env) {
             Some((f, e)) => self.eval(f, e),
-            None => {
-                let _ = env;
-                Ok(v)
-            }
+            None => Ok(v),
         }
     }
 
@@ -601,14 +625,9 @@ impl Engine {
         // reads the base's live environment, and a closure passing its
         // locals to an emitted function is the ordinary case.
         let prev_env = self.jit_env.replace(env);
-        let prev_error = self.slot_error.take();
-        let out = x_engine_foreign::call_ints(f, &[base_real, args_real]);
+        let out = self.enter_foreign(|| x_engine_foreign::call_ints(f, &[base_real, args_real]));
         self.jit_env = prev_env;
-        // A raise held while the code ran (jit_eval_arg) is raised here.
-        match std::mem::replace(&mut self.slot_error, prev_error) {
-            Some(c) => Err(c),
-            None => Ok(self.jit_obj(out)),
-        }
+        Ok(self.jit_obj(out?))
     }
 
     /// Applying a wrapper: evaluate the arguments, then hand the VALUES to the
@@ -899,10 +918,12 @@ impl Engine {
         out
     }
 
-    /// Settle a parked tail for a caller that needs a VALUE.
+    /// Settle a parked tail for a caller that needs a VALUE. A tail parked
+    /// with no environment runs in the root's: this caller stands in none.
     fn settle_tail(&mut self, r: EvalResult) -> EvalResult {
         let v = r?;
-        match self.tail_take() {
+        let root = self.root_env();
+        match self.tail_take(root) {
             Some((f, e)) => self.eval(f, e),
             None => Ok(v),
         }

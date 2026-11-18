@@ -90,10 +90,9 @@ impl Engine {
         let fhead = crate::base::get(&self.objects, base, crate::base::FILEIN);
         let fcell = self.objects.spair(fdo, fhead);
         crate::base::set(&mut self.objects, base, crate::base::FILEIN, fcell);
-        let line = crate::base::fresh_line_cell(&mut self.objects, 1);
         let lhead = crate::base::get(&self.objects, base, crate::base::LINE);
+        let line = crate::base::line_push(&mut self.objects, lhead);
         crate::base::set(&mut self.objects, base, crate::base::LINE, line);
-        self.line_stack.push(lhead);
     }
 
     pub(crate) fn input_pop(&mut self) {
@@ -104,9 +103,9 @@ impl Engine {
         let fhead = crate::base::get(&self.objects, base, crate::base::FILEIN);
         let frest = self.objects.rest(fhead);
         crate::base::set(&mut self.objects, base, crate::base::FILEIN, frest);
-        if let Some(line) = self.line_stack.pop() {
-            crate::base::set(&mut self.objects, base, crate::base::LINE, line);
-        }
+        let lhead = crate::base::get(&self.objects, base, crate::base::LINE);
+        let lrest = self.objects.rest(lhead);
+        crate::base::set(&mut self.objects, base, crate::base::LINE, lrest);
     }
 
     /// Read the next top-level form, or `None` at end of input.
@@ -248,6 +247,11 @@ impl Engine {
                 Err(c) => break Err(c),
             }
         };
+        // The pop takes this source's line counter with it, so a raise leaving
+        // the file freezes its site first.
+        if out.is_err() && !self.is_escaping() {
+            self.freeze_raise_site();
+        }
         self.input_pop();
         out
     }
@@ -340,5 +344,35 @@ mod tests {
             last = e.eval_top(f).expect("evaluates");
         }
         assert_eq!(e.objects.as_int(last), 42);
+    }
+
+    /// The LINE row is a stack, as x-engine-c keeps it: a pushed source conses
+    /// its own counter on, from 1, and the pop leaves the outer row as it was.
+    #[test]
+    fn a_pushed_source_stacks_its_own_line_counter() {
+        let mut e = Engine::new();
+        let base = e.base;
+        let outer = crate::base::get(&e.objects, base, crate::base::LINE);
+        e.objects.set_live_line(7);
+        e.input_push_file("1\n", -1, 0);
+        let pushed = crate::base::get(&e.objects, base, crate::base::LINE);
+        assert_eq!(e.objects.rest(pushed), outer);
+        assert_eq!(crate::base::line(&e.objects, base), 1);
+        e.input_pop();
+        assert_eq!(crate::base::get(&e.objects, base, crate::base::LINE), outer);
+        assert_eq!(crate::base::line(&e.objects, base), 7);
+    }
+
+    /// alloc-count is the objects the current base holds: up one per
+    /// allocation, as x-expr's x_obj_alloc keeps it.
+    #[test]
+    fn the_alloc_count_cell_follows_allocation() {
+        let mut e = Engine::new();
+        let base = e.base;
+        let before = crate::base::cell_int(&e.objects, base, crate::base::ALLOC_COUNT);
+        e.objects.spair(NIL, NIL);
+        e.objects.spair(NIL, NIL);
+        let after = crate::base::cell_int(&e.objects, base, crate::base::ALLOC_COUNT);
+        assert_eq!(after - before, 2);
     }
 }

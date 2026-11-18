@@ -21,6 +21,8 @@
 
 use std::ffi::{c_char, c_int, c_long, c_void};
 
+mod escape;
+
 /// A real machine address, as answered by `dlopen`/`dlsym`.
 ///
 /// Not the engine's `Addr`: an `Addr` the engine reaches through its own
@@ -157,20 +159,22 @@ pub fn sym(handle: Foreign, name: &[u8]) -> Foreign {
 /// arguments are silently ignored". Matching the number matters: a caller
 /// written against the reference and passing seven would lose its last argument
 /// here, quietly, and the loss would look like the callee misbehaving.
+///
+/// The call is an ESCAPE FRAME (see `escape`): a door that holds a raise
+/// while the code runs returns 0 from here, as the reference's longjmp leaves
+/// the compiled frames, and the caller raises what the engine holds.
+///
+/// The caller vouches that `f` is a function this process can enter, resolved
+/// through dlsym or emitted. The convention is C's integer one: handing a
+/// function FEWER arguments than it reads is the caller's error to make,
+/// exactly as it is in C, and x-lang's contract calls this door UNCHECKED for
+/// that reason.
 pub fn call_ints(f: Foreign, args: &[u64]) -> u64 {
-    type F7 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64;
     let mut a = [0u64; 7];
     for (slot, v) in a.iter_mut().zip(args.iter()) {
         *slot = *v;
     }
-    // SAFETY: the caller has resolved `f` through dlsym, so it is a function
-    // this process can enter. The signature is the C integer convention, which
-    // passes its first six arguments in registers on both aarch64 and x86-64:
-    // handing a function FEWER arguments than it reads is the caller's error to
-    // make, exactly as it is in C, and x-lang's contract calls this door
-    // UNCHECKED for that reason.
-    let g: F7 = unsafe { std::mem::transmute(f.0 as *const c_void) };
-    g(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
+    escape::enter(f.0, &a)
 }
 
 /// `s0->d` — call a `(const char *, void *) -> double`, answering the bits.
@@ -358,6 +362,18 @@ pub trait JitHost {
     /// in tools/contract/base-slots.x gives them. A routine may write a word
     /// back (token-analyse declares its label in its second word).
     fn slot_routine(&mut self, slot: usize, base: u64, run: &mut [u64]) -> u64;
+    /// Whether a raise is held for the entry the running code came from: a
+    /// door that sees one leaves the code (`escape`).
+    fn raise_held(&self) -> bool;
+}
+
+/// A door's way back to compiled code: its value, unless the host now holds
+/// a raise, in which case the code is left at its entry.
+fn door_out(v: u64) -> u64 {
+    if jit_host().raise_held() {
+        escape::escape();
+    }
+    v
 }
 
 /// How many words each slot's argument run holds, by position: the third
@@ -385,7 +401,7 @@ macro_rules! slot_doors {
                     // for the duration of the call.
                     unsafe { std::slice::from_raw_parts_mut(run, n) }
                 };
-                jit_host().slot_routine($slot, base, words)
+                door_out(jit_host().slot_routine($slot, base, words))
             }
         )*
 
@@ -478,7 +494,7 @@ pub extern "C" fn jit_atomint(p: u64) -> i64 {
 
 #[no_mangle]
 pub extern "C" fn jit_eval_arg(_base: u64, expr: u64) -> u64 {
-    jit_host().jit_eval_arg(expr)
+    door_out(jit_host().jit_eval_arg(expr))
 }
 
 #[no_mangle]
@@ -508,12 +524,26 @@ pub extern "C" fn jit_score_label(score: u64, label: i64) -> u64 {
 
 #[no_mangle]
 pub extern "C" fn jit_call_value(_base: u64, args: u64) -> u64 {
-    jit_host().jit_call_value(args)
+    door_out(jit_host().jit_call_value(args))
 }
 
-/// The twelve exported addresses, for the binary to anchor so the linker keeps
+/// The structural pair label, as x-engine-c exports its `x_type_pair_obj`:
+/// the type word every engine-built cell and every type carries, and the
+/// one a compiled frame stamps on each cell it links onto the root chain.
+/// Data, not code, and an IDENTITY: compiled code compares a type's type
+/// word with this address before walking the type, and the engine reads
+/// nothing behind it.
+#[no_mangle]
+pub static x_type_pair_obj: [u64; 8] = [0; 8];
+
+/// The address of [`x_type_pair_obj`], the engine's spair label.
+pub fn type_pair_addr() -> u64 {
+    std::ptr::addr_of!(x_type_pair_obj) as u64
+}
+
+/// The thirteen exported addresses, for the binary to anchor so the linker keeps
 /// them reachable by `dlsym`.
-pub fn jit_exports() -> [usize; 12] {
+pub fn jit_exports() -> [usize; 13] {
     [
         jit_mkint as extern "C" fn(u64, i64) -> u64 as usize,
         jit_mkpair as extern "C" fn(u64, u64, u64) -> u64 as usize,
@@ -527,6 +557,7 @@ pub fn jit_exports() -> [usize; 12] {
         jit_buffer_last_char as extern "C" fn(u64) -> i64 as usize,
         jit_score_label as extern "C" fn(u64, i64) -> u64 as usize,
         jit_call_value as extern "C" fn(u64, u64) -> u64 as usize,
+        std::ptr::addr_of!(x_type_pair_obj) as usize,
     ]
 }
 

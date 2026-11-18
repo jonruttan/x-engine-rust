@@ -88,6 +88,9 @@
   ; The raised-error value: one ERR, (code . subject), each a string atom a
   ; raise repoints.  x-lang reaches its type through it.
   (err base f r r r r r r r r r r r r r r r r r r r r r r r r r r f)
+  ; The root chain's field cell, whose first word heads the chain of
+  ; off-heap cells compiled frames link in, as x-engine-c's row is.
+  (heap-root-chain base f r r r r r r r r r r r r r r r r r r r r r r r r r r r f)
 
   ; --- routes rooted at a TYPE OBJECT, not at the base ---
   ; These steps are the REFERENCE ENGINE'S, chosen

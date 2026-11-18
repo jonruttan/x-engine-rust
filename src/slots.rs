@@ -107,13 +107,9 @@ impl Engine {
             None => self.slot_run(slot, words),
             Some(addr) => {
                 let base = self.jit_real(self.base);
-                let prev = self.slot_error.take();
-                let out =
-                    x_engine_foreign::call_routine(x_engine_foreign::Foreign(addr), base, words);
-                match std::mem::replace(&mut self.slot_error, prev) {
-                    Some(c) => Err(c),
-                    None => Ok(out),
-                }
+                self.enter_foreign(|| {
+                    x_engine_foreign::call_routine(x_engine_foreign::Foreign(addr), base, words)
+                })
             }
         }
     }

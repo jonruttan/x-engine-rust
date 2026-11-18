@@ -175,6 +175,11 @@ pub const MSG_IMPROPER_ARGS: &str = "call: improper argument list (dotted tail)"
 /// jit_call_value's refusal of a callee that is not a primitive.
 pub const MSG_CALL_VALUE: &str = "asm-compile: call through a value that is not a callable prim";
 
+/// The type an engine-built cell reports, as x-expr names its static
+/// `x_type_pair_obj` (X_TYPE_PAIR_NAME). Not LIST: `pair?` asks for the
+/// type `pair` builds, and an engine cell answers #f to it.
+pub const TYPE_PAIR: &str = "PAIR";
+
 pub const TRUE: &str = "#t";
 pub const FALSE: &str = "#f";
 pub const ARGS: &str = "args";
