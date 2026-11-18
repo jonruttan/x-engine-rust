@@ -132,11 +132,11 @@ impl x_engine_foreign::JitHost for Engine {
         }
         let call = self.jit_obj(args);
         let callee = self.objects.first(call);
-        let base = self.objects.base;
-        let prim_t = self
-            .objects
-            .builtin_type_in(base, crate::objects::FLAG_PRIM);
-        if callee.is_nil() || self.objects.obj_type(callee) != prim_t {
+        // By NAME, as x-engine-c's x_obj_type_isprim asks: a prim made in the
+        // parent is called from compiled code running in a child base, whose
+        // PRIMITIVE type is a different object.
+        let prim = crate::objects::kind_name(crate::objects::FLAG_PRIM);
+        if !self.objects.is_type_named(callee, prim) {
             self.slot_error = Some(crate::diag::Cond::EngineMsg(
                 crate::vocabulary::MSG_CALL_VALUE.to_string(),
             ));

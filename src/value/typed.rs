@@ -333,6 +333,21 @@ impl Objects {
         Some(self.str_val(handle))
     }
 
+    /// Whether a value's type is NAMED `name`: x-expr's `x_obj_is_type`,
+    /// which compares names, so a value made in another base answers as its
+    /// own base's type of the same name does. Allocates nothing.
+    pub fn is_type_named(&self, o: Obj, name: &str) -> bool {
+        if o.is_nil() {
+            return false;
+        }
+        let ty = self.type_of_word(o);
+        if ty.is_nil() || ty == self.spair_marker || ty == self.satom_marker {
+            return false;
+        }
+        let handle = self.handle_of_type(ty);
+        !handle.is_nil() && self.bytes_of(handle) == name.as_bytes()
+    }
+
     /// The handle stored in a type's name slot.
     pub fn handle_of_type(&self, ty: Obj) -> Obj {
         if ty.is_nil() {
@@ -351,12 +366,12 @@ impl Objects {
         if !carried.is_nil() && carried != self.spair_marker && carried != self.satom_marker {
             return carried;
         }
-        // An engine-built spine cell REPORTS as a pair — the reference's
-        // catalogue rows answer `pair?` #t — while its marker word keeps it
-        // self-evaluating (the eval loop reads the raw word, not this).
-        if carried == self.spair_marker && !self.base.is_nil() {
-            let base = self.base;
-            return self.builtin_type_in(base, crate::objects::FLAG_PAIR);
+        // An engine-built cell reports as PAIR, x-expr's x_type_pair_obj,
+        // which is not the LIST type `pair` builds: `pair?` answers #f for
+        // it, as for x-engine-c's frames and handlers. Its marker word keeps
+        // it self-evaluating (the eval loop reads the raw word, not this).
+        if carried == self.spair_marker {
+            return self.pair_type;
         }
         // A nil type word IS the answer: the reference leaves `#t`, `#f`,
         // and its static sentinels untyped, and `lib/x/type/bool.x` claims

@@ -349,6 +349,7 @@ impl crate::engine::Engine {
             self.base,
             self.objects.spair_marker,
             self.objects.satom_marker,
+            self.objects.pair_type,
         ];
         r.push(self.objects.int_read);
         r.extend(self.objects.kind_handles.iter().copied());

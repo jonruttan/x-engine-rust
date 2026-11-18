@@ -225,10 +225,17 @@ pub(crate) fn analyse(
     types: &[Obj],
     buf: Obj,
     env: EnvId,
-) -> Result<Option<(Obj, i64)>, Cond> {
+) -> Result<Option<(Obj, i64, i64)>, Cond> {
     let mark = e.root_mark();
     e.root_push(buf);
-    let score = e.objects.int(0);
+    // The score and its LABEL CELL, as x_token_analyse lays them out: an
+    // untyped two-word cell whose word 0 is the score and word 1 the label
+    // cell, so a state declares what it accepted with a set-cell-int! on
+    // (rest score) -- `%score-label!` and `jit_score_label` both write there.
+    // Raw kinds: the collector marks them and never follows their words.
+    let label = e.objects.alloc(crate::objects::FLAG_BUFMARKS, 2);
+    e.root_push(label);
+    let score = e.objects.alloc(crate::objects::FLAG_BUFMARKS, 2);
     e.root_push(score);
     let state_slot = e.root_mark();
     e.root_push(NIL);
@@ -240,6 +247,7 @@ pub(crate) fn analyse(
 
     let mut best: Option<i64> = None;
     let mut winner = NIL;
+    let mut winner_label = 0i64;
 
     for &ty in types {
         if ty.is_nil() {
@@ -255,7 +263,12 @@ pub(crate) fn analyse(
             if h.is_nil() {
                 continue;
             }
+            // Score and label cleared per handler, and the label cell put
+            // back on the score's rest: an analyser may have repointed it,
+            // and a later handler's label must land in the cell.
             e.objects.set_data(score, 0, crate::obj::Word::from_i64(0));
+            e.objects.set_data(label, 0, crate::obj::Word::from_i64(0));
+            e.objects.set_data(score, 1, label.word());
             let mut state = h;
             e.roots[state_slot] = state;
 
@@ -314,6 +327,7 @@ pub(crate) fn analyse(
                 if better(n, best) {
                     best = Some(n);
                     winner = ty;
+                    winner_label = e.objects.data(label, 0).as_i64();
                 }
             }
             rewind(e);
@@ -321,7 +335,21 @@ pub(crate) fn analyse(
     }
 
     e.root_truncate(mark);
-    Ok(best.map(|n| (winner, n)))
+    Ok(best.map(|n| (winner, n, winner_label)))
+}
+
+/// A reader's second argument: nil when the winning state declared no label,
+/// else a raw cell whose word is the label. A cell, not an int, as
+/// x_token_read hands it: an int only exists in a base that registered the
+/// int type, and a tokenizer base has none.
+pub(crate) fn label_arg(e: &mut Engine, label: i64) -> Obj {
+    if label == 0 {
+        return NIL;
+    }
+    let cell = e.objects.alloc(crate::objects::FLAG_BUFMARKS, 2);
+    e.objects
+        .set_data(cell, 0, crate::obj::Word::from_i64(label));
+    cell
 }
 
 /// `(tok read-str TB text [start len])` — drive every registered type over the
@@ -402,7 +430,7 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
         // rewinds the cursor to the retain mark between handlers, so the
         // buffer comes back positioned where it started.
         let claim = e.in_base(target, |e| analyse(e, &types, buf, env))?;
-        let Some((ty, claim)) = claim else {
+        let Some((ty, claim, label)) = claim else {
             if falls_back {
                 // No registered type claims here: the engine's own reader takes
                 // one form, or the input is done.
@@ -457,13 +485,16 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
             continue;
         }
         // The slot may be a LIST. A reader DECLINES by answering nil without
-        // consuming, so each attempt starts from the same position.
+        // consuming, so each attempt starts from the same position. Every
+        // reader is handed (buffer label), the label nil when none was declared.
+        let larg = label_arg(e, label);
+        e.root_push(larg);
         let mut token = NIL;
         for r in handler_list(e, reader) {
             e.objects.set_buf_cursor(buf, at + n);
             let fmark = e.root_mark();
             e.root_push(r);
-            let got = e.in_base(target, |e| e.call_with_values(r, &[buf], env))?;
+            let got = e.in_base(target, |e| e.call_with_values(r, &[buf, larg], env))?;
             e.root_truncate(fmark);
             if !got.is_nil() {
                 token = got;

@@ -266,7 +266,7 @@ impl Engine {
         let env = self.root_env();
         let cbuf = self.objects.buf(text, at);
         self.root_push(cbuf);
-        let (ty, claim) = match analyse(self, &types, cbuf, env) {
+        let (ty, claim, label) = match analyse(self, &types, cbuf, env) {
             Ok(Some(w)) => w,
             Ok(None) => {
                 self.root_truncate(mark);
@@ -295,6 +295,9 @@ impl Engine {
             // returned.
             let reader = handler(self, ty, Family::Read);
             let env = self.root_env();
+            // (buffer label): the label the winning state declared, or nil.
+            let larg = crate::prims::tok::label_arg(self, label);
+            self.root_push(larg);
             for rd in handler_list(self, reader) {
                 if rd.is_nil() {
                     continue;
@@ -303,7 +306,7 @@ impl Engine {
                 self.objects.set_buf_cursor(b, at + n);
                 let bmark = self.root_mark();
                 self.root_push(rd);
-                let got = match self.call_with_values(rd, &[b], env) {
+                let got = match self.call_with_values(rd, &[b, larg], env) {
                     Ok(v) => v,
                     Err(c) => {
                         self.root_truncate(mark);

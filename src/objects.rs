@@ -308,6 +308,9 @@ pub struct Objects {
     /// x-lang probes it off `(type of 0)` and uses it to tell a handle from a
     /// thing that merely has a type. The two must not be equal.
     pub(crate) satom_marker: Obj,
+    /// The type an engine-built cell reports: x-expr's one static
+    /// `x_type_pair_obj`, named PAIR, shared by every base.
+    pub(crate) pair_type: Obj,
     /// The newest allocation; every object links to the one before it.
     ///
     /// The C engine keeps the same chain in header word 0, and for the same
@@ -454,6 +457,7 @@ impl Objects {
             loc_nodes: [NIL; 3],
             int_read: NIL,
             spair_marker: NIL,
+            pair_type: NIL,
             satom_marker: NIL,
             heap_chain: NIL,
             free: HashMap::new(),
@@ -478,6 +482,8 @@ impl Objects {
         // the library compares against both and behaves differently.
         a.spair_marker = a.alloc(Flags::new(0), 1);
         a.satom_marker = a.alloc(Flags::new(0), 1);
+        let pair_name = a.handle(crate::vocabulary::TYPE_PAIR);
+        a.pair_type = a.type_new(pair_name, NIL);
 
         a.false_obj = a.alloc(FLAG_FALSE, 2);
         a.true_obj = a.sym_shared(crate::vocabulary::TRUE);
