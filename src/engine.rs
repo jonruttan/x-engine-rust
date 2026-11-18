@@ -302,8 +302,8 @@ impl Engine {
         let samples = [
             self.objects.int(0),
             self.objects.str_new(""),
-            // A SYMBOL, and `#t` is one — the sample only has to have the type.
-            self.objects.true_obj(),
+            // A SYMBOL — the sample only has to have the type.
+            self.objects.sym_shared(crate::vocabulary::TRUE),
             self.objects.char_new(65),
             self.objects.false_obj(),
             self.objects.pair(one, NIL),
@@ -474,7 +474,8 @@ impl Engine {
         // evaluated in a child must find them. They are `%isa-values` rows in
         // their own right, which is why they are declared and not merely bound.
         let t = self.objects.sym_shared(crate::vocabulary::TRUE);
-        self.envs.bind(&mut self.objects, env, t, t);
+        let to = self.objects.true_obj();
+        self.envs.bind(&mut self.objects, env, t, to);
         let f = self.objects.sym_shared(crate::vocabulary::FALSE);
         let fo = self.objects.false_obj();
         self.envs.bind(&mut self.objects, env, f, fo);

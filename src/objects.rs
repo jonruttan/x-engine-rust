@@ -160,6 +160,11 @@ pub const FLAG_SYM: Flags = Flags::new(0x0200);
 /// is true. One allocated object, compared by identity.
 pub const FLAG_FALSE: Flags = Flags::new(0x0400);
 
+/// `#t`, a variant of the `#f` marker. Not a symbol: the reference's
+/// x_true_obj is an untyped atom over the text "#t", and the symbol `#t` the
+/// reader makes is a plain symbol bound to it, `eq?` to it by that shared text.
+pub const FLAG_TRUE: Flags = Flags::new(0x0401);
+
 /// An OPERATIVE. Separate from a closure because the difference is not a detail
 /// of one kind of callable: an operative receives its arguments unevaluated and
 /// is handed the caller's environment.
@@ -495,14 +500,20 @@ impl Objects {
         a.pair_type = a.type_new(pair_name, NIL);
 
         a.false_obj = a.alloc(FLAG_FALSE, 2);
-        // Its value word points at its text, as the reference's #f does
-        // (x_false_obj is built over X_OBJ_FALSE_TEXT): never 0, since `eq?`
-        // compares value words and `(eq? 0 #f)` is #f, and readable as the
-        // C string a symbol's word is. A zero here made every literal 0 the
-        // compiler is handed read as #f (x/tool/fn-compile's constant test).
-        let text = a.heap.store_bytes(crate::vocabulary::FALSE.as_bytes());
-        a.set_data(a.false_obj, 0, Word(text.raw()));
-        a.true_obj = a.sym_shared(crate::vocabulary::TRUE);
+        // Its value word is the text of the shared symbol #f, as the
+        // reference's x_false_obj is built over X_OBJ_FALSE_TEXT and binds
+        // the symbol of that same text: `eq?` compares value words, so the
+        // symbol the reader makes of "#f" is `eq?` to #f, and 0 never is.
+        // A zero here made every literal 0 the compiler is handed read as
+        // #f (x/tool/fn-compile's constant test).
+        let fsym = a.sym_shared(crate::vocabulary::FALSE);
+        let text = a.data(fsym, 0);
+        a.set_data(a.false_obj, 0, text);
+        // #t the same way: its own object over the text of the shared symbol.
+        a.true_obj = a.alloc(FLAG_TRUE, 1);
+        let tsym = a.sym_shared(crate::vocabulary::TRUE);
+        let ttext = a.data(tsym, 0);
+        a.set_data(a.true_obj, 0, ttext);
         a
     }
 
