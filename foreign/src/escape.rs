@@ -53,7 +53,7 @@ macro_rules! sym {
 }
 
 // x_escape_enter(f, args, frame): save x19-x28, fp, lr, sp, d8-d15 into
-// frame, call f with seven integer arguments from args, return its x0.
+// frame, call f with eight integer arguments from args, return its x0.
 // x_escape_jump(frame): restore them and return 0 from that x_escape_enter.
 #[cfg(target_arch = "aarch64")]
 std::arch::global_asm!(
@@ -80,7 +80,7 @@ std::arch::global_asm!(
     "ldp x0, x1, [x9, #0]",
     "ldp x2, x3, [x9, #16]",
     "ldp x4, x5, [x9, #32]",
-    "ldr x6, [x9, #48]",
+    "ldp x6, x7, [x9, #48]",
     "blr x16",
     "ldp x29, x30, [sp], #16",
     "ret",
@@ -104,8 +104,8 @@ std::arch::global_asm!(
 );
 
 // x_escape_enter(f, args, frame): save rbx, rbp, r12-r15, the caller's stack
-// pointer and the return address into frame; call f with seven integer
-// arguments from args, the seventh on the stack; return its rax.
+// pointer and the return address into frame; call f with eight integer
+// arguments from args, the seventh and eighth on the stack; return its rax.
 // x_escape_jump(frame): restore them and return 0 from that x_escape_enter.
 #[cfg(target_arch = "x86_64")]
 std::arch::global_asm!(
@@ -129,6 +129,8 @@ std::arch::global_asm!(
     "sub rsp, 16",
     "mov rax, [r11 + 48]",
     "mov [rsp], rax",
+    "mov rax, [r11 + 56]",
+    "mov [rsp + 8], rax",
     "mov rdi, [r11 + 0]",
     "mov rsi, [r11 + 8]",
     "mov rdx, [r11 + 16]",
@@ -157,15 +159,15 @@ extern "C" {
     fn x_escape_jump(frame: *mut Frame) -> !;
 }
 
-/// Call `f` with seven integer arguments as an escape frame: a door's
+/// Call `f` with eight integer arguments as an escape frame: a door's
 /// [`escape`] while it runs returns 0 from here.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-pub fn enter(f: u64, args: &[u64; 7]) -> u64 {
+pub fn enter(f: u64, args: &[u64; 8]) -> u64 {
     let mut frame = Frame::new();
     frame.prev = TOP.load(Ordering::Relaxed);
     TOP.store(&mut frame, Ordering::Relaxed);
     // SAFETY: `f` is an address the caller vouches is a function taking up
-    // to seven integer arguments, as `call_ints` always has. The frame lives
+    // to eight integer arguments, as `call_ints` always has. The frame lives
     // on this stack for the whole call, and is unlinked below on both ways
     // back: the routine's return and an escape, which lands here returning 0.
     let out = unsafe { x_escape_enter(f, args.as_ptr(), &mut frame) };
@@ -174,12 +176,12 @@ pub fn enter(f: u64, args: &[u64; 7]) -> u64 {
 }
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-pub fn enter(f: u64, args: &[u64; 7]) -> u64 {
-    type F7 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64) -> u64;
+pub fn enter(f: u64, args: &[u64; 8]) -> u64 {
+    type F8 = extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64) -> u64;
     // SAFETY: as `call_ints`: the caller vouches for `f`.
-    let g: F7 = unsafe { std::mem::transmute(f as *const std::ffi::c_void) };
+    let g: F8 = unsafe { std::mem::transmute(f as *const std::ffi::c_void) };
     g(
-        args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+        args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
     )
 }
 

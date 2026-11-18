@@ -155,10 +155,11 @@ pub fn sym(handle: Foreign, name: &[u8]) -> Foreign {
 
 /// Call through an address with integer arguments, answering an integer.
 ///
-/// SEVEN arguments, which is the reference engine's limit and therefore x-lang's
-/// — `x_prim_ptr_call` declares `long (*)(long × 7)` and documents that "excess
+/// EIGHT arguments, which is the reference engine's limit and therefore x-lang's
+/// — `x_prim_ptr_call` declares `long (*)(long × 8)`, as many as arm64 passes in
+/// registers, and documents that "excess
 /// arguments are silently ignored". Matching the number matters: a caller
-/// written against the reference and passing seven would lose its last argument
+/// written against the reference and passing eight would lose its last argument
 /// here, quietly, and the loss would look like the callee misbehaving.
 ///
 /// The call is an ESCAPE FRAME (see `escape`): a door that holds a raise
@@ -171,7 +172,7 @@ pub fn sym(handle: Foreign, name: &[u8]) -> Foreign {
 /// exactly as it is in C, and x-lang's contract calls this door UNCHECKED for
 /// that reason.
 pub fn call_ints(f: Foreign, args: &[u64]) -> u64 {
-    let mut a = [0u64; 7];
+    let mut a = [0u64; 8];
     for (slot, v) in a.iter_mut().zip(args.iter()) {
         *slot = *v;
     }
@@ -720,17 +721,17 @@ mod tests {
         assert!(sym(lib, b"no_such_symbol_anywhere_at_all\0").is_null());
     }
 
-    /// The reference passes SEVEN, and a caller that passes seven must not lose
-    /// the last one. `snprintf` is variadic, so this reaches past the fixed
-    /// arguments and proves the tail arrives.
+    /// The reference passes EIGHT, and a caller that passes eight must not lose
+    /// the last one. A full set of eight is a well-formed call even to a
+    /// function that reads three; zlib's `deflateInit2_` reads all eight.
     #[test]
-    fn the_seventh_argument_is_not_dropped() {
+    fn the_eighth_argument_is_not_dropped() {
         let lib = open(None, 1);
         let f = must(lib, b"strtol\0");
-        // (nptr, endptr, base) -- three used, four ignored, and the call must
+        // (nptr, endptr, base) -- three used, five ignored, and the call must
         // still be well formed.
         let s = b"101\0";
-        assert_eq!(call_ints(f, &[s.as_ptr() as u64, 0, 2, 0, 0, 0, 0]), 5);
+        assert_eq!(call_ints(f, &[s.as_ptr() as u64, 0, 2, 0, 0, 0, 0, 0]), 5);
     }
 
     /// A double RETURN through the string convention: strtod, which is what the
