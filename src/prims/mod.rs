@@ -19,6 +19,7 @@ pub mod callcc;
 pub mod core;
 pub mod ffi;
 pub mod heap;
+pub mod image;
 pub mod io;
 pub mod iter;
 pub mod num;
@@ -51,6 +52,7 @@ pub fn all() -> Vec<PrimDef> {
         iter::TABLE,
         io::TABLE,
         tok::TABLE,
+        image::TABLE,
     ] {
         v.extend_from_slice(table);
     }

@@ -27,9 +27,11 @@ pub struct Engine {
     /// THIS engine's own base — the one `%base` answers and the one top-level
     /// forms evaluate in. Other bases made with `base make` are ordinary values.
     pub base: Obj,
-    /// The primitive catalogue, shared by every base. The instructions are the
-    /// same objects whichever base reaches them; only BINDINGS are per-base.
-    pub(crate) catalogue: Obj,
+    /// Every catalogued instruction as (namespace, method, primitive), the rows
+    /// each base files its own catalogue from, as the reference registers the
+    /// primitives per base. The primitives are one object whichever base
+    /// reaches them; the catalogue spine is the base's, and x-lang files into it.
+    pub(crate) coord_prims: Vec<(&'static str, &'static str, Obj)>,
     /// Name-to-primitive for every registered instruction, kept so a new base
     /// can be given the instruction set. A fresh base must evaluate `(+ 2 3)`,
     /// so it is born knowing the machine — what it does NOT get is the host's
@@ -160,7 +162,7 @@ impl Engine {
             envs: Envs::new(),
             prims: Vec::new(),
             base: NIL,
-            catalogue: NIL,
+            coord_prims: Vec::new(),
             prim_bindings: Vec::new(),
 
             files: Vec::new(),
@@ -215,7 +217,7 @@ impl Engine {
                 coords.push((ns, m, obj));
             }
         }
-        e.catalogue = e.file_catalogue(&coords);
+        e.coord_prims = coords;
 
         // The types' own render handler: in the table so it is callable,
         // deliberately outside the catalogue and bound nowhere.
@@ -434,12 +436,13 @@ impl Engine {
     /// Build the catalogue: `((ns . ((method . prim) ...)) ...)`, the layout
     /// x-lang walks the base to find. Namespace and method symbols are interned, so the
     /// lookups the prelude performs are pointer comparisons.
-    fn file_catalogue(&mut self, rows: &[(&str, &str, Obj)]) -> Obj {
+    fn file_catalogue(&mut self) -> Obj {
+        let rows = self.coord_prims.clone();
         let mut namespaces: Vec<(&str, Vec<(&str, Obj)>)> = Vec::new();
-        for (ns, m, o) in rows {
-            match namespaces.iter_mut().find(|(n, _)| n == ns) {
-                Some((_, ms)) => ms.push((m, *o)),
-                None => namespaces.push((ns, vec![(m, *o)])),
+        for &(ns, m, o) in &rows {
+            match namespaces.iter_mut().find(|(n, _)| *n == ns) {
+                Some((_, ms)) => ms.push((m, o)),
+                None => namespaces.push((ns, vec![(m, o)])),
             }
         }
         let mut cat = NIL;
@@ -468,6 +471,41 @@ impl Engine {
     /// The instruction set IS given, because a fresh base must evaluate
     /// `(+ 2 3)`. A sandbox withholds the host's definitions, not the machine.
     pub fn make_base(&mut self) -> Obj {
+        // The engine's own base: registration has not run yet, so nothing is
+        // stamped, and registration files the types itself.
+        if self.objects.base.is_nil() {
+            let env = self.furnish_root_env();
+            let cat = self.file_catalogue();
+            let base = crate::base::build(&mut self.objects, cat, env);
+            self.set_sigint_row(base);
+            self.base_syms.insert(base, Symbols::new());
+            return base;
+        }
+        // A child is filled with the child running, as the reference fills
+        // one on its own base: every typed object in it carries the child's
+        // types, never its maker's, whose handlers close over the maker's
+        // environment. `in_base` files its symbol table, which starts empty:
+        // a fresh base interns for itself, and a symbol the host interned
+        // before the child existed is a different object inside it.
+        let base = crate::base::shell(&mut self.objects);
+        self.in_base(base, |e| {
+            e.file_fresh_builtin_types(base);
+            let env = e.furnish_root_env();
+            let cat = e.file_catalogue();
+            crate::base::fill(&mut e.objects, base, cat, env);
+            e.set_sigint_row(base);
+        });
+        base
+    }
+
+    /// The sigint row holds the SAME object %sigint-flag is bound to.
+    fn set_sigint_row(&mut self, base: Obj) {
+        let f = self.sigint_flag;
+        crate::base::set(&mut self.objects, base, crate::base::SIGINT, f);
+    }
+
+    /// A new root environment carrying the instruction set.
+    fn furnish_root_env(&mut self) -> EnvId {
         let env = self.envs.push_root(&mut self.objects);
 
         // `#t` and `#f` are instruction-level too: a form read in the host and
@@ -518,20 +556,7 @@ impl Engine {
         for (sym, obj) in self.prim_bindings.clone() {
             self.envs.bind(&mut self.objects, env, sym, obj);
         }
-
-        let base = crate::base::build(&mut self.objects, self.catalogue, env);
-        // The sigint row holds the SAME object %sigint-flag is bound to.
-        crate::base::set(&mut self.objects, base, crate::base::SIGINT, f);
-        // Fresh builtin types, except for the engine's own base: registration
-        // has not run yet when it is built, and files the types itself.
-        if !self.objects.base.is_nil() {
-            self.file_fresh_builtin_types(base);
-        }
-        // A fresh base interns for itself, from empty. NOT a snapshot of the
-        // parent's table: x-engine-c was asked, and a symbol the host interned
-        // before the child existed is still a different object inside it.
-        self.base_syms.insert(base, Symbols::new());
-        base
+        env
     }
     /// Run `f` with `base` current: its symbol table installed and the engine's
     /// base field pointing at it, both restored afterwards. Identity when

@@ -194,6 +194,14 @@ fn raw_cell(o: &mut Objects, n: i64) -> Obj {
 }
 
 pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
+    let base = shell(o);
+    fill(o, base, catalogue, env);
+    base
+}
+
+/// A base with its routes and nothing on them: untyped spairs and the label,
+/// so it can be the stamping base for its own contents (`fill`).
+pub fn shell(o: &mut Objects) -> Obj {
     let mut spine = NIL;
     for _ in 0..ROUTES.len() {
         spine = o.spair(NIL, spine);
@@ -203,11 +211,18 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
     // printer renders the base as the bounded opaque form instead of walking
     // the whole spine.
     let label = o.base_label();
+    let base = o.spair(spine, NIL);
+    o.set_type_word(base, label);
+    base
+}
+
+/// Put a shell's contents on its routes. Every typed object is stamped from
+/// the running base, so a child is filled with the child running.
+pub fn fill(o: &mut Objects, base: Obj, catalogue: Obj, env: EnvId) {
     // The base is two units, as the reference's is: the spine first, the slot
     // vector second (`crate::slots`). The label rides the base object.
     let slots = crate::slots::make(o);
-    let base = o.spair(spine, slots);
-    o.set_type_word(base, label);
+    o.set_data(base, 1, slots.word());
     // The error-scratch atom: every engine-raised condition writes its
     // message into this base's atom and raises THE ATOM — one identity the
     // printer knows (#54). Its bytes are this base's error-str row.
@@ -289,7 +304,6 @@ pub fn build(o: &mut Objects, catalogue: Obj, env: EnvId) -> Obj {
     // here, and a route that walked off the end would answer nil either way —
     // indistinguishable from a route this engine forgot.
     set_slot(o, base, BUFFER, NIL);
-    base
 }
 
 /// The cell at `n` steps of `rest` from the base.
