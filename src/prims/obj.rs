@@ -139,14 +139,21 @@ fn obj_make(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     Ok(e.objects.instance(ty, n))
 }
 
-/// `(obj make-callable p)` — a raw address dressed as callable.
+/// `(obj make-callable p)` — the word P dressed as callable, as the
+/// reference's `x_make_prim` dresses a function pointer.
 ///
-/// Answers a value that can sit at the head of a form. Applying it calls
-/// through the address with the C primitive convention
-/// (`Engine::apply_foreign`).
-fn make_callable(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
-    let at = a_.as_ptr(a[0]);
-    Ok(a_.foreign(at.raw()))
+/// The word is read by the one rule `callable_call` reads a callable's entry
+/// by: an index into the instruction table is that instruction, any other
+/// word is machine code applied with the C primitive convention
+/// (`Engine::apply_foreign`). A prim's own entry word handed back here --
+/// the image writer gives its child `include` this way -- is the same
+/// instruction again, never a jump to its index.
+fn make_callable(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
+    let word = e.objects.as_ptr(a[0]).raw();
+    if word != 0 && (word as usize) < e.prims.len() {
+        return Ok(e.objects.prim(word as usize));
+    }
+    Ok(e.objects.foreign(word))
 }
 
 /// `(type set-unit-labels! type count mask)` — the units field's pair form,
@@ -173,7 +180,7 @@ crate::uniform_engine!(type_of_u, type_of, 1);
 crate::uniform_value!(type_is_u, type_is, 2);
 crate::uniform_engine!(make_instance_u, make_instance, 2);
 crate::uniform_engine!(obj_make_u, obj_make, 2);
-crate::uniform_value!(make_callable_u, make_callable, 1);
+crate::uniform_engine!(make_callable_u, make_callable, 1);
 crate::uniform_value!(type_set_unit_labels_u, type_set_unit_labels, 3);
 
 #[rustfmt::skip]
@@ -324,5 +331,22 @@ mod tests {
             (same? (%tof ((%coord (lit obj) (lit make)) T 2)) T)
         "#
         ));
+    }
+
+    /// A prim's own entry word, made callable again, is that instruction:
+    /// the image writer hands its child `include` this way. A jump to the
+    /// index would fault at a small address.
+    #[test]
+    fn a_prim_entry_made_callable_is_the_same_instruction() {
+        // The entry word of `pair`: its index in the instruction table.
+        let idx = crate::prims::all()
+            .iter()
+            .position(|d| d.bare == Some("pair"))
+            .expect("pair is in the table");
+        let s = crate::testkit::with_coords(
+            &[("%mc", "obj", "make-callable"), ("%i2p", "int", "->ptr")],
+            &format!("(def again (%mc (%i2p {idx}))) (first (again 4 5))"),
+        );
+        assert_eq!(crate::testkit::int_of(&s), 4);
     }
 }

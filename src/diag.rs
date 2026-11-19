@@ -202,6 +202,9 @@ fn render(a: &Objects, v: Obj, depth: usize) -> String {
     if a.is_str(v) || a.is_sym(v) {
         return a.str_val(v);
     }
+    if v == a.true_obj() {
+        return crate::vocabulary::TRUE.to_string();
+    }
     if a.is_int(v) {
         return format!("{}", a.int_val(v));
     }

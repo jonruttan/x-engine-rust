@@ -436,7 +436,18 @@ fn read_str(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
                 // one form, or the input is done.
                 let scratch = e.objects.buf_to(text, at, end);
                 e.root_push(scratch);
-                let form = e.in_base(target, |e| e.read_form_in(scratch))?;
+                // A string with no closing quote is never claimed by the
+                // string analyser; the reference's symbol analyser takes the
+                // run instead, so `"half` reads as a symbol.
+                let bytes = e.objects.buf_slice(scratch, at, end);
+                let form = match unclosed_string_run(&bytes) {
+                    Some((from, to)) => {
+                        let (from, to) = (at + from as u64, at + to as u64);
+                        e.objects.set_buf_cursor(scratch, to);
+                        Some(e.objects.buf_atom_from(scratch, from, to))
+                    }
+                    None => e.in_base(target, |e| e.read_form_in(scratch))?,
+                };
                 let Some(form) = form else { break };
                 // A nil token has always STOPPED read-str — the drop-
                 // unterminated-tail contract's other half.
@@ -551,6 +562,29 @@ const ST_PREFIX: usize = 1;
 const ST_BASE: usize = 2;
 const ST_DIGITS: usize = 3;
 const ST_XDIGITS: usize = 4;
+
+/// The atom run `[from, to)` when the first form in `bytes` is a string with
+/// no closing quote, else `None`. The run stops at a blank, a paren or a
+/// semicolon, as an atom does.
+fn unclosed_string_run(bytes: &[u8]) -> Option<(usize, usize)> {
+    let from = bytes.iter().position(|&c| !crate::read::is_blank(c))?;
+    if bytes[from] != b'"' {
+        return None;
+    }
+    let mut i = from + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return None,
+            _ => i += 1,
+        }
+    }
+    let to = bytes[from..]
+        .iter()
+        .position(|&c| crate::read::is_blank(c) || c == b'(' || c == b')' || c == b';')
+        .map_or(bytes.len(), |n| from + n);
+    Some((from, to))
+}
 
 fn buf_span(a_: &Objects, b: Obj) -> u64 {
     a_.buf_cursor(b).saturating_sub(a_.buf_retain(b))
@@ -692,7 +726,8 @@ impl AsciiDigitU32 for u32 {
 fn make_tok(e: &mut Engine, _base: Obj, _a: &[Obj]) -> EvalResult {
     let env = e.envs.push_root(&mut e.objects);
     let t = e.objects.sym_shared(crate::vocabulary::TRUE);
-    e.envs.bind(&mut e.objects, env, t, t);
+    let to = e.objects.true_obj();
+    e.envs.bind(&mut e.objects, env, t, to);
     let f = e.objects.sym_shared(crate::vocabulary::FALSE);
     let fo = e.objects.false_obj();
     e.envs.bind(&mut e.objects, env, f, fo);

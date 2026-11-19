@@ -47,6 +47,7 @@ extern "C" {
     fn dlsym(handle: *mut c_void, sym: *const c_char) -> *mut c_void;
     fn clock() -> c_long;
     fn signal(sig: c_int, handler: usize) -> usize;
+    fn siginterrupt(sig: c_int, flag: c_int) -> c_int;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     #[link_name = "open"]
@@ -154,10 +155,11 @@ pub fn sym(handle: Foreign, name: &[u8]) -> Foreign {
 
 /// Call through an address with integer arguments, answering an integer.
 ///
-/// SEVEN arguments, which is the reference engine's limit and therefore x-lang's
-/// — `x_prim_ptr_call` declares `long (*)(long × 7)` and documents that "excess
+/// EIGHT arguments, which is the reference engine's limit and therefore x-lang's
+/// — `x_prim_ptr_call` declares `long (*)(long × 8)`, as many as arm64 passes in
+/// registers, and documents that "excess
 /// arguments are silently ignored". Matching the number matters: a caller
-/// written against the reference and passing seven would lose its last argument
+/// written against the reference and passing eight would lose its last argument
 /// here, quietly, and the loss would look like the callee misbehaving.
 ///
 /// The call is an ESCAPE FRAME (see `escape`): a door that holds a raise
@@ -170,7 +172,7 @@ pub fn sym(handle: Foreign, name: &[u8]) -> Foreign {
 /// exactly as it is in C, and x-lang's contract calls this door UNCHECKED for
 /// that reason.
 pub fn call_ints(f: Foreign, args: &[u64]) -> u64 {
-    let mut a = [0u64; 7];
+    let mut a = [0u64; 8];
     for (slot, v) in a.iter_mut().zip(args.iter()) {
         *slot = *v;
     }
@@ -270,6 +272,60 @@ pub fn interrupt_restore() {
 
 pub fn interrupted() -> bool {
     INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The highest signal number plus one: the size of the arrival table.
+#[cfg(target_os = "macos")]
+const NSIG: usize = 32;
+#[cfg(not(target_os = "macos"))]
+const NSIG: usize = 65;
+
+/// One arrival flag per signal, set by `on_signal` and cleared by
+/// `signal_take`. Atomics only, as for `INTERRUPTED`.
+static ARRIVED: [std::sync::atomic::AtomicBool; NSIG] =
+    [const { std::sync::atomic::AtomicBool::new(false) }; NSIG];
+
+/// `SIG_ERR`: `signal` refused the disposition.
+const SIG_ERR: usize = usize::MAX;
+
+extern "C" fn on_signal(sig: c_int) {
+    if let Some(flag) = ARRIVED.get(sig as usize) {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn signal_valid(sig: i64) -> bool {
+    sig > 0 && (sig as usize) < NSIG
+}
+
+/// Catch `sig`: its arrival is recorded instead of taking the default
+/// action. 0, or -1 for a signal that cannot be caught. No restart, as the
+/// reference's sigaction leaves SA_RESTART off: a blocked read or wait
+/// returns to its caller.
+pub fn signal_catch(sig: i64) -> i64 {
+    if !signal_valid(sig) {
+        return -1;
+    }
+    ARRIVED[sig as usize].store(false, std::sync::atomic::Ordering::SeqCst);
+    // SAFETY: the handler touches only an atomic; `signal` reports a
+    // disposition it refuses as SIG_ERR rather than faulting.
+    let old = unsafe { signal(sig as c_int, on_signal as extern "C" fn(c_int) as usize) };
+    if old == SIG_ERR {
+        return -1;
+    }
+    // SAFETY: as above; the signal number was just accepted.
+    unsafe {
+        siginterrupt(sig as c_int, 1);
+    }
+    0
+}
+
+/// 1 when `sig` has arrived since the last take, clearing the record; else 0.
+pub fn signal_take(sig: i64) -> i64 {
+    if !signal_valid(sig) {
+        return 0;
+    }
+    i64::from(ARRIVED[sig as usize].swap(false, std::sync::atomic::Ordering::SeqCst))
 }
 
 /// Write bytes to a raw file descriptor — the engine's `io write-str` door
@@ -665,17 +721,17 @@ mod tests {
         assert!(sym(lib, b"no_such_symbol_anywhere_at_all\0").is_null());
     }
 
-    /// The reference passes SEVEN, and a caller that passes seven must not lose
-    /// the last one. `snprintf` is variadic, so this reaches past the fixed
-    /// arguments and proves the tail arrives.
+    /// The reference passes EIGHT, and a caller that passes eight must not lose
+    /// the last one. A full set of eight is a well-formed call even to a
+    /// function that reads three; zlib's `deflateInit2_` reads all eight.
     #[test]
-    fn the_seventh_argument_is_not_dropped() {
+    fn the_eighth_argument_is_not_dropped() {
         let lib = open(None, 1);
         let f = must(lib, b"strtol\0");
-        // (nptr, endptr, base) -- three used, four ignored, and the call must
+        // (nptr, endptr, base) -- three used, five ignored, and the call must
         // still be well formed.
         let s = b"101\0";
-        assert_eq!(call_ints(f, &[s.as_ptr() as u64, 0, 2, 0, 0, 0, 0]), 5);
+        assert_eq!(call_ints(f, &[s.as_ptr() as u64, 0, 2, 0, 0, 0, 0, 0]), 5);
     }
 
     /// A double RETURN through the string convention: strtod, which is what the
