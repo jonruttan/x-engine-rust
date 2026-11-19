@@ -145,7 +145,7 @@ impl Objects {
     /// Yes only for the start of an allocation: a word that merely carries
     /// the magic bit may sit inside a string's bytes, and the mark written
     /// through it lands in the text.
-    fn plausible(&self, w: u64) -> bool {
+    pub(crate) fn plausible(&self, w: u64) -> bool {
         self.heap.fits(w, crate::objects::META_LEN) && self.is_start(w)
     }
 
@@ -169,6 +169,16 @@ impl Objects {
     /// x_heap_tree_mark, whose flag is a parameter. The bit doubles as the
     /// visited test, so a bit already set on an object stops the walk there.
     pub(crate) fn tree_mark(&mut self, stack: &mut Vec<Obj>, bit: u64) {
+        self.tree_mark_to(stack, bit, &std::collections::HashSet::new());
+    }
+
+    /// `tree_mark`, with `leaves` marked and never traversed.
+    pub(crate) fn tree_mark_to(
+        &mut self,
+        stack: &mut Vec<Obj>,
+        bit: u64,
+        leaves: &std::collections::HashSet<u64>,
+    ) {
         while let Some(o) = stack.pop() {
             if o.is_nil() || !self.plausible(o.word().raw()) || self.flags_word(o) & bit != 0 {
                 continue;
@@ -179,6 +189,9 @@ impl Objects {
                 continue;
             }
             self.set_bit(o, bit);
+            if leaves.contains(&o.word().raw()) {
+                continue;
+            }
 
             // The type word is a reference like any other.
             let ty = self.type_of_word(o);
@@ -259,16 +272,26 @@ impl Objects {
     ///
     /// Answers how many were freed. The chain is rebuilt as it is walked, so a
     /// swept object is off it before its words are handed out again.
+    ///
+    /// The kept objects stay in chain order, newest first, as the reference's
+    /// sweep unlinks in place: everything past an object on the chain is older
+    /// than it. The image writer walks the chain from a cursor on that promise
+    /// (x-lang tools/dev/image-write.x).
     pub fn sweep(&mut self) -> usize {
         let mut freed = 0usize;
-        let mut kept = crate::obj::NIL;
+        let mut head = crate::obj::NIL;
+        let mut tail = crate::obj::NIL;
         let mut at = self.heap_chain;
         while !at.is_nil() {
             let next = self.chain_next(at);
             if self.is_marked(at) {
                 self.clear_mark(at);
-                self.set_chain_next(at, kept);
-                kept = at;
+                if tail.is_nil() {
+                    head = at;
+                } else {
+                    self.set_chain_next(tail, at);
+                }
+                tail = at;
             } else {
                 // NON-MOVING: the words stay where they are and go back on a
                 // free list for an allocation of exactly this size. Nothing is
@@ -298,7 +321,10 @@ impl Objects {
             }
             at = next;
         }
-        self.heap_chain = kept;
+        if !tail.is_nil() {
+            self.set_chain_next(tail, crate::obj::NIL);
+        }
+        self.heap_chain = head;
         self.live -= freed;
         self.count_allocs(-(freed as i64));
         freed

@@ -154,6 +154,9 @@ pub const MSG_NO_CVT_RELATION: &str = "no declared promotion; declare the cvt re
 pub const MSG_NOT_AN_ENV: &str = "tail-eval: not an environment";
 pub const MSG_NO_PROGRAM: &str = "cannot read program from stdin";
 pub const MSG_ALLOC_LIMIT: &str = "allocation limit exceeded";
+pub const MSG_IMAGE_TYPE_NOT_IMAGED: &str = "image write!: type not imaged";
+pub const MSG_IMAGE_TABLE_FULL: &str = "image write!: object table full";
+pub const MSG_IMAGE_BLOB_FULL: &str = "image write!: blob full";
 
 /// How a CHARACTER is written: `#\` and the character itself.
 pub const CHAR_PREFIX: &str = "#\\";

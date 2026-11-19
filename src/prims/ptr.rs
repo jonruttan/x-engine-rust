@@ -61,12 +61,12 @@ fn ptr_to_str(a_: &mut Objects, a: &[Obj]) -> Result<Obj, Cond> {
 
 /// Whether an accessor's address is inside the arena, where the heap's Vec
 /// reaches it; anything else is process memory.
-fn in_arena(a_: &Objects, at: u64) -> bool {
+pub(crate) fn in_arena(a_: &Objects, at: u64) -> bool {
     a_.heap.from_real(at).is_some()
 }
 
 /// One byte at an operand address.
-fn rd_byte(a_: &Objects, at: u64) -> u8 {
+pub(crate) fn rd_byte(a_: &Objects, at: u64) -> u8 {
     if in_arena(a_, at) {
         a_.heap.byte(Addr::new(at))
     } else {
@@ -74,7 +74,7 @@ fn rd_byte(a_: &Objects, at: u64) -> u8 {
     }
 }
 
-fn wr_byte(a_: &mut Objects, at: u64, v: u8) {
+pub(crate) fn wr_byte(a_: &mut Objects, at: u64, v: u8) {
     if in_arena(a_, at) {
         a_.heap.set_byte(Addr::new(at), v);
     } else {
@@ -85,7 +85,7 @@ fn wr_byte(a_: &mut Objects, at: u64, v: u8) {
 /// A word at any byte address, as the reference's memcpy reads one. The
 /// heap's own word access indexes by word, so an unaligned address in the
 /// arena is assembled from its bytes rather than rounded down.
-fn rd_word(a_: &Objects, at: u64) -> u64 {
+pub(crate) fn rd_word(a_: &Objects, at: u64) -> u64 {
     if !in_arena(a_, at) {
         return crate::foreign::read_word(at);
     }
@@ -96,7 +96,7 @@ fn rd_word(a_: &Objects, at: u64) -> u64 {
 }
 
 /// The write half of `rd_word`, unaligned addresses included.
-fn wr_word(a_: &mut Objects, at: u64, v: u64) {
+pub(crate) fn wr_word(a_: &mut Objects, at: u64, v: u64) {
     if !in_arena(a_, at) {
         crate::foreign::write_word(at, v);
     } else if at % crate::obj::WORD as u64 == 0 {

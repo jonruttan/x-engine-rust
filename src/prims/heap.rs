@@ -92,11 +92,18 @@ const ATTR_FIELD: u64 = 0xffff;
 /// problem, as on the reference: it doubles as the visited test. A flag with
 /// no bit in the attribute field marks nothing, since a walk with no visited
 /// test never ends on a cycle. Answers o.
+///
+/// THE ENGINE'S SHARED OBJECTS ARE LEAVES: marked, never traversed. A shared
+/// symbol, a primitive or an engine-held object is one object in every base,
+/// typed by whichever base made it, and that type's handlers close over that
+/// base's environment, so a walk through one would leave the base it started
+/// in. The reference's shared objects are statics, which no walk enters.
 fn tree_mark(e: &mut Engine, _base: Obj, a: &[Obj]) -> EvalResult {
     let bit = e.objects.as_int(a[1]) as u64 & ATTR_FIELD;
     if bit != 0 {
+        let leaves = crate::prims::image::shared_objects(e);
         let mut stack = vec![a[0]];
-        e.objects.tree_mark(&mut stack, bit);
+        e.objects.tree_mark_to(&mut stack, bit, &leaves);
     }
     Ok(a[0])
 }
